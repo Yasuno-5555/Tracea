@@ -1,5 +1,5 @@
 use crate::semantic::transition::SyncRequirement;
-use crate::semantic::fusion::EpilogueOp;
+use crate::core::op::EpilogueOp;
 use crate::semantic::fragment::{FragmentOp, Fragment};
 
 pub trait Emitter {

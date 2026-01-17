@@ -144,4 +144,56 @@ impl JITCompiler {
         let mut cache = self.kernel_cache.lock().unwrap();
         cache.clear();
     }
+
+
+
+    pub fn load_static_raw(&self, ptx_source: &str, kernel_name: &str) -> Result<*mut c_void, String> {
+        // Reuse singleton if possible, but load_static_raw uses cuModuleLoadData which we might also want to cache.
+        // For now, let's just cache the launch kernel as that's the hot path. 
+        // Note: We could cache module loading too, but that happens once per compilation/warmup.
+        // The LAUNCH is what happens 10000 times.
+        
+        println!("Tracea JIT: Static Load Bypass invoked for {}", kernel_name);
+
+        use std::ffi::CString;
+        use std::ptr;
+        use libloading::{Library, Symbol};
+
+        // Define function signatures for Windows (stdcall/system)
+        #[allow(non_snake_case)]
+        type CuModuleLoadData = unsafe extern "system" fn(*mut *mut c_void, *const c_void) -> i32;
+        #[allow(non_snake_case)]
+        type CuModuleGetFunction = unsafe extern "system" fn(*mut *mut c_void, *mut c_void, *const i8) -> i32;
+
+        let ptx_c = CString::new(ptx_source).map_err(|_| "Invalid PTX source".to_string())?;
+        let name_c = CString::new(kernel_name).map_err(|_| "Invalid kernel name".to_string())?;
+
+        unsafe {
+            use crate::emitter::driver::get_driver_api;
+            let driver = get_driver_api().map_err(|e| format!("Driver API access failed: {}", e))?;
+            let lib = driver.lib; // Re-use the static library handle
+            
+            let load_data: Symbol<CuModuleLoadData> = lib.get(b"cuModuleLoadData").map_err(|e| format!("Sym load failed: {}", e))?;
+            let get_func: Symbol<CuModuleGetFunction> = lib.get(b"cuModuleGetFunction").map_err(|e| format!("Sym load failed: {}", e))?;
+
+            let mut module: *mut c_void = ptr::null_mut();
+            let res = load_data(&mut module, ptx_c.as_ptr() as *const _);
+            if res != 0 {
+                return Err(format!("cuModuleLoadData failed: {}", res));
+            }
+            
+            // Leak module 
+            let mut func: *mut c_void = ptr::null_mut();
+            let res = get_func(&mut func, module, name_c.as_ptr());
+            if res != 0 {
+                return Err(format!("cuModuleGetFunction failed: {}", res));
+            }
+
+            Ok(func)
+        }
+    }
 }
+
+// Global Driver Singleton moved to driver.rs
+
+

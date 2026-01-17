@@ -1,5 +1,5 @@
 use serde::{Serialize, Deserialize};
-use crate::semantic::fusion::EpilogueOp;
+use crate::core::op::EpilogueOp;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelineConfig {

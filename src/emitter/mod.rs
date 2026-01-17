@@ -7,3 +7,5 @@ pub use traits::Emitter;
 pub use cuda::CUDAEmitter;
 // pub use hip... sycl... removed
 pub mod jit;
+pub use jit::JITCompiler;
+pub mod driver;

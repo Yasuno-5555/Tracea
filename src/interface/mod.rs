@@ -1,5 +1,8 @@
+#[cfg(feature = "python")]
 pub mod python;
-// pub mod cpp;
+#[cfg(feature = "cpp")]
+pub mod cpp;
+#[cfg(feature = "python")]
 pub use self::python::{
     PyPipelineConfig, PyContext, PyProfilingScope, PyEpilogueOp, PyEpilogueType, PyOptimizationGoal, PyGraph,
     PyDeviceBufferF32, PyDeviceBufferU16,

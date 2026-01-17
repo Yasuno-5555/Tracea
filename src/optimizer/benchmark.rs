@@ -55,7 +55,7 @@ pub struct Observation {
     pub score: f32,
 }
 
-pub struct NVRTCBenchmark {
+pub(crate) struct NVRTCBenchmark {
     pub jit: std::sync::Arc<crate::emitter::jit::JITCompiler>,
     pub m: u32,
     pub n: u32,

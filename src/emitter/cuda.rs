@@ -1,7 +1,7 @@
 use crate::emitter::traits::Emitter;
 use crate::semantic::transition::SyncRequirement;
 use crate::semantic::swizzle::SwizzleMode;
-use crate::semantic::fusion::EpilogueOp;
+use crate::core::op::EpilogueOp;
 
 pub struct CUDAEmitter;
 

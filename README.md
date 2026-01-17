@@ -76,8 +76,38 @@ ctx.optimize_graph(graph, iterations=15, goal=tracea.OptimizationGoal.MaximizeTF
 ```python
 # Execute using optimized config from cache
 # Matmul now takes safe buffers, NOT integer pointers
-ctx.matmul(a_buf, b_buf, c_buf, 1024, 1024, 1024, tracea.Epilogue())
+ctx.matmul(a_buf, b_buf, c_buf, 1024, 1024, 1024, tracea.Epilogue.empty())
 ctx.synchronize()
+```
+
+---
+
+## ⚡ C++ Usage (Zero-Latency)
+
+Tracea provides a header-only C++17 RAII wrapper for maximum performance.
+
+```cpp
+#include "tracea.hpp"
+
+int main() {
+    try {
+        // 1. Create Context (RAII)
+        tracea::Context ctx("GeForce RTX 4090");
+
+        // 2. Compile/Load optimized kernels (from cache if available)
+        ctx.compile_empty(); // Example API
+        
+        // 3. Launch with < 5µs latency
+        for (int i = 0; i < 1000; ++i) {
+            ctx.launch_empty();
+        }
+
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << std::endl;
+        return 1;
+    }
+    return 0;
+}
 ```
 
 ---

@@ -64,11 +64,11 @@ impl PyPipelineConfig {
     pub fn num_stages(&self) -> u32 { self.inner.num_stages }
 
     pub fn add_relu(&mut self) {
-        self.inner.epilogue.push(crate::semantic::fusion::EpilogueOp::ReLU);
+        self.inner.epilogue.push(crate::core::op::EpilogueOp::ReLU);
     }
 
     pub fn add_bias(&mut self, ptr: usize) {
-        self.inner.epilogue.push(crate::semantic::fusion::EpilogueOp::BiasAdd { bias_ptr: ptr });
+        self.inner.epilogue.push(crate::core::op::EpilogueOp::BiasAdd { bias_ptr: ptr });
     }
 }
 
@@ -94,7 +94,7 @@ impl PyGraph {
 pub struct PyContext {
     pub tuner: AutoTuner,
     pub device: Arc<CudaDevice>,
-    pub jit: Arc<JITCompiler>,
+    pub(crate) jit: Arc<JITCompiler>,
     pub scratch_a: PyDeviceBufferF32,
     pub scratch_b: PyDeviceBufferF32,
     pub scratch_c: PyDeviceBufferF32,
@@ -170,11 +170,11 @@ impl PyContext {
         let mut rust_epilogue = Vec::new();
         for (op_type, ptr_opt) in epilogue.ops {
             let op = match op_type {
-                PyEpilogueType::ReLU => crate::semantic::fusion::EpilogueOp::ReLU,
-                PyEpilogueType::Gelu => crate::semantic::fusion::EpilogueOp::Gelu,
+                PyEpilogueType::ReLU => crate::core::op::EpilogueOp::ReLU,
+                PyEpilogueType::Gelu => crate::core::op::EpilogueOp::Gelu,
                 PyEpilogueType::BiasAdd => {
                     if let Some(ptr) = ptr_opt {
-                        crate::semantic::fusion::EpilogueOp::BiasAdd { bias_ptr: ptr }
+                        crate::core::op::EpilogueOp::BiasAdd { bias_ptr: ptr }
                     } else {
                          return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>("BiasAdd requires pointer"));
                     }
