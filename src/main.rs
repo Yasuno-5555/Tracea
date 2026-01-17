@@ -24,7 +24,7 @@ fn main() {
     // Bayesian Optimization Demo
     println!("\nStarting Bayesian Optimization (10 iterations)...");
     let mut tuner = tracea::AutoTuner::new(gpu.clone());
-    let benchmark = tracea::optimizer::benchmark::SimulatedBenchmark;
+    let benchmark = tracea::optimizer::benchmark::SimulatedBenchmark { m: 1024, n: 1024, k: 1024 };
     
     let best_config = tuner.optimize(&benchmark, 10);
     println!("Optimization Complete!");

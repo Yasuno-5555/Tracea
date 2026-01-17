@@ -1,0 +1,145 @@
+Tracea JIT: Compiling gemm_pipelined_kernel...
+Tracea JIT: Verified MaxDynamicSharedMemory is now 99000 bytes
+Tracea JIT: Verified MaxDynamicSharedMemory is now 99000 bytes
+[Tracea] Auto-tuning for 4096x4096x4096 (15 iterations)...
+Tracea JIT: Compiling gemm_pipelined_kernel...
+Tracea JIT: Verified MaxDynamicSharedMemory is now 10496 bytes
+
+thread '<unnamed>' (8064) panicked at src\optimizer\benchmark.rs:102:25:
+called `Result::unwrap()` on an `Err` value: DriverError(CUDA_ERROR_ILLEGAL_ADDRESS, "an illegal memory access was encountered")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread '<unnamed>' (8064) panicked at C:\Users\kouno\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\cudarc-0.12.1\src\driver\safe\core.rs:252:76:
+called `Result::unwrap()` on an `Err` value: DriverError(CUDA_ERROR_ILLEGAL_ADDRESS, "an illegal memory access was encountered")
+stack backtrace:
+   0:     0x7ffc07ae79e2 - PyInit_tracea
+   1:     0x7ffc07af00ca - PyInit_tracea
+   2:     0x7ffc07addfb7 - PyInit_tracea
+   3:     0x7ffc07ae2295 - PyInit_tracea
+   4:     0x7ffc07ae3c79 - PyInit_tracea
+   5:     0x7ffc07ae3a68 - PyInit_tracea
+   6:     0x7ffc07ae44fb - PyInit_tracea
+   7:     0x7ffc07ae42c9 - PyInit_tracea
+   8:     0x7ffc07ae248f - PyInit_tracea
+   9:     0x7ffc07adb96e - PyInit_tracea
+  10:     0x7ffc07afb8c1 - PyInit_tracea
+  11:     0x7ffc07afb550 - PyInit_tracea
+  12:     0x7ffc07aa4d54 - <unknown>
+  13:     0x7ffc07aa44fb - <unknown>
+  14:     0x7ffc07aa444a - <unknown>
+  15:     0x7ffcc2b01030 - <unknown>
+  16:     0x7ffcc2b04cb2 - is_exception_typeof
+  17:     0x7ffcc2b0f0e4 - _C_specific_handler
+  18:     0x7ffcc2b03f28 - is_exception_typeof
+  19:     0x7ffcc2b0fa21 - _CxxFrameHandler3
+  20:     0x7ffce20863af - _chkstk
+  21:     0x7ffce1f2e593 - RtlUnwindEx
+  22:     0x7ffcc2b0f5ae - _C_specific_handler
+  23:     0x7ffcc2b02bf5 - is_exception_typeof
+  24:     0x7ffcc2b0300d - is_exception_typeof
+  25:     0x7ffcc2b04024 - is_exception_typeof
+  26:     0x7ffcc2b0fa21 - _CxxFrameHandler3
+  27:     0x7ffce208632f - _chkstk
+  28:     0x7ffce1f32327 - RtlLocateExtendedFeature
+  29:     0x7ffce1f2a961 - RtlRaiseException
+  30:     0x7ffcdf9b804a - RaiseException
+  31:     0x7ffcc2b06480 - CxxThrowException
+  32:     0x7ffc07ae7edd - PyInit_tracea
+  33:     0x7ffc07ae7db5 - PyInit_tracea
+  34:     0x7ffc07adb655 - PyInit_tracea
+  35:     0x7ffc07ae4573 - PyInit_tracea
+  36:     0x7ffc07ae42c9 - PyInit_tracea
+  37:     0x7ffc07ae248f - PyInit_tracea
+  38:     0x7ffc07adb96e - PyInit_tracea
+  39:     0x7ffc07afb8c1 - PyInit_tracea
+  40:     0x7ffc07afb550 - PyInit_tracea
+  41:     0x7ffc07aa427e - <unknown>
+  42:     0x7ffc07aa354b - <unknown>
+  43:     0x7ffc07a9ae22 - <unknown>
+  44:     0x7ffc07a963a3 - <unknown>
+  45:     0x7ffc07a91d42 - <unknown>
+  46:     0x7ffc07a94194 - <unknown>
+  47:     0x7ffbf71830d9 - PyLong_FromSsize_t
+  48:     0x7ffbf71e6385 - PyEval_EvalFrameDefault
+  49:     0x7ffbf71e8620 - PyEval_EvalFrameDefault
+  50:     0x7ffbf719a1cd - PyType_CalculateMetaclass
+  51:     0x7ffbf71fad06 - PyEval_EvalCode
+  52:     0x7ffbf71fa9ca - PyArena_New
+  53:     0x7ffbf71fa94a - PyArena_New
+  54:     0x7ffbf727f394 - PyRun_SimpleFileObject
+  55:     0x7ffbf727f249 - PyRun_SimpleFileObject
+  56:     0x7ffbf727dd20 - PyRun_AnyFileObject
+  57:     0x7ffbf727d9a3 - Py_MakePendingCalls
+  58:     0x7ffbf727d85f - Py_MakePendingCalls
+  59:     0x7ffbf71f3a30 - Py_RunMain
+  60:     0x7ffbf71f38c1 - Py_RunMain
+  61:     0x7ffbf71f32d9 - Py_Main
+  62:     0x7ff727961230 - <unknown>
+  63:     0x7ffce0cae8d7 - BaseThreadInitThunk
+  64:     0x7ffce1fac53c - RtlUserThreadStart
+Unhandled exception caught in c10/util/AbortHandler.h
+00007FFBD79B9BE6 <unknown symbol address> torch_python.dll!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFCDF2319D7 <unknown symbol address> ucrtbase.dll!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFCC2B02444 <unknown symbol address> VCRUNTIME140.dll!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFCC2B10684 <unknown symbol address> VCRUNTIME140.dll!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFCC2B0ECD0 <unknown symbol address> VCRUNTIME140.dll!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFCE208632F <unknown symbol address> ntdll.dll!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFCE1F32327 <unknown symbol address> ntdll.dll!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFCE1F2A961 <unknown symbol address> ntdll.dll!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFCDF9B804A <unknown symbol address> KERNELBASE.dll!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFCC2B06480 <unknown symbol address> VCRUNTIME140.dll!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFC07AE7EDD <unknown symbol address> tracea.pyd!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFC07AE7DB5 <unknown symbol address> tracea.pyd!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFC07ADB655 <unknown symbol address> tracea.pyd!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFC07AE4573 <unknown symbol address> tracea.pyd!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFC07AE42C9 <unknown symbol address> tracea.pyd!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFC07AE248F <unknown symbol address> tracea.pyd!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFC07ADB96E <unknown symbol address> tracea.pyd!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFC07AFB8C1 <unknown symbol address> tracea.pyd!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFC07AFB550 <unknown symbol address> tracea.pyd!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFC07AA4D54 <unknown symbol address> tracea.pyd!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFC07AA44FB <unknown symbol address> tracea.pyd!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFC07AA444A <unknown symbol address> tracea.pyd!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFCC2B01030 <unknown symbol address> VCRUNTIME140.dll!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFCC2B04CB2 <unknown symbol address> VCRUNTIME140.dll!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFCC2B0F0E4 <unknown symbol address> VCRUNTIME140.dll!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFCC2B03F28 <unknown symbol address> VCRUNTIME140.dll!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFCC2B0FA21 <unknown symbol address> VCRUNTIME140.dll!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFCE20863AF <unknown symbol address> ntdll.dll!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFCE1F2E593 <unknown symbol address> ntdll.dll!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFCC2B0F5AE <unknown symbol address> VCRUNTIME140.dll!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFCC2B02BF5 <unknown symbol address> VCRUNTIME140.dll!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFCC2B0300D <unknown symbol address> VCRUNTIME140.dll!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFCC2B04024 <unknown symbol address> VCRUNTIME140.dll!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFCC2B0FA21 <unknown symbol address> VCRUNTIME140.dll!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFCE208632F <unknown symbol address> ntdll.dll!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFCE1F32327 <unknown symbol address> ntdll.dll!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFCE1F2A961 <unknown symbol address> ntdll.dll!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFCDF9B804A <unknown symbol address> KERNELBASE.dll!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFCC2B06480 <unknown symbol address> VCRUNTIME140.dll!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFC07AE7EDD <unknown symbol address> tracea.pyd!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFC07AE7DB5 <unknown symbol address> tracea.pyd!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFC07ADB655 <unknown symbol address> tracea.pyd!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFC07AE4573 <unknown symbol address> tracea.pyd!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFC07AE42C9 <unknown symbol address> tracea.pyd!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFC07AE248F <unknown symbol address> tracea.pyd!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFC07ADB96E <unknown symbol address> tracea.pyd!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFC07AFB8C1 <unknown symbol address> tracea.pyd!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFC07AFB550 <unknown symbol address> tracea.pyd!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFC07AA427E <unknown symbol address> tracea.pyd!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFC07AA354B <unknown symbol address> tracea.pyd!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFC07A9AE22 <unknown symbol address> tracea.pyd!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFC07A963A3 <unknown symbol address> tracea.pyd!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFC07A91D42 <unknown symbol address> tracea.pyd!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFC07A94194 <unknown symbol address> tracea.pyd!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFBF71830D9 <unknown symbol address> python310.dll!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFBF71E6385 <unknown symbol address> python310.dll!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFBF71E8620 <unknown symbol address> python310.dll!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFBF719A1CD <unknown symbol address> python310.dll!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFBF71FAD06 <unknown symbol address> python310.dll!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFBF71FA9CA <unknown symbol address> python310.dll!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFBF71FA94A <unknown symbol address> python310.dll!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFBF727F394 <unknown symbol address> python310.dll!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFBF727F249 <unknown symbol address> python310.dll!<unknown symbol> [<unknown file> @ <unknown line number>]
+00007FFBF727DD20 <unknown symbol address> python310.dll!<unknown symbol> [<unknown file> @ <unknown line number>]
+

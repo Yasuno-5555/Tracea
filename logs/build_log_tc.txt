@@ -1,0 +1,134 @@
+   Compiling tracea v0.1.0 (E:\Projects\Tracea)
+error[E0425]: cannot find value `s_a` in this scope
+   --> src\interface\python.rs:145:30
+    |
+145 |             (n_stages * mt * s_a + n_stages * kt * s_b) * 4 // float is 4 bytes
+    |                              ^^^ not found in this scope
+
+error[E0425]: cannot find value `s_b` in this scope
+   --> src\interface\python.rs:145:52
+    |
+145 |             (n_stages * mt * s_a + n_stages * kt * s_b) * 4 // float is 4 bytes
+    |                                                    ^^^ not found in this scope
+
+warning: unused imports: `PyRefMut` and `PyRef`
+ --> src\interface\python.rs:6:12
+  |
+6 | use pyo3::{PyRef, PyRefMut};
+  |            ^^^^^  ^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `cudarc::nvrtc::Ptx`
+ --> src\interface\python.rs:9:5
+  |
+9 | use cudarc::nvrtc::Ptx;
+  |     ^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::collections::HashSet`
+ --> src\semantic\mapping.rs:1:5
+  |
+1 | use std::collections::HashSet;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::semantic::swizzle::SwizzleMode`
+ --> src\emitter\cuda.rs:3:5
+  |
+3 | use crate::semantic::swizzle::SwizzleMode;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `cudarc::driver::LaunchAsync`
+ --> src\emitter\jit.rs:2:5
+  |
+2 | use cudarc::driver::LaunchAsync;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused variable: `slf`
+   --> src\interface\python.rs:196:22
+    |
+196 |     pub fn profiling(slf: &Bound<'_, Self>) -> PyResult<PyProfilingScope> {
+    |                      ^^^ help: if this is intentional, prefix it with an underscore: `_slf`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `m`
+   --> src\interface\python.rs:312:5
+    |
+312 |     m: u32, n: u32, k: u32,
+    |     ^ help: if this is intentional, prefix it with an underscore: `_m`
+
+warning: unused variable: `n`
+   --> src\interface\python.rs:312:13
+    |
+312 |     m: u32, n: u32, k: u32,
+    |             ^ help: if this is intentional, prefix it with an underscore: `_n`
+
+warning: unused variable: `k`
+   --> src\interface\python.rs:312:21
+    |
+312 |     m: u32, n: u32, k: u32,
+    |                     ^ help: if this is intentional, prefix it with an underscore: `_k`
+
+warning: unused variable: `epilogue`
+   --> src\interface\python.rs:313:5
+    |
+313 |     epilogue: PyEpilogueOp,
+    |     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_epilogue`
+
+warning: unused variable: `device`
+   --> src\interface\python.rs:314:5
+    |
+314 |     device: String
+    |     ^^^^^^ help: if this is intentional, prefix it with an underscore: `_device`
+
+warning: unused variable: `m`
+   --> src\interface\python.rs:327:5
+    |
+327 |     m: u32, n: u32, k: u32,
+    |     ^ help: if this is intentional, prefix it with an underscore: `_m`
+
+warning: unused variable: `n`
+   --> src\interface\python.rs:327:13
+    |
+327 |     m: u32, n: u32, k: u32,
+    |             ^ help: if this is intentional, prefix it with an underscore: `_n`
+
+warning: unused variable: `k`
+   --> src\interface\python.rs:327:21
+    |
+327 |     m: u32, n: u32, k: u32,
+    |                     ^ help: if this is intentional, prefix it with an underscore: `_k`
+
+warning: unused variable: `device`
+   --> src\interface\python.rs:328:5
+    |
+328 |     device: String
+    |     ^^^^^^ help: if this is intentional, prefix it with an underscore: `_device`
+
+warning: unused variable: `row`
+  --> src\semantic\mapping.rs:20:28
+   |
+20 |     pub fn get_addr(&self, row: u32, col: u32) -> String {
+   |                            ^^^ help: if this is intentional, prefix it with an underscore: `_row`
+
+warning: unused variable: `col`
+  --> src\semantic\mapping.rs:20:38
+   |
+20 |     pub fn get_addr(&self, row: u32, col: u32) -> String {
+   |                                      ^^^ help: if this is intentional, prefix it with an underscore: `_col`
+
+warning: unused variable: `epilogue_code`
+   --> src\emitter\cuda.rs:213:13
+    |
+213 |         let epilogue_code = self.emit_epilogue(config.epilogue.as_slice(), "acc[i][j]");
+    |             ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_epilogue_code`
+
+warning: unused variable: `trans_suffix`
+   --> src\emitter\cuda.rs:448:21
+    |
+448 |                 let trans_suffix = if transposed { ".trans" } else { "" };
+    |                     ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_trans_suffix`
+
+For more information about this error, try `rustc --explain E0425`.
+warning: `tracea` (lib) generated 19 warnings
+error: could not compile `tracea` (lib) due to 2 previous errors; 19 warnings emitted

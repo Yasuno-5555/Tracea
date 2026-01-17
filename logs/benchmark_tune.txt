@@ -1,0 +1,18 @@
+Tracea JIT: Compiling gemm_pipelined_kernel...
+Tracea JIT: Verified MaxDynamicSharedMemory is now 99000 bytes
+Tracea JIT: Verified MaxDynamicSharedMemory is now 99000 bytes
+[Tracea] Benchmark Suite: Initializing for A100...
+[WARN] CUDA not detected in PyTorch. Running in simulation/verification mode.
+
+--- Phase C: Tensor Core Acceleration (The Enlightenment) ---
+Running 4096x4096x4096 Tensor Core GEMM...
+Warming up (TC JIT compilation)...
+Size 4096x4096 (TC): 4.244 ms (32.39 TFLOPS)
+
+--- Phase D: Bayesian Enlightenment (Auto-Tuning 4096x4096) ---
+Traceback (most recent call last):
+  File "E:\Projects\Tracea\benchmarks\masterpiece_bench.py", line 192, in <module>
+    bench.run_autotune_exploration(4096, iterations=15)
+  File "E:\Projects\Tracea\benchmarks\masterpiece_bench.py", line 148, in run_autotune_exploration
+    self.ctx.auto_tune(n, n, n, iterations)
+AttributeError: 'builtins.Context' object has no attribute 'auto_tune'

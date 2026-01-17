@@ -1,0 +1,31 @@
+﻿cargo :    Compiling cudarc v0.12.1
+発生場所 行:1 文字:1
++ cargo build --lib --release 2>&1 | Out-File build_log
+_6.txt -Encoding ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (   Compil 
+   ing cudarc v0.12.1:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+error: failed to run custom build command for `cudarc v
+0.12.1`
+
+Caused by:
+  process didn't exit successfully: `E:\Projects\Tracea
+\target\release\build\cudarc-69b7e79df00d554f\build-scr
+ipt-build` (exit code: 101)
+  --- stdout
+  cargo:rerun-if-changed=build.rs
+  cargo:rerun-if-env-changed=CUDA_ROOT
+  cargo:rerun-if-env-changed=CUDA_PATH
+  cargo:rerun-if-env-changed=CUDA_TOOLKIT_ROOT_DIR
+
+  --- stderr
+
+  thread 'main' (14728) panicked at C:\Users\kouno\.car
+go\registry\src\index.crates.io-1949cf8c6b5b557f\cudarc
+-0.12.1\build.rs:85:14:
+  Unsupported cuda toolkit version: `13.1`. Please rais
+e a github issue.
+  note: run with `RUST_BACKTRACE=1` environment variabl
+e to display a backtrace

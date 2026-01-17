@@ -1,0 +1,103 @@
+   Compiling tracea v0.1.0 (E:\Projects\Tracea)
+warning: unused imports: `PyRefMut` and `PyRef`
+ --> src\interface\python.rs:6:12
+  |
+6 | use pyo3::{PyRef, PyRefMut};
+  |            ^^^^^  ^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `cudarc::nvrtc::Ptx`
+ --> src\interface\python.rs:9:5
+  |
+9 | use cudarc::nvrtc::Ptx;
+  |     ^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::collections::HashSet`
+ --> src\semantic\mapping.rs:1:5
+  |
+1 | use std::collections::HashSet;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `cudarc::driver::LaunchAsync`
+ --> src\emitter\jit.rs:2:5
+  |
+2 | use cudarc::driver::LaunchAsync;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused variable: `slf`
+   --> src\interface\python.rs:162:22
+    |
+162 |     pub fn profiling(slf: &Bound<'_, Self>) -> PyResult<PyProfilingScope> {
+    |                      ^^^ help: if this is intentional, prefix it with an underscore: `_slf`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `m`
+   --> src\interface\python.rs:274:5
+    |
+274 |     m: u32, n: u32, k: u32,
+    |     ^ help: if this is intentional, prefix it with an underscore: `_m`
+
+warning: unused variable: `n`
+   --> src\interface\python.rs:274:13
+    |
+274 |     m: u32, n: u32, k: u32,
+    |             ^ help: if this is intentional, prefix it with an underscore: `_n`
+
+warning: unused variable: `k`
+   --> src\interface\python.rs:274:21
+    |
+274 |     m: u32, n: u32, k: u32,
+    |                     ^ help: if this is intentional, prefix it with an underscore: `_k`
+
+warning: unused variable: `epilogue`
+   --> src\interface\python.rs:275:5
+    |
+275 |     epilogue: PyEpilogueOp,
+    |     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_epilogue`
+
+warning: unused variable: `device`
+   --> src\interface\python.rs:276:5
+    |
+276 |     device: String
+    |     ^^^^^^ help: if this is intentional, prefix it with an underscore: `_device`
+
+warning: unused variable: `m`
+   --> src\interface\python.rs:289:5
+    |
+289 |     m: u32, n: u32, k: u32,
+    |     ^ help: if this is intentional, prefix it with an underscore: `_m`
+
+warning: unused variable: `n`
+   --> src\interface\python.rs:289:13
+    |
+289 |     m: u32, n: u32, k: u32,
+    |             ^ help: if this is intentional, prefix it with an underscore: `_n`
+
+warning: unused variable: `k`
+   --> src\interface\python.rs:289:21
+    |
+289 |     m: u32, n: u32, k: u32,
+    |                     ^ help: if this is intentional, prefix it with an underscore: `_k`
+
+warning: unused variable: `device`
+   --> src\interface\python.rs:290:5
+    |
+290 |     device: String
+    |     ^^^^^^ help: if this is intentional, prefix it with an underscore: `_device`
+
+warning: unused variable: `row`
+  --> src\semantic\mapping.rs:20:28
+   |
+20 |     pub fn get_addr(&self, row: u32, col: u32) -> String {
+   |                            ^^^ help: if this is intentional, prefix it with an underscore: `_row`
+
+warning: unused variable: `col`
+  --> src\semantic\mapping.rs:20:38
+   |
+20 |     pub fn get_addr(&self, row: u32, col: u32) -> String {
+   |                                      ^^^ help: if this is intentional, prefix it with an underscore: `_col`
+
+warning: `tracea` (lib) generated 16 warnings (run `cargo fix --lib -p tracea` to apply 16 suggestions)
+    Finished `release` profile [optimized] target(s) in 1.80s

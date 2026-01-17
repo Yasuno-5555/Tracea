@@ -1,0 +1,113 @@
+   Compiling tracea v0.1.0 (E:\Projects\Tracea)
+error[E0432]: unresolved imports `crate::emitter::HIPEmitter`, `crate::emitter::SYCLEmitter`
+  --> src\lib.rs:15:39
+   |
+15 | pub use crate::emitter::{CUDAEmitter, HIPEmitter, SYCLEmitter};
+   |                                       ^^^^^^^^^^  ^^^^^^^^^^^ no `SYCLEmitter` in `emitter`
+   |                                       |
+   |                                       no `HIPEmitter` in `emitter`
+   |                                       help: a similar name exists in the module: `Emitter`
+
+warning: unused imports: `PyRefMut` and `PyRef`
+ --> src\interface\python.rs:6:12
+  |
+6 | use pyo3::{PyRef, PyRefMut};
+  |            ^^^^^  ^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `cudarc::nvrtc::Ptx`
+ --> src\interface\python.rs:9:5
+  |
+9 | use cudarc::nvrtc::Ptx;
+  |     ^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::collections::HashSet`
+ --> src\semantic\mapping.rs:1:5
+  |
+1 | use std::collections::HashSet;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `cudarc::driver::LaunchAsync`
+ --> src\emitter\jit.rs:2:5
+  |
+2 | use cudarc::driver::LaunchAsync;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused variable: `slf`
+   --> src\interface\python.rs:160:22
+    |
+160 |     pub fn profiling(slf: &Bound<'_, Self>) -> PyResult<PyProfilingScope> {
+    |                      ^^^ help: if this is intentional, prefix it with an underscore: `_slf`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `m`
+   --> src\interface\python.rs:272:5
+    |
+272 |     m: u32, n: u32, k: u32,
+    |     ^ help: if this is intentional, prefix it with an underscore: `_m`
+
+warning: unused variable: `n`
+   --> src\interface\python.rs:272:13
+    |
+272 |     m: u32, n: u32, k: u32,
+    |             ^ help: if this is intentional, prefix it with an underscore: `_n`
+
+warning: unused variable: `k`
+   --> src\interface\python.rs:272:21
+    |
+272 |     m: u32, n: u32, k: u32,
+    |                     ^ help: if this is intentional, prefix it with an underscore: `_k`
+
+warning: unused variable: `epilogue`
+   --> src\interface\python.rs:273:5
+    |
+273 |     epilogue: PyEpilogueOp,
+    |     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_epilogue`
+
+warning: unused variable: `device`
+   --> src\interface\python.rs:274:5
+    |
+274 |     device: String
+    |     ^^^^^^ help: if this is intentional, prefix it with an underscore: `_device`
+
+warning: unused variable: `m`
+   --> src\interface\python.rs:287:5
+    |
+287 |     m: u32, n: u32, k: u32,
+    |     ^ help: if this is intentional, prefix it with an underscore: `_m`
+
+warning: unused variable: `n`
+   --> src\interface\python.rs:287:13
+    |
+287 |     m: u32, n: u32, k: u32,
+    |             ^ help: if this is intentional, prefix it with an underscore: `_n`
+
+warning: unused variable: `k`
+   --> src\interface\python.rs:287:21
+    |
+287 |     m: u32, n: u32, k: u32,
+    |                     ^ help: if this is intentional, prefix it with an underscore: `_k`
+
+warning: unused variable: `device`
+   --> src\interface\python.rs:288:5
+    |
+288 |     device: String
+    |     ^^^^^^ help: if this is intentional, prefix it with an underscore: `_device`
+
+warning: unused variable: `row`
+  --> src\semantic\mapping.rs:20:28
+   |
+20 |     pub fn get_addr(&self, row: u32, col: u32) -> String {
+   |                            ^^^ help: if this is intentional, prefix it with an underscore: `_row`
+
+warning: unused variable: `col`
+  --> src\semantic\mapping.rs:20:38
+   |
+20 |     pub fn get_addr(&self, row: u32, col: u32) -> String {
+   |                                      ^^^ help: if this is intentional, prefix it with an underscore: `_col`
+
+For more information about this error, try `rustc --explain E0432`.
+warning: `tracea` (lib) generated 16 warnings
+error: could not compile `tracea` (lib) due to 1 previous error; 16 warnings emitted

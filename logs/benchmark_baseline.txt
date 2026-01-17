@@ -1,0 +1,6 @@
+Traceback (most recent call last):
+  File "E:\Projects\Tracea\benchmarks\masterpiece_bench.py", line 115, in <module>
+    bench = TraceaBenchmark("A100")
+  File "E:\Projects\Tracea\benchmarks\masterpiece_bench.py", line 41, in __init__
+    print(f"\U0001f3db\ufe0f  Tracea Benchmark Suite: Initializing for {device_name}...")
+UnicodeEncodeError: 'cp932' codec can't encode character '\U0001f3db' in position 0: illegal multibyte sequence

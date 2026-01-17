@@ -1,0 +1,146 @@
+   Compiling tracea v0.1.0 (E:\Projects\Tracea)
+warning: unused imports: `PyRefMut` and `PyRef`
+ --> src\interface\python.rs:6:12
+  |
+6 | use pyo3::{PyRef, PyRefMut};
+  |            ^^^^^  ^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `cudarc::nvrtc::Ptx`
+ --> src\interface\python.rs:9:5
+  |
+9 | use cudarc::nvrtc::Ptx;
+  |     ^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::collections::HashSet`
+ --> src\semantic\mapping.rs:1:5
+  |
+1 | use std::collections::HashSet;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::semantic::swizzle::SwizzleMode`
+ --> src\emitter\cuda.rs:3:5
+  |
+3 | use crate::semantic::swizzle::SwizzleMode;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `cudarc::driver::LaunchAsync`
+ --> src\emitter\jit.rs:2:5
+  |
+2 | use cudarc::driver::LaunchAsync;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused variable: `slf`
+   --> src\interface\python.rs:204:22
+    |
+204 |     pub fn profiling(slf: &Bound<'_, Self>) -> PyResult<PyProfilingScope> {
+    |                      ^^^ help: if this is intentional, prefix it with an underscore: `_slf`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `m`
+   --> src\interface\python.rs:345:5
+    |
+345 |     m: u32, n: u32, k: u32,
+    |     ^ help: if this is intentional, prefix it with an underscore: `_m`
+
+warning: unused variable: `n`
+   --> src\interface\python.rs:345:13
+    |
+345 |     m: u32, n: u32, k: u32,
+    |             ^ help: if this is intentional, prefix it with an underscore: `_n`
+
+warning: unused variable: `k`
+   --> src\interface\python.rs:345:21
+    |
+345 |     m: u32, n: u32, k: u32,
+    |                     ^ help: if this is intentional, prefix it with an underscore: `_k`
+
+warning: unused variable: `epilogue`
+   --> src\interface\python.rs:346:5
+    |
+346 |     epilogue: PyEpilogueOp,
+    |     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_epilogue`
+
+warning: unused variable: `device`
+   --> src\interface\python.rs:347:5
+    |
+347 |     device: String
+    |     ^^^^^^ help: if this is intentional, prefix it with an underscore: `_device`
+
+warning: unused variable: `m`
+   --> src\interface\python.rs:360:5
+    |
+360 |     m: u32, n: u32, k: u32,
+    |     ^ help: if this is intentional, prefix it with an underscore: `_m`
+
+warning: unused variable: `n`
+   --> src\interface\python.rs:360:13
+    |
+360 |     m: u32, n: u32, k: u32,
+    |             ^ help: if this is intentional, prefix it with an underscore: `_n`
+
+warning: unused variable: `k`
+   --> src\interface\python.rs:360:21
+    |
+360 |     m: u32, n: u32, k: u32,
+    |                     ^ help: if this is intentional, prefix it with an underscore: `_k`
+
+warning: unused variable: `device`
+   --> src\interface\python.rs:361:5
+    |
+361 |     device: String
+    |     ^^^^^^ help: if this is intentional, prefix it with an underscore: `_device`
+
+warning: unused variable: `row`
+  --> src\semantic\mapping.rs:20:28
+   |
+20 |     pub fn get_addr(&self, row: u32, col: u32) -> String {
+   |                            ^^^ help: if this is intentional, prefix it with an underscore: `_row`
+
+warning: unused variable: `col`
+  --> src\semantic\mapping.rs:20:38
+   |
+20 |     pub fn get_addr(&self, row: u32, col: u32) -> String {
+   |                                      ^^^ help: if this is intentional, prefix it with an underscore: `_col`
+
+warning: unused variable: `epilogue_code`
+   --> src\emitter\cuda.rs:213:13
+    |
+213 |         let epilogue_code = self.emit_epilogue(config.epilogue.as_slice(), "acc[i][j]");
+    |             ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_epilogue_code`
+
+warning: unused variable: `trans_suffix`
+   --> src\emitter\cuda.rs:446:21
+    |
+446 |                 let trans_suffix = if transposed { ".trans" } else { "" };
+    |                     ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_trans_suffix`
+
+error[E0382]: use of moved value: `kernel`
+  --> src\optimizer\benchmark.rs:99:17
+   |
+40 | ...   let kernel = match self.jit.compile_cuda(&source, kernel_name) {
+   |           ------ move occurs because `kernel` has type `CudaFunction`, which does not implement the `Copy` trait
+...
+97 | ...   for _ in 0..iterations {
+   |       ---------------------- inside of this loop
+98 | ...       unsafe {
+99 | ...           kernel.launch(launch_config, (*a.device_ptr(), *b.device_ptr(), *c.device_ptr(), self.m as i32, self.n as i32, self.k as i3...
+   |               ^^^^^^ value moved here, in previous iteration of loop
+   |
+help: consider moving the expression out of the loop so it is only moved once
+   |
+97 ~         let mut value = kernel.launch(launch_config, (*a.device_ptr(), *b.device_ptr(), *c.device_ptr(), self.m as i32, self.n as i32, self.k as i32));
+98 ~         for _ in 0..iterations {
+99 |             unsafe {
+100~                 value.unwrap();
+   |
+help: consider cloning the value if the performance cost is acceptable
+   |
+99 |                 kernel.clone().launch(launch_config, (*a.device_ptr(), *b.device_ptr(), *c.device_ptr(), self.m as i32, self.n as i32, self.k as i32)).unwrap();
+   |                       ++++++++
+
+For more information about this error, try `rustc --explain E0382`.
+warning: `tracea` (lib) generated 19 warnings
+error: could not compile `tracea` (lib) due to 1 previous error; 19 warnings emitted

@@ -1,0 +1,56 @@
+Tracea JIT: Compiling gemm_pipelined_kernel...
+Tracea JIT: Verified MaxDynamicSharedMemory is now 99000 bytes
+Tracea JIT: Verified MaxDynamicSharedMemory is now 99000 bytes
+[Tracea] Auto-tuning for 4096x4096x4096 (15 iterations)...
+Tracea JIT: Verified MaxDynamicSharedMemory is now 32768 bytes
+Tracea JIT: Verified MaxDynamicSharedMemory is now 65536 bytes
+[Tracea] Testing 128x128x32 (4 stages) -> 14.42 TFLOPS, 9.529 ms (Score: 14.42)
+Tracea JIT: Verified MaxDynamicSharedMemory is now 32768 bytes
+[Tracea] Testing 128x128x32 (2 stages) -> 20.82 TFLOPS, 6.601 ms (Score: 20.82)
+Tracea JIT: Verified MaxDynamicSharedMemory is now 49152 bytes
+[Tracea] Testing 128x128x32 (3 stages) -> 22.70 TFLOPS, 6.054 ms (Score: 22.70)
+Tracea JIT: Compiling gemm_pipelined_kernel...
+Tracea JIT: Verified MaxDynamicSharedMemory is now 8192 bytes
+[Tracea] Testing  64x 64x16 (2 stages) -> 18.63 TFLOPS, 7.376 ms (Score: 18.63)
+Tracea JIT: Verified MaxDynamicSharedMemory is now 16384 bytes
+[Tracea] Testing  64x 64x16 (4 stages) -> 18.05 TFLOPS, 7.615 ms (Score: 18.05)
+Tracea JIT: Verified MaxDynamicSharedMemory is now 12288 bytes
+[Tracea] Testing  64x 64x16 (3 stages) -> 18.58 TFLOPS, 7.397 ms (Score: 18.58)
+Tracea JIT: Verified MaxDynamicSharedMemory is now 8192 bytes
+[Tracea] Testing  64x 64x16 (2 stages) -> 18.40 TFLOPS, 7.468 ms (Score: 18.40)
+Tracea JIT: Verified MaxDynamicSharedMemory is now 8192 bytes
+[Tracea] Testing  64x 64x16 (2 stages) -> 18.32 TFLOPS, 7.502 ms (Score: 18.32)
+Tracea JIT: Verified MaxDynamicSharedMemory is now 8192 bytes
+[Tracea] Testing  64x 64x16 (2 stages) -> 18.32 TFLOPS, 7.502 ms (Score: 18.32)
+Tracea JIT: Verified MaxDynamicSharedMemory is now 8192 bytes
+[Tracea] Testing  64x 64x16 (2 stages) -> 18.50 TFLOPS, 7.429 ms (Score: 18.50)
+Tracea JIT: Verified MaxDynamicSharedMemory is now 8192 bytes
+[Tracea] Testing  64x 64x16 (2 stages) -> 17.72 TFLOPS, 7.758 ms (Score: 17.72)
+Tracea JIT: Verified MaxDynamicSharedMemory is now 8192 bytes
+[Tracea] Testing  64x 64x16 (2 stages) -> 18.38 TFLOPS, 7.477 ms (Score: 18.38)
+Tracea JIT: Verified MaxDynamicSharedMemory is now 8192 bytes
+[Tracea] Testing  64x 64x16 (2 stages) -> 17.66 TFLOPS, 7.782 ms (Score: 17.66)
+Tracea JIT: Verified MaxDynamicSharedMemory is now 8192 bytes
+[Tracea] Testing  64x 64x16 (2 stages) -> 17.51 TFLOPS, 7.851 ms (Score: 17.51)
+Tracea JIT: Verified MaxDynamicSharedMemory is now 8192 bytes
+[Tracea] Testing  64x 64x16 (2 stages) -> 17.04 TFLOPS, 8.064 ms (Score: 17.04)
+[Tracea] 💾 Tuning complete. Optimal config saved for 4096x4096x4096
+Tracea JIT: Verified MaxDynamicSharedMemory is now 99000 bytes
+Tracea JIT: Verified MaxDynamicSharedMemory is now 99000 bytes
+[Tracea] Benchmark Suite: Initializing for A100...
+[WARN] CUDA not detected in PyTorch. Running in simulation/verification mode.
+
+--- Phase C: Tensor Core Acceleration (The Enlightenment) ---
+Running 4096x4096x4096 Tensor Core GEMM...
+Warming up (TC JIT compilation)...
+Size 4096x4096 (TC): 6.569 ms (20.92 TFLOPS)
+
+--- Phase D: Bayesian Enlightenment (Auto-Tuning 4096x4096) ---
+Tuning Session Complete in 0.63 seconds.
+Measuring the Auto-Tuned Winner...
+Auto-Tuned Result: 22.49 TFLOPS
+
+[Tracea] Final Tracea Mastery Report
+   Size           Op Backend     TFLOPS
+0  4096    Matmul-TC  Tracea  20.923630
+1  4096  Matmul-Auto  Tracea  22.488579

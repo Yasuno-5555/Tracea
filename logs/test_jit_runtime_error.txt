@@ -1,0 +1,122 @@
+warning: unused import: `crate::emitter::CUDAEmitter`
+ --> src\interface\python.rs:4:5
+  |
+4 | use crate::emitter::CUDAEmitter;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `crate::emitter::jit::JITCompiler`
+ --> src\interface\python.rs:5:5
+  |
+5 | use crate::emitter::jit::JITCompiler;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `PyRefMut` and `PyRef`
+ --> src\interface\python.rs:6:12
+  |
+6 | use pyo3::{PyRef, PyRefMut};
+  |            ^^^^^  ^^^^^^^^
+
+warning: unused imports: `LaunchAsync` and `LaunchConfig`
+ --> src\interface\python.rs:8:45
+  |
+8 | ...udaSlice, LaunchAsync, LaunchConfig};
+  |              ^^^^^^^^^^^  ^^^^^^^^^^^^
+
+warning: unused import: `cudarc::nvrtc::Ptx`
+ --> src\interface\python.rs:9:5
+  |
+9 | use cudarc::nvrtc::Ptx;
+  |     ^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::collections::HashSet`
+ --> src\semantic\mapping.rs:1:5
+  |
+1 | use std::collections::HashSet;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused variable: `slf`
+  --> src\interface\python.rs:94:22
+   |
+94 | ...pub fn profiling(slf: &Bound<'_, Self>) -> P...
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_slf`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `m`
+   --> src\interface\python.rs:206:5
+    |
+206 |     m: u32, n: u32, k: u32,
+    |     ^ help: if this is intentional, prefix it with an underscore: `_m`
+
+warning: unused variable: `n`
+   --> src\interface\python.rs:206:13
+    |
+206 |     m: u32, n: u32, k: u32,
+    |             ^ help: if this is intentional, prefix it with an underscore: `_n`
+
+warning: unused variable: `k`
+   --> src\interface\python.rs:206:21
+    |
+206 |     m: u32, n: u32, k: u32,
+    |                     ^ help: if this is intentional, prefix it with an underscore: `_k`
+
+warning: unused variable: `epilogue`
+   --> src\interface\python.rs:207:5
+    |
+207 |     epilogue: PyEpilogueOp,
+    |     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_epilogue`
+
+warning: unused variable: `device`
+   --> src\interface\python.rs:208:5
+    |
+208 |     device: String
+    |     ^^^^^^ help: if this is intentional, prefix it with an underscore: `_device`
+
+warning: unused variable: `m`
+   --> src\interface\python.rs:221:5
+    |
+221 |     m: u32, n: u32, k: u32,
+    |     ^ help: if this is intentional, prefix it with an underscore: `_m`
+
+warning: unused variable: `n`
+   --> src\interface\python.rs:221:13
+    |
+221 |     m: u32, n: u32, k: u32,
+    |             ^ help: if this is intentional, prefix it with an underscore: `_n`
+
+warning: unused variable: `k`
+   --> src\interface\python.rs:221:21
+    |
+221 |     m: u32, n: u32, k: u32,
+    |                     ^ help: if this is intentional, prefix it with an underscore: `_k`
+
+warning: unused variable: `device`
+   --> src\interface\python.rs:222:5
+    |
+222 |     device: String
+    |     ^^^^^^ help: if this is intentional, prefix it with an underscore: `_device`
+
+warning: unused variable: `device`
+  --> src\interface\cpp.rs:12:9
+   |
+12 |     let device = c_str.to_str().unwrap_or("A100...
+   |         ^^^^^^ help: if this is intentional, prefix it with an underscore: `_device`
+
+warning: unused variable: `row`
+  --> src\semantic\mapping.rs:20:28
+   |
+20 | ... get_addr(&self, row: u32, col: u32) -> Stri...
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_row`
+
+warning: unused variable: `col`
+  --> src\semantic\mapping.rs:20:38
+   |
+20 | ...&self, row: u32, col: u32) -> String {
+   |                     ^^^ help: if this is intentional, prefix it with an underscore: `_col`
+
+warning: `tracea` (lib test) generated 19 warnings (run `cargo fix --lib -p tracea --tests` to apply 19 suggestions)
+    Finished `release` profile [optimized] target(s) in 0.10s
+     Running unittests src\lib.rs (target\release\deps\tracea-514f89bfe470e16a.exe)
+error: test failed, to rerun pass `--lib`

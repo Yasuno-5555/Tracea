@@ -1,95 +1,108 @@
 # Tracea: Mathematically Unified GPU Optimization 🏛️✨
 
-**Tracea** is a world-first universal GPU kernel optimization framework designed to bridge the gap between architectural diversity and peak performance. By leveraging a high-level **Semantic IR**, Tracea generates mathematically verified, high-performance kernels for **NVIDIA (CUDA)**, **AMD (HIP)**, and **Intel (SYCL)** from a single logical definition.
+**Tracea** is a production-grade universal GPU kernel optimization framework. It transforms high-level **Semantic IR** into mathematically verified, high-performance kernels for **NVIDIA (CUDA)**. By leveraging asynchronous pipelining, Tensor Core acceleration, and Bayesian auto-tuning, Tracea achieves "Zero-Configuration" peak performance.
 
 ---
 
 ## 🚀 Key Features
 
-- **Multi-Vendor Pipelining**: Generate 4+ stage asynchronous pipelined GEMM kernels for Tensor Cores, Matrix Cores (v_mfma), and XMX (sub-group matrix).
-- **Bayesian Auto-Tuning**: Hardware-aware search using Gaussian Processes to find the optimal tile size and swizzle patterns in seconds.
-- **TorchDynamo Fusion**: A `torch.compile` backend that automatically fuses Matmul with activations (ReLU, Gelu, BiasAdd) into single-kernel epilogues.
-- **Zero-Copy Interop**: Direct integration with PyTorch via PyO3, sharing data pointers without overhead.
-- **Dual Interface**: Premium Python bindings (PyO3) and high-performance C++ RAII headers (`tracea.hpp`).
+- **Persistent Bayesian Auto-Tuning**: Hardware-aware search using Gaussian Processes. Optimal configurations are stored in an intelligent cache (`.tracea/tuning_cache.json`) for sub-millisecond reuse.
+- **Environment-Aware Isolation**: Automatic cache invalidation based on CUDA version, Driver version, and precise SM architecture (stepping). Your optimizations are always "environment-safe."
+- **Safe & Robust FFI**: Protected GPU memory handling via `PyDeviceBuffer`, preventing segmentation faults and undefined behavior.
+- **Graph-Level Intelligence**: Optimize entire sequences of operations using priority-based scheduling and cross-node configuration reuse.
+- **Multi-Objective Optimization**: Tailor your "Masterpiece." Optimize for raw **TFLOPS**, minimal **Latency**, or a balanced utility score.
+- **Fused Epilogue Mastery**: High-performance fusion of BiasAdd, ReLU, and Gelu directly into Tensor Core GEMM kernels.
 
 ---
 
-## 🏗️ Architecture: The 6-Layer Tracea Model
+## 📦 Installation
 
-Tracea's design is strictly layered to separate logical meaning from physical execution:
+Tracea requires **Rust (Cargo)**, **Python 3.8+**, and **CUDA Toolkit (11.x or 12.x)**.
 
-1. **L1: User Interface** (Python/C++/Core API)
-2. **L2: Core IR** (Pipelined Op Definitions)
-3. **L3: Semantic IR** (Phase Cyclicity, Swizzle Modes, Lane Mapping)
-4. **L4: Optimized IR** (Auto-tuned Hardware-aware configurations)
-5. **L5: Universal Emitters** (CUDA, HIP, SYCL Code Generation)
-6. **L6: Optimizer** (Bayesian Auto-tuner, Micro-benchmarks)
+1.  **Build the Library**:
+    ```bash
+    cargo build --lib --release
+    ```
+2.  **Install Python Module**:
+    Copy the generated artifact to your project or install:
+    ```bash
+    # Windows
+    copy target\release\tracea.dll tracea.pyd
+    
+    # Linux/Mac
+    cp target/release/libtracea.so tracea.so
+    ```
 
 ---
 
 ## 🐍 Python Usage
 
+### 1. Initialize Context
 ```python
-import torch
 import tracea
-from tracea.backend import compile
+import torch
 
-# 1. Define your model
-class Model(torch.nn.Module):
-    def forward(self, x, w):
-        return torch.relu(torch.mm(x, w))
-
-# 2. Compile with Tracea backend
-model = Model()
-optimized_model = torch.compile(model, backend="tracea")
-
-# 3. Execute (Tracea captures and fuses mm + relu)
-y = optimized_model(x_gpu, w_gpu)
+# Create context (auto-detects GPU)
+ctx = tracea.Context("GeForce RTX 3070")
 ```
 
-## 🏛️ C++ Usage
+### 2. **NEW: Safe Memory Management**
+To ensure safety, Tracea now requires explicit device buffers. You can create them zero-copy from PyTorch pointers.
 
-```cpp
-#include <tracea.hpp>
+```python
+# Create PyTorch tensors
+a = torch.randn(1024, 1024, device="cuda", dtype=torch.float16) # FP16 for Tensor Cores
+b = torch.randn(1024, 1024, device="cuda", dtype=torch.float16)
 
-int main() {
-    auto ctx = tracea::Context("A100");
-    
-    // Execute Matmul + Bias + ReLU fusion
-    ctx.execute(a_ptr, b_ptr, c_ptr, M, N, K, 
-                {tracea::Epilogue::BiasAdd, tracea::Epilogue::ReLU});
-    
-    return 0;
-}
+# Wrap safely for Tracea (Zero-Copy)
+# Note: Tensor Cores require U16/Half buffers for inputs
+a_buf = tracea.PyDeviceBufferU16.unsafe_from_ptr(a.data_ptr(), a.numel(), ctx)
+b_buf = tracea.PyDeviceBufferU16.unsafe_from_ptr(b.data_ptr(), b.numel(), ctx)
+c_buf = ctx.scratch_c # Use internal scratchpad or wrap your own F32 output
 ```
 
-## 📚 Documentation
+### 3. Graph Optimization (The Masterpiece)
+```python
+# Define Computation Graph
+graph = tracea.Graph()
+graph.add_gemm(4096, 4096, 4096)
+graph.add_gemm(1024, 1024, 1024)
 
-For more in-depth information, please refer to the following guides:
+# Optimize (Bayesian Search + Persistence)
+ctx.optimize_graph(graph, iterations=15, goal=tracea.OptimizationGoal.MaximizeTFLOPS)
+```
 
-- [**Architecture Deep Dive**](docs/ARCHITECTURE.md): Understanding the 6-layer model.
-- [**API Usage Guide**](docs/API_USAGE.md): Detailed Python, C++, and Rust examples.
-- [**Developer Guide**](docs/DEVELOPER_GUIDE.md): Extending backends and epilogues.
-- [**Optimization & Tuning**](docs/OPTIMIZATION.md): How Tracea achieves peak performance.
-
----
-
-## 🛠️ Build & Development
-
-Requires Rust 2024 and the respective vendor SDKs (CUDA, ROCm, or oneAPI).
-
-```powershell
-# Build the Rust core and Python bindings
-cargo build --release
-
-# Run internal benchmarks and tests
-cargo run --bin tracea
+### 4. Execute Kernel
+```python
+# Execute using optimized config from cache
+# Matmul now takes safe buffers, NOT integer pointers
+ctx.matmul(a_buf, b_buf, c_buf, 1024, 1024, 1024, tracea.Epilogue())
+ctx.synchronize()
 ```
 
 ---
 
-## 🏛️ Project Philosophy
+## 🏗️ Architecture
 
-Tracea is built on the belief that **mathematics is the ultimate bridge**. We don't write kernels; we define the **group-theoretic properties** of hardware lanes and the **phasic transitions** of asynchronous pipes. The code is not "written"—it is "solved."
+Tracea's design separates logical meaning from physical execution:
 
-**The Revolution is Accomplished.** 🏛️🚀
+1. **L1: User Interface**: Premium Python (PyO3) and Rust APIs.
+2. **L2: Core IR**: Pipelined Op and Graph definitions.
+3. **L3: Semantic IR**: Phase Cyclicity, Swizzle Modes, and Lane Mapping.
+4. **L4: Optimized IR**: Bayesian-searched Hardware-aware configurations.
+5. **L5: Universal Emitters**: High-performance CUDA code generation (PTX/SASS-ready).
+6. **L6: Optimizer**: Persistent Bayesian tuner with Environment-aware profiling.
+
+---
+
+## 📂 Project Structure
+
+- `src/`: Rust source code (Core, Optimizer, Emitter, Interface).
+- `benchmarks/`: Python scripts for performance testing.
+- `scripts/`: Utility and test scripts (`verify_fix.py`).
+- `logs/`: Build logs and benchmark results.
+- `.tracea/`: Persistent tuning cache.
+
+---
+
+**The Revolution is Disciplined. Peak Performance is Persistent.** 🏛️🚀
