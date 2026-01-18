@@ -1,66 +1,32 @@
 {
-  "NVIDIA GeForce RTX 3070:1024:1024:1024:f16:13.1:13.0:86": {
-    "num_stages": 3,
+  "NVIDIA GeForce RTX 3070:128:128:128:f16::13.1:13.0:86": {
+    "num_stages": 2,
     "m_tile": 128,
     "n_tile": 128,
     "k_tile": 32,
     "use_tensor_cores": true,
+    "swizzle_mode": "None",
+    "quantization": "None",
     "epilogue": []
   },
-  "NVIDIA A100:4096:4096:4096:f16": {
-    "num_stages": 3,
-    "m_tile": 128,
-    "n_tile": 128,
-    "k_tile": 32,
-    "use_tensor_cores": true,
-    "epilogue": []
-  },
-  "NVIDIA GeForce RTX 3070:512:512:512:f16": {
+  "NVIDIA GeForce RTX 3070:16:16:16:f16::13.1:13.0:86": {
     "num_stages": 2,
     "m_tile": 64,
     "n_tile": 64,
     "k_tile": 16,
     "use_tensor_cores": true,
+    "swizzle_mode": "None",
+    "quantization": "None",
     "epilogue": []
   },
-  "NVIDIA GeForce RTX 3070:4096:4096:4096:f16:13.1:13.0:86": {
-    "num_stages": 3,
-    "m_tile": 128,
-    "n_tile": 128,
-    "k_tile": 32,
-    "use_tensor_cores": true,
-    "epilogue": []
-  },
-  "NVIDIA GeForce RTX 3070:4096:4096:4096:f16": {
-    "num_stages": 3,
-    "m_tile": 128,
-    "n_tile": 128,
-    "k_tile": 32,
-    "use_tensor_cores": true,
-    "epilogue": []
-  },
-  "NVIDIA A100:4096:4096:4096:f16:13.1:13.0:86": {
-    "num_stages": 3,
-    "m_tile": 128,
-    "n_tile": 128,
-    "k_tile": 32,
-    "use_tensor_cores": true,
-    "epilogue": []
-  },
-  "NVIDIA A100:4096:4096:4096:f16:12.x:13.0:86": {
+  "NVIDIA GeForce RTX 3070:32:16:16:f16::13.1:13.0:86": {
     "num_stages": 2,
-    "m_tile": 128,
-    "n_tile": 128,
-    "k_tile": 32,
+    "m_tile": 64,
+    "n_tile": 64,
+    "k_tile": 16,
     "use_tensor_cores": true,
-    "epilogue": []
-  },
-  "NVIDIA GeForce RTX 3070:2048:2048:2048:f16:13.1:13.0:86": {
-    "num_stages": 3,
-    "m_tile": 128,
-    "n_tile": 128,
-    "k_tile": 32,
-    "use_tensor_cores": true,
+    "swizzle_mode": "None",
+    "quantization": "None",
     "epilogue": []
   }
 }

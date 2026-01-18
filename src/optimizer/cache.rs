@@ -1,7 +1,7 @@
 use serde::{Serialize, Deserialize};
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use crate::core::config::PipelineConfig;
 
 #[derive(Serialize, Deserialize, Hash, PartialEq, Eq, Clone, Debug)]
@@ -11,6 +11,7 @@ pub struct CacheKey {
     pub n: u32,
     pub k: u32,
     pub dtype: String,
+    pub epilogue: Vec<crate::core::op::EpilogueOp>,
     // Environment Invalidation
     pub cuda_version: String,
     pub driver_version: String,
@@ -26,20 +27,30 @@ pub struct TuningCache {
 
 impl TuningCache {
     pub fn new() -> Self {
+        eprintln!("[Tracea] 📁 Initializing Tuning Cache...");
         let mut path = PathBuf::from(".tracea");
         if !path.exists() {
+            eprintln!("[Tracea] 📁 Creating .tracea directory...");
             let _ = fs::create_dir_all(&path);
         }
         path.push("tuning_cache.json");
+        eprintln!("[Tracea] 📁 Cache Path: {:?}", path);
         
         if path.exists() {
+            eprintln!("[Tracea] 📁 Loading existing cache...");
             if let Ok(content) = fs::read_to_string(&path) {
                 if let Ok(entries) = serde_json::from_str::<HashMap<String, PipelineConfig>>(&content) {
+                   eprintln!("[Tracea] 📁 Cache loaded with {} entries.", entries.len());
                    return Self { entries, file_path: path };
+                } else {
+                    eprintln!("[Tracea] ⚠️  Warning: Failed to deserialize cache. JSON might be corrupt.");
                 }
+            } else {
+                eprintln!("[Tracea] ⚠️  Warning: Failed to read cache file.");
             }
         }
         
+        eprintln!("[Tracea] 📁 Initializing new empty cache.");
         Self {
             entries: HashMap::new(),
             file_path: path,
@@ -47,7 +58,24 @@ impl TuningCache {
     }
 
     fn make_key(key: &CacheKey) -> String {
-        format!("{}:{}:{}:{}:{}:{}:{}:{}", key.gpu, key.m, key.n, key.k, key.dtype, key.cuda_version, key.driver_version, key.sm_arch)
+        eprintln!("[Tracea] 🔑 Generating Cache Key...");
+        // Normalize epilogue: remove pointers for caching
+        let normalized_epilogue: Vec<String> = key.epilogue.iter().map(|op| {
+            match op {
+                crate::core::op::EpilogueOp::None => "none".to_string(),
+                crate::core::op::EpilogueOp::BiasAdd { .. } => "bias".to_string(),
+                crate::core::op::EpilogueOp::ReLU => "relu".to_string(),
+                crate::core::op::EpilogueOp::Gelu => "gelu".to_string(),
+            }
+        }).collect();
+        let epi_str = normalized_epilogue.join(",");
+        eprintln!("[Tracea] 🔑 Normalized Epilogue: {}", epi_str);
+
+        let s_key = format!("{}:{}:{}:{}:{}:{}:{}:{}:{}", 
+            key.gpu, key.m, key.n, key.k, key.dtype, epi_str,
+            key.cuda_version, key.driver_version, key.sm_arch);
+        eprintln!("[Tracea] 🔑 Final Key: {}", s_key);
+        s_key
     }
 
     pub fn get(&self, key: &CacheKey) -> Option<PipelineConfig> {

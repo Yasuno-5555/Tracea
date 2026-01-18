@@ -8,20 +8,20 @@ Tracea provides three primary interfaces: **Python (High-level)**, **C++ (System
 
 The Python API combines stateful context management with a declarative fusion builder.
 
-### 1. `tracea.Context` & Pipe-style Fusion
+### 1. `tracea.Context` & Hardware Auto-Detection
 ```python
 import tracea
 
-# Initialize context
-ctx = tracea.Context("A100")
+# Initialize context (Doctor automatically detects CUDA/ROCm/Metal/CPU)
+ctx = tracea.Context()
 
-# Create a fusion pipe using the builder or >> operator
-pipeline = tracea.Epilogue().bias_add(b_ptr).relu()
-# OR
-# pipeline = tracea.BiasAdd(b_ptr) >> tracea.ReLU()
+# Plan a specific kernel variant (e.g., FlashAttention-2)
+decision = ctx.plan_kernel("flash_attention_2", precision="BF16")
+print(f"Executing {decision.variant_id} on {decision.backend}")
 
+# Execute using safe buffers
 with ctx.profiling():
-    ctx.matmul(a_ptr, b_ptr, c_ptr, 1024, 1024, 1024, pipeline)
+    ctx.matmul(a_buf, b_buf, c_buf, 4096, 4096, 4096)
 ```
 
 ---
@@ -30,22 +30,18 @@ with ctx.profiling():
 
 Modern RAII-based interface with type-safety for dimensions and pointers.
 
-### 1. `tracea::Context` & `tracea::Shape`
+### 1. `tracea::Context` (Hardware Agnostic)
 ```cpp
 #include <tracea.hpp>
 
-tracea::Context ctx("A100");
+// Doctor detects the best platform automatically
+tracea::Context ctx(); 
 
-// Explicit shape structure to avoid parameter swap errors
-tracea::Shape shape{.m=1024, .n=1024, .k=1024};
+// Explicit shape structure
+tracea::Shape shape{.m=4096, .n=4096, .k=4096};
 
-// Type-safe descriptors with structured parameters
-auto ops = {
-    tracea::bias_add(bias_ptr),
-    tracea::relu()
-};
-
-ctx.execute(a, b, c, shape, ops);
+// Launch - The system chooses the best backend-specific implementation
+ctx.execute_gemm(a, b, c, shape);
 ```
 
 ---

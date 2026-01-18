@@ -5,12 +5,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::ffi::c_void;
 
-// Function signatures for CUDA Driver API
-type CuFuncSetAttribute = unsafe extern "system" fn(*mut c_void, i32, i32) -> i32;
-type CuFuncGetAttribute = unsafe extern "system" fn(*mut i32, i32, *mut c_void) -> i32;
 
 pub struct JITCompiler {
     pub device: Arc<CudaDevice>,
+    pub emitter: crate::emitter::cuda::CUDAEmitter,
     kernel_cache: Mutex<HashMap<String, CudaFunction>>,
     module_counter: Mutex<u32>,
 }
@@ -20,10 +18,9 @@ impl JITCompiler {
         let device = CudaDevice::new(0)
             .map_err(|e| format!("CUDA Init Error: {:?}", e))?;
         
-        // println!("Tracea JIT: Device Compute Capability: {}", Self::get_compute_capability(&device).unwrap_or(0));
-        
         Ok(Self {
             device,
+            emitter: crate::emitter::cuda::CUDAEmitter::new(),
             kernel_cache: Mutex::new(HashMap::new()),
             module_counter: Mutex::new(0),
         })
@@ -39,18 +36,22 @@ impl JITCompiler {
     }
 
     pub fn compile_cuda(&self, source: &str, kernel_name: &str) -> Result<CudaFunction, String> {
+        eprintln!("[Tracea Debug] ENTERING compile_cuda for {}", kernel_name);
+        let cwd = std::env::current_dir().unwrap_or_default();
+        eprintln!("[Tracea Debug] CWD: {:?}", cwd);
+
         let cache_key = format!("{}:{}", kernel_name, source.len());
-        {
             let cache = self.kernel_cache.lock().unwrap();
             if let Some(kernel) = cache.get(&cache_key) {
                 return Ok(kernel.clone());
             }
-        }
         
-        println!("Tracea JIT: Compiling {}...", kernel_name);
         
         let compute_cap = Self::get_compute_capability(&self.device).unwrap_or(75);
-        let arch = format!("compute_{}", compute_cap);
+        // Cap at 80 because some NVRTC versions in the path might not support 86
+        // But we need at least 80 for cp.async
+        let effective_cap = if compute_cap > 80 { 80 } else { compute_cap };
+        let arch = format!("compute_{}", effective_cap);
         let arch_static = Box::leak(arch.into_boxed_str());
         
         let opts = CompileOptions {
@@ -66,10 +67,41 @@ impl JITCompiler {
             .map_err(|e| format!("NVRTC Error: {:?}", e))?;
             
         let mut ptx_src = ptx.to_src();
-        if ptx_src.contains(".version 9.") {
-             ptx_src = ptx_src.replace(".version 9.1", ".version 7.8");
-             ptx_src = ptx_src.replace(".version 9.0", ".version 7.8");
+        let mut ptx_src = ptx.to_src();
+        let mut ptx_src = ptx.to_src();
+        
+        // Robust PTX Version Patching
+        let mut lines: Vec<&str> = ptx_src.lines().collect();
+        let mut new_lines = Vec::new();
+        
+        eprintln!("[Tracea Debug] PTX Dump Head:");
+        for (i, line) in lines.iter().take(5).enumerate() {
+            eprintln!("  L{}: {}", i, line);
         }
+
+        for line in lines {
+            if line.trim().starts_with(".version") {
+                eprintln!("[Tracea Debug] Replacing Version: {} -> .version 7.0", line);
+                new_lines.push(".version 7.0");
+            } else if line.trim().starts_with(".target") {
+                 eprintln!("[Tracea Debug] Replacing Target: {} -> .target sm_80", line);
+                 new_lines.push(".target sm_80");
+            } else {
+                new_lines.push(line);
+            }
+        }
+        ptx_src = new_lines.join("\n");
+        eprintln!("[Tracea Debug] PTX Patching Done.");
+        
+        // Dump the final PTX to disk for debugging
+        let dump_path = format!("E:/Projects/Tracea/debug_dump_{}.ptx", kernel_name);
+        if let Ok(mut file) = std::fs::File::create(&dump_path) {
+             let _ = std::io::Write::write_all(&mut file, ptx_src.as_bytes());
+        }
+
+        let head = if ptx_src.len() > 500 { &ptx_src[..500] } else { &ptx_src };
+        panic!("DEBUG EXFILTRATION: {}", head);
+        
         let ptx = cudarc::nvrtc::Ptx::from_src(ptx_src);
         
         let mut counter = self.module_counter.lock().unwrap();
@@ -91,30 +123,33 @@ impl JITCompiler {
         
         Ok(kernel)
     }
+
+    pub fn compile_nvrtc(&self, source: &str, kernel_name: &str) -> Result<CudaFunction, String> {
+        self.compile_cuda(source, kernel_name)
+    }
     
     pub fn set_max_dynamic_shared_mem(&self, kernel: &CudaFunction, bytes: u32) -> Result<(), String> {
         unsafe {
-            let lib = libloading::Library::new("nvcuda.dll")
-                .map_err(|e| format!("Failed to load nvcuda.dll: {}", e))?;
-                
-            let func_set: libloading::Symbol<CuFuncSetAttribute> = lib.get(b"cuFuncSetAttribute")
-                .map_err(|e| format!("Failed to load cuFuncSetAttribute: {}", e))?;
-                
-            let func_get: libloading::Symbol<CuFuncGetAttribute> = lib.get(b"cuFuncGetAttribute")
-                .map_err(|e| format!("Failed to load cuFuncGetAttribute: {}", e))?;
+            let driver = crate::emitter::driver::get_driver_api()
+                .map_err(|e| format!("Failed to get driver API: {}", e))?;
+            let func_set = &driver.cu_func_set_attribute;
+            let func_get = &driver.cu_func_get_attribute;
             
             let base_ptr = kernel as *const CudaFunction as *const *mut c_void;
             let mut handle: Option<*mut c_void> = None;
             
-            for i in 0..2 {
+            for i in 0..10 {
                 let candidate = *base_ptr.add(i);
                 if candidate.is_null() { continue; }
                 
                 let mut val: i32 = 0;
                 let res = func_get(&mut val, 0, candidate);
-                if res == 0 && val > 0 && val <= 1024 {
-                    handle = Some(candidate);
-                    break;
+                if res == 0 && val >= 32 && val <= 1024 {
+                    let mut shmem: i32 = 0;
+                    if func_get(&mut shmem, 1, candidate) == 0 && shmem >= 0 && shmem < 1000000 {
+                        handle = Some(candidate);
+                        break;
+                    }
                 }
             }
             
@@ -122,12 +157,6 @@ impl JITCompiler {
                 let result = func_set(h, 8, bytes as i32);
                 if result != 0 {
                     return Err(format!("cuFuncSetAttribute returned {}", result));
-                }
-                
-                let mut check_val: i32 = 0;
-                let res = func_get(&mut check_val, 8, h);
-                if res == 0 {
-                    println!("Tracea JIT: Verified MaxDynamicSharedMemory is now {} bytes", check_val);
                 }
                 Ok(())
             } else {
@@ -145,21 +174,30 @@ impl JITCompiler {
         cache.clear();
     }
 
-
+    pub fn compile_fused_attention(&self, op: &crate::core::op::FusedAttentionOp) -> Result<Arc<CudaFunction>, String> {
+        // Keeping Arc for Attention for now as it's used elsewhere as Arc
+        let source = self.emitter.generate_fused_attention(op.clone());
+        let key = format!("fused_attn_dh{}_c{}_s{}", op.dh, op.causal, op.scale_inv_sqrt_d);
+        
+        let mut cache = self.kernel_cache.lock().unwrap();
+        if let Some(kernel) = cache.get(&key) {
+            return Ok(Arc::new(kernel.clone()));
+        }
+        
+        
+        let kernel = self.compile_nvrtc(&source, "fused_attention_kernel")
+            .map_err(|e| format!("NVRTC Error: {}", e))?;
+            
+        cache.insert(key, kernel.clone());
+        Ok(Arc::new(kernel))
+    }
 
     pub fn load_static_raw(&self, ptx_source: &str, kernel_name: &str) -> Result<*mut c_void, String> {
-        // Reuse singleton if possible, but load_static_raw uses cuModuleLoadData which we might also want to cache.
-        // For now, let's just cache the launch kernel as that's the hot path. 
-        // Note: We could cache module loading too, but that happens once per compilation/warmup.
-        // The LAUNCH is what happens 10000 times.
-        
-        println!("Tracea JIT: Static Load Bypass invoked for {}", kernel_name);
 
         use std::ffi::CString;
         use std::ptr;
-        use libloading::{Library, Symbol};
+        use libloading::Symbol;
 
-        // Define function signatures for Windows (stdcall/system)
         #[allow(non_snake_case)]
         type CuModuleLoadData = unsafe extern "system" fn(*mut *mut c_void, *const c_void) -> i32;
         #[allow(non_snake_case)]
@@ -171,7 +209,7 @@ impl JITCompiler {
         unsafe {
             use crate::emitter::driver::get_driver_api;
             let driver = get_driver_api().map_err(|e| format!("Driver API access failed: {}", e))?;
-            let lib = driver.lib; // Re-use the static library handle
+            let lib = driver.lib; 
             
             let load_data: Symbol<CuModuleLoadData> = lib.get(b"cuModuleLoadData").map_err(|e| format!("Sym load failed: {}", e))?;
             let get_func: Symbol<CuModuleGetFunction> = lib.get(b"cuModuleGetFunction").map_err(|e| format!("Sym load failed: {}", e))?;
@@ -182,7 +220,6 @@ impl JITCompiler {
                 return Err(format!("cuModuleLoadData failed: {}", res));
             }
             
-            // Leak module 
             let mut func: *mut c_void = ptr::null_mut();
             let res = get_func(&mut func, module, name_c.as_ptr());
             if res != 0 {
@@ -193,7 +230,3 @@ impl JITCompiler {
         }
     }
 }
-
-// Global Driver Singleton moved to driver.rs
-
-

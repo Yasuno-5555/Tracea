@@ -26,15 +26,26 @@ In `src/interface/python.rs`, add a static method to `PyEpilogueOp` to expose it
 
 ---
 
-## 2. Adding a New Backend (e.g., Metal or WebGPU)
+## 2. Adding a New Backend (e.g., Metal or CPU)
 
-1.  **Trait Implementation**: Create a new file in `src/emitter/` and implement the `Emitter` trait.
-2.  **Addressing**: Implement swizzle logic that matches the new target's bank structure.
-3.  **Intrinsics**: Map Tracea's `LaneMapping` concepts to the target's matrix intrinsics (e.g., Metal's `simdgroup_multiply_accumulate`).
+1.  **Trait Implementation**: Create a new file in `src/emitter/` and implement the `Emitter` trait for the target language (e.g., MSL for Metal).
+2.  **Capability Detection**: Add detection logic to `src/doctor/profiler.rs` using native APIs (e.g., `metal-rs`).
+3.  **Variant Registration**: Define a new `KernelVariant` in `src/doctor/registry.rs`. Specify constraints like `BackendIs(BackendKind::Metal)` and `WarpOrWavefrontIs(32)`.
+4.  **Runtime Support**: Update `src/runtime/` to handle device allocation and kernel launching for the new backend.
 
 ---
 
-## 3. Coding Standards
+## 3. Registering a New Kernel Variant
+
+To add a pre-optimized variant for an existing kernel:
+1. Open `src/doctor/registry.rs`.
+2. Add a new `KernelVariant` entry to the `REGISTRY` static.
+3. Define its architecture requirements (e.g., `SmAtLeast(80)` for CUDA or `SimdWidthAtLeast(256)` for CPU).
+4. Assign a `priority` to influence the Doctor's selection engine.
+
+---
+
+## 4. Coding Standards
 - **Mathematical Correctness**: Changes to L3 (Semantic) must be verified against the Phasic Transition model.
 - **Zero Overhead**: Avoid any runtime branching or allocations inside the kernel generation loop.
 - **FFI Stability**: Maintain C-FFI compatibility for C++ users.

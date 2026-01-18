@@ -1,7 +1,7 @@
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int};
 use std::sync::Arc;
-use crate::emitter::JITCompiler;
+use crate::emitter::jit::JITCompiler;
 use crate::optimizer::{AutoTuner, GPUInfo};
 
 pub struct CppContext {

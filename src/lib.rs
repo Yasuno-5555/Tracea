@@ -24,16 +24,18 @@ pub mod core;
 pub(crate) mod semantic;
 pub(crate) mod optimized;
 pub(crate) mod emitter;
+pub mod runtime;
 pub mod optimizer;
+pub mod doctor;
 
 pub use crate::core::op::GemmOp;
-pub use crate::core::config::PipelineConfig;
+pub use crate::core::config::{PipelineConfig, SwizzleMode};
 pub use crate::semantic::transition::{Phase, PhaseTransition, SyncRequirement};
 pub use crate::semantic::mapping::{LaneMapping, MatrixLayout};
 pub use crate::semantic::fragment::{Fragment, FragmentType, FragmentOp, FragmentRole};
 pub use crate::optimizer::{AutoTuner, GPUInfo};
 pub use crate::optimizer::benchmark::{MicroBenchmark, SimulatedBenchmark};
-pub use crate::emitter::CUDAEmitter;
+pub use crate::emitter::cuda::CUDAEmitter;
 
 
 #[cfg(feature = "python")]
@@ -48,10 +50,15 @@ fn tracea(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<interface::PyGraph>()?;
     m.add_class::<interface::PyDeviceBufferF32>()?;
     m.add_class::<interface::PyDeviceBufferU16>()?;
+    m.add_class::<interface::PyDeviceBufferI32>()?; // Int4 packed
     
     // Enum exports
     m.add_class::<interface::PyEpilogueType>()?;
     m.add_class::<interface::PyOptimizationGoal>()?;
+    m.add_class::<interface::PyDecision>()?;
+
+    // Register NN module
+    interface::nn::register_nn_module(_py, m)?;
 
     // Factory functions for Epilogue
     #[pyfn(m)]

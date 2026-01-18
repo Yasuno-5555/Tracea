@@ -1,6 +1,57 @@
 use serde::{Serialize, Deserialize};
 use crate::core::op::EpilogueOp;
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub enum SwizzleMode {
+    None,
+    Xor2,
+    Xor4,
+    Xor8,
+}
+
+impl SwizzleMode {
+    pub fn to_f32(self) -> f32 {
+        match self {
+            Self::None => 0.0,
+            Self::Xor2 => 1.0,
+            Self::Xor4 => 2.0,
+            Self::Xor8 => 3.0,
+        }
+    }
+    pub fn from_f32(val: f32) -> Self {
+        match val as u32 {
+            1 => Self::Xor2,
+            2 => Self::Xor4,
+            3 => Self::Xor8,
+            _ => Self::None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub enum QuantizationMode {
+    None,
+    Int8,
+    Int4,
+}
+
+impl QuantizationMode {
+    pub fn to_f32(self) -> f32 {
+        match self {
+            Self::None => 0.0,
+            Self::Int8 => 1.0,
+            Self::Int4 => 2.0,
+        }
+    }
+    pub fn from_f32(val: f32) -> Self {
+        match val as u32 {
+            1 => Self::Int8,
+            2 => Self::Int4,
+            _ => Self::None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelineConfig {
     pub num_stages: u32,
@@ -8,6 +59,8 @@ pub struct PipelineConfig {
     pub n_tile: u32,
     pub k_tile: u32,
     pub use_tensor_cores: bool,
+    pub swizzle_mode: SwizzleMode,
+    pub quantization: QuantizationMode,
     pub epilogue: Vec<EpilogueOp>,
 }
 
@@ -19,6 +72,8 @@ impl PipelineConfig {
             n_tile,
             k_tile,
             use_tensor_cores: false,
+            swizzle_mode: SwizzleMode::None,
+            quantization: QuantizationMode::None,
             epilogue: Vec::new(),
         }
     }
@@ -30,6 +85,8 @@ impl PipelineConfig {
             self.n_tile as f32,
             self.k_tile as f32,
             if self.use_tensor_cores { 1.0 } else { 0.0 },
+            self.swizzle_mode.to_f32(),
+            self.quantization.to_f32(),
         ]
     }
 
@@ -40,6 +97,8 @@ impl PipelineConfig {
             n_tile: vec[2] as u32,
             k_tile: vec[3] as u32,
             use_tensor_cores: vec.get(4).map(|&v| v > 0.5).unwrap_or(false),
+            swizzle_mode: vec.get(5).map(|&v| SwizzleMode::from_f32(v)).unwrap_or(SwizzleMode::None),
+            quantization: vec.get(6).map(|&v| QuantizationMode::from_f32(v)).unwrap_or(QuantizationMode::None),
             epilogue: Vec::new(),
         }
     }

@@ -7,13 +7,18 @@ Tracea is built on a strictly layered architecture that separates "Meaning" (Sem
 ### L1: User Interface
 - **Python**: PyO3 bindings + TorchDynamo backend. Captures FX Graphs and translates them to L2.
 - **C++**: RAII header (`tracea.hpp`) wrapping a stable C-FFI.
-- **Core API**: Rust entry points for manual kernel dispatch.
+- **Core API**: Rust entry points for manual kernel dispatch and hardware diagnostics.
 
 ### L2: Core IR
-- Defines the logical operation: `GemmOp(m, n, k)`, `FusedGemmOp`.
+- Defines the logical operation: `GemmOp(m, n, k)`, `FusedGemmOp`, `SoftmaxOp`.
 - Represents the goal without specifying the implementation details.
 
-### L3: Semantic IR (The Heart)
+### L3: Tracea Doctor (The Brain)
+- **Capability Profiler**: Queries hardware specifics (Shared Mem, Warp size, SIMD width, Tensor Core availability).
+- **Variant Registry**: Maintains a multi-backend catalog of kernel implementations.
+- **Decision Engine**: Performs requirement-matching and scoring to select the optimal variant for the current environment.
+
+### L4: Semantic IR (The Heart)
 - **Phase Transition**: Models $Z/NZ$ cyclicity in asynchronous pipes.
 - **Lane Mapping**: Matrix Core / Tensor Core / XMX register layout abstractions.
 - **Swizzle Mode**: Algebraic bank conflict resolution (e.g., XOR swizzle).
@@ -24,7 +29,8 @@ Tracea is built on a strictly layered architecture that separates "Meaning" (Sem
 ### L5: Universal Emitters
 - **CUDA Emitter**: PTX-level pipelining, Register Double Buffering.
 - **HIP Emitter**: AMD GCN/CDNA intrinsics ($v\_mfma$).
-- **SYCL Emitter**: Intel ESIMD and sub-group matrix ($XMX$).
+- **Metal Emitter**: Apple Silicon `simdgroup` support.
+- **CPU Emitter**: Host-side SIMD (AVX512, NEON) via specialized intrinsics.
 
 ### L6: Optimizer
 - **Bayesian Auto-tuner**: Uses Gaussian Processes to explore the L4 space.
@@ -34,8 +40,9 @@ Tracea is built on a strictly layered architecture that separates "Meaning" (Sem
 
 ## Data Flow: From Python to Kernel
 
-1.  **Capture**: `torch.compile` passes an FX Graph to `tracea.backend`.
-2.  **Lowering**: Python parses `aten.mm` and `aten.relu` into `PyEpilogueOp` descriptors.
-3.  **Optimization**: `AutoTuner` searches for the best `PipelineConfig`.
-4.  **Emission**: A backend-specific `Emitter` generates the kernel source.
-5.  **JIT**: The generated code is compiled via `NVRTC`, `HIPRTC`, or `oneAPI` and launched.
+1.  **Capture**: `torch.compile` or manual API call defines a logical intent.
+2.  **Diagnostics**: **Tracea Doctor** profiles the environment and available backends.
+3.  **Planning**: The Doctor selects the most performant **Kernel Variant** (e.g., CUDA Tensor Core vs. CPU SIMD).
+4.  **Optimization**: `AutoTuner` (if active) searches for the best `PipelineConfig` for the chosen variant.
+5.  **Emission**: The corresponding `Emitter` generates the kernel source or selects a precompiled binary.
+6.  **Launch**: The `RuntimeManager` executes the kernel with zero-copy buffer management.

@@ -4,3 +4,8 @@ __pycache__/
 *.so
 *.pyd
 .ipynb_checkpoints/
+/logs/
+/debug/
+/build_artifacts/
+*.log
+*.txt
