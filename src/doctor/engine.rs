@@ -51,7 +51,7 @@ pub fn select_variant(
 ) -> Decision {
     let variants = super::registry::get_variants_for(kernel_id);
     
-    let mut candidates: Vec<(&KernelVariant, f32)> = Vec::new();
+    let mut candidates: Vec<(KernelVariant, f32)> = Vec::new();
     let mut fallback_plan = Vec::new();
 
     for variant in variants {
@@ -67,7 +67,7 @@ pub fn select_variant(
         };
 
         let mut meets_requirements = true;
-        for req in variant.hard_requirements {
+        for req in &variant.hard_requirements {
             match req {
                 Requirement::BackendIs(kind) => {
                     if variant.backend != *kind {
@@ -145,7 +145,7 @@ pub fn select_variant(
             // Scoring logic
             let mut score = variant.priority as f32;
             
-            for pref in variant.soft_preferences {
+            for pref in &variant.soft_preferences {
                 match pref {
                     Preference::PreferTensorCoreLike => {
                         if backend_caps.has_tensor_core_like {

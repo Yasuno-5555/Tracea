@@ -1,5 +1,5 @@
 use cudarc::driver::safe::{CudaDevice, CudaFunction};
-use cudarc::driver::LaunchAsync;
+// use cudarc::driver::LaunchAsync; (not found or unused)
 use cudarc::nvrtc::{compile_ptx_with_opts, CompileOptions};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -114,7 +114,7 @@ impl JITCompiler {
              let _ = std::io::Write::write_all(&mut file, ptx_src.as_bytes());
         }
 
-        let head = if ptx_src.len() > 500 { &ptx_src[..500] } else { &ptx_src };
+        // let head = if ptx_src.len() > 500 { &ptx_src[..500] } else { &ptx_src };
         
         let ptx = cudarc::nvrtc::Ptx::from_src(ptx_src);
         

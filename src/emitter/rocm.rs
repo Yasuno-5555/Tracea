@@ -53,7 +53,7 @@ impl ROCMEmitter {
         // We divide mt/nt among waves.
         let waves_per_block = 128 / wf_size;
         let mt_per_wave = mt / if waves_per_block > 1 { 2 } else { 1 };
-        let nt_per_wave = nt / if waves_per_block == 1 { 1 } else { 1 }; // Simple 1D wave split for now
+        let _nt_per_wave = nt / if waves_per_block == 1 { 1 } else { 1 }; // Simple 1D wave split for now
 
         format!(r#"
 #include <hip/hip_runtime.h>

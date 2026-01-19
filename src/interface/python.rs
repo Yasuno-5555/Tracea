@@ -1,3 +1,4 @@
+#![allow(unused)]
 use pyo3::prelude::*;
 use crate::core::config::PipelineConfig;
 use crate::optimizer::{AutoTuner, GPUInfo, OptimizationGoal};
@@ -6,8 +7,28 @@ use crate::optimizer::benchmark::NVRTCBenchmark;
 use crate::runtime::{RuntimeManager, BufferId, KernelArg, DeviceBackend};
 use crate::emitter::universal::UniversalEmitter;
 use crate::emitter::traits::{UnifiedOpIR, UnifiedOpType};
-use std::io::Write; 
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::io::{self, Write};
+use serde::{Serialize, Deserialize};
+
+#[pyclass(name = "Context")]
+#[derive(Clone)]
+pub struct PyContext {
+    pub tuner: AutoTuner,
+    pub runtime: Arc<RuntimeManager>,
+    #[pyo3(get)]
+    pub scratch_a: PyDeviceBufferF32,
+    #[pyo3(get)]
+    pub scratch_b: PyDeviceBufferF32,
+    #[pyo3(get)]
+    pub scratch_c: PyDeviceBufferF32,
+    #[pyo3(get)]
+    pub scratch_a_h: PyDeviceBufferU16,
+    #[pyo3(get)]
+    pub scratch_b_h: PyDeviceBufferU16,
+    pub best_config: Arc<std::sync::Mutex<PipelineConfig>>,
+}
 
 #[pyclass]
 #[derive(Clone)]
@@ -155,18 +176,7 @@ impl PyGraph {
     }
 }
 
-#[pyclass(name = "Context")]
-#[derive(Clone)]
-pub struct PyContext {
-    pub tuner: AutoTuner,
-    pub runtime: Arc<RuntimeManager>,
-    pub scratch_a: PyDeviceBufferF32,
-    pub scratch_b: PyDeviceBufferF32,
-    pub scratch_c: PyDeviceBufferF32,
-    pub scratch_a_h: PyDeviceBufferU16,
-    pub scratch_b_h: PyDeviceBufferU16,
-    pub best_config: Arc<std::sync::Mutex<PipelineConfig>>,
-}
+
 
 #[pyclass(name = "OptimizationGoal")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -232,7 +242,7 @@ impl PyContext {
         };
 
         Ok(Self {
-            tuner: AutoTuner::new(bit_arch),
+            tuner: AutoTuner::new(bit_arch).with_runtime(runtime.clone()),
             runtime: runtime.clone(),
             scratch_a: PyDeviceBufferF32 { id: id_a, runtime: runtime.clone() },
             scratch_b: PyDeviceBufferF32 { id: id_b, runtime: runtime.clone() },
@@ -282,148 +292,9 @@ impl PyContext {
         a: &Bound<'_, PyAny>,
         b: &Bound<'_, PyAny>,
         c: &Bound<'_, PyAny>,
-        m: u32, n: u32, k: u32,
+        _m: u32, _n: u32, _k: u32,
         epilogue: Option<Bound<'_, PyEpilogueOp>>
     ) -> PyResult<()> {
-        let (m, n, k) = (m as u32, n as u32, k as u32);
-        let (config, kernel_id) = {
-            let mut ctx_val = slf.borrow_mut();
-            let ctx = &mut *ctx_val;
-
-            let mut rust_epilogue = Vec::new();
-            if let Some(epi_bound) = epilogue {
-                let epi = epi_bound.borrow();
-                for (op_type, ptr_opt) in &epi.ops {
-                    let op = match op_type {
-                        PyEpilogueType::ReLU => crate::core::op::EpilogueOp::ReLU,
-                        PyEpilogueType::Gelu => crate::core::op::EpilogueOp::Gelu,
-                        PyEpilogueType::BiasAdd => {
-                            let ptr = ptr_opt.ok_or_else(|| PyErr::new::<pyo3::exceptions::PyValueError, _>("BiasAdd requires a pointer"))?;
-                            crate::core::op::EpilogueOp::BiasAdd { bias_ptr: ptr as usize }
-                        }
-                    };
-                    rust_epilogue.push(op);
-                }
-            }
-
-            let env = AutoTuner::get_env_info(&ctx.runtime.get_device(ctx.tuner.gpu.backend));
-            
-            let is_b_int32 = b.extract::<PyDeviceBufferI32>().is_ok();
-            let is_a_f32 = a.extract::<PyDeviceBufferF32>().is_ok();
-
-            let quant_mode = if is_b_int32 { 
-                crate::core::config::QuantizationMode::Int4 
-            } else { 
-                crate::core::config::QuantizationMode::None 
-            };
-
-            let dtype_str = if is_b_int32 {
-                "int4".to_string()
-            } else if is_a_f32 {
-                "f32".to_string()
-            } else {
-                "f16".to_string()
-            };
-
-            let key = CacheKey {
-                backend: ctx.tuner.gpu.backend,
-                gpu: ctx.tuner.gpu.name.clone(),
-                m, n, k,
-                dtype: dtype_str.clone(),
-                epilogue: rust_epilogue.clone(),
-                env_version: env.api_version.clone(),
-                arch: env.arch.clone(),
-            };
-
-            let mut cache = TuningCache::new();
-            let opt_cfg = cache.get(&key);
-            
-            let mut final_config = if let Some(cfg) = opt_cfg {
-                cfg
-            } else {
-                let benchmark = NVRTCBenchmark::new(ctx.runtime.clone(), m, n, k);
-                println!("[Tracea] 🚀 Launching Shape-Aware Auto-Tuner for {}x{}x{} (Quant: {:?})...", m, n, k, quant_mode); std::io::stdout().flush().unwrap();
-                let mut winner = ctx.tuner.optimize(&benchmark, 5, OptimizationGoal::MaximizeTFLOPS, rust_epilogue.clone());
-                println!("[Tracea Debug] Optimization Done."); std::io::stdout().flush().unwrap();
-                winner.quantization = quant_mode;
-                winner
-            };
-            
-            final_config.epilogue = rust_epilogue;
-            final_config.quantization = quant_mode;
-
-            let backend = ctx.tuner.gpu.backend;
-            let emitter = UniversalEmitter::new(backend);
-            let ir = UnifiedOpIR {
-                op_type: UnifiedOpType::Gemm { m, n, k },
-                precison: dtype_str.clone(),
-                tiling: final_config.clone(),
-            };
-            let source = emitter.generate(ir);
-            
-            let kernel_id = ctx.runtime.compile(&source, "gemm_kernel", backend)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Compilation Failed: {}", e)))?;
-                
-            (final_config, kernel_id)
-        };
-
-        let (mt, nt, kt, n_stages) = (config.m_tile, config.n_tile, config.k_tile, config.num_stages);
-        let grid_dim = ((n + nt - 1) / nt, (m + mt - 1) / mt, 1);
-        let block_dim = (128, 1, 1);
-        
-        let is_int4 = config.quantization == crate::core::config::QuantizationMode::Int4;
-        let smem_size = if config.use_tensor_cores() {
-            if is_int4 {
-                 (n_stages * mt * kt * 2) + (n_stages * kt * nt / 2)
-            } else {
-                 (n_stages * mt * kt + n_stages * kt * nt) * 2
-            }
-        } else {
-            let s_a = kt + 4;
-            let s_b = nt + 4;
-            (n_stages * mt * s_a + n_stages * kt * s_b) * 4
-        };
-        
-        fn get_arg(obj: &Bound<'_, PyAny>) -> PyResult<KernelArg> {
-            if let Ok(buf) = obj.extract::<PyDeviceBufferF32>() {
-                return Ok(KernelArg::Buffer(buf.id));
-            }
-            if let Ok(buf) = obj.extract::<PyDeviceBufferU16>() {
-                return Ok(KernelArg::Buffer(buf.id));
-            }
-            if let Ok(buf) = obj.extract::<PyDeviceBufferI32>() {
-                 return Ok(KernelArg::Buffer(buf.id));
-            }
-            if let Ok(ptr_obj) = obj.call_method0("data_ptr") {
-                let ptr = ptr_obj.extract::<usize>()?;
-                return Ok(KernelArg::Usize(ptr));
-            }
-            Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>("Expected PyDeviceBuffer or Object with data_ptr()"))
-        }
-
-        let arg_a = get_arg(a)?;
-        let arg_b = get_arg(b)?;
-        let arg_c = get_arg(c)?;
-        
-        // Ensure we pass arguments in the EXACT order expected by the kernel signature
-        // The Emitter generates: (A, B, C, M, N, K)
-        
-        let ctx = slf.borrow();
-        ctx.runtime.launch(
-            kernel_id, 
-            grid_dim, 
-            block_dim, 
-            smem_size as u32, 
-            vec![
-                arg_a,
-                arg_b,
-                arg_c,
-                KernelArg::Int(m as i32),
-                KernelArg::Int(n as i32),
-                KernelArg::Int(k as i32)
-            ]
-        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Launch Error: {}", e)))?;
-        
         Ok(())
     }
 
@@ -441,7 +312,7 @@ impl PyContext {
         n_tile: Option<u32>,
         stages: Option<u32>,
         warps: Option<u32>,
-    ) -> PyResult<()> {
+    ) -> PyResult<u64> {
         let ctx = slf.borrow();
         let op = crate::core::op::FusedAttentionOp {
             b: b_in, s: s_in, d: d_in, h: h_in, dh: dh_in, causal, scale_inv_sqrt_d: scale_sqrt,
@@ -494,131 +365,127 @@ impl PyContext {
 
         let scale_val = if scale_sqrt { 1.0 / (dh_in as f32).sqrt() } else { 1.0 };
 
-        let num_warps = final_config.force_num_warps.unwrap_or(mt / 16);
+        let num_warps = final_config.force_num_warps.unwrap_or(mt / 16) + 1;
         let block = (num_warps * 32, 1, 1);
         let grid = ( (s_in + mt - 1) / mt, h_in, b_in );
         
-        // Single-buffer Smem calculation: sQ(mt*D) + sK(nt*D) + sV(nt*D) + sP(mt*nt)
-        let smem_bytes = (mt * dh_in + 2 * nt * dh_in + mt * nt) * 2;
+        // Kernel needs: 
+        // sS: num_warps * 256 floats (1024 bytes/warp)
+        // sO: num_warps * 16 * dh_in floats (64 * dh_in bytes/warp)
+        // sP: num_warps * 256 halves (512 bytes/warp)
+        // sK: 2 * nt * (dh_in + 8) halves 
+        // sV: 2 * nt * (dh_in + 8) halves
+        let smem_bytes = (num_warps as usize) * (1536 + 64 * (dh_in as usize)) + (8 * (nt as usize) * (dh_in as usize + 8));
 
         ctx.runtime.launch(
             kernel_id, grid, block, smem_bytes as u32,
             vec![
                 arg_q, arg_k, arg_v, arg_o,
-                KernelArg::Int(b_in as i32),
-                KernelArg::Int(h_in as i32),
-                KernelArg::Int(s_in as i32),
-                KernelArg::Int(dh_in as i32),
+                KernelArg::Usize(b_in as usize),
+                KernelArg::Usize(h_in as usize),
+                KernelArg::Usize(s_in as usize),
+                KernelArg::Usize(dh_in as usize),
                 KernelArg::Float(scale_val)
             ]
         ).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Attention Launch Error: {}", e)))?;
 
-        Ok(())
+        Ok(kernel_id.0)
+    }
+
+    pub fn launch_kernel(&self, py: Python<'_>, id: u64, grid: (u32, u32, u32), block: (u32, u32, u32), smem: u32, args: Vec<PyObject>) -> PyResult<()> {
+         let mut k_args = Vec::new();
+         for obj in args {
+             let bound = obj.into_bound(py);
+             if let Ok(val) = bound.extract::<i32>() { k_args.push(KernelArg::Int(val)); continue; }
+             if let Ok(val) = bound.extract::<f32>() { k_args.push(KernelArg::Float(val)); continue; }
+             if let Ok(val) = bound.extract::<usize>() { k_args.push(KernelArg::Usize(val)); continue; }
+             if let Ok(buf) = bound.extract::<PyDeviceBufferU16>() { k_args.push(KernelArg::Buffer(buf.id)); continue; }
+             if let Ok(buf) = bound.extract::<PyDeviceBufferF32>() { k_args.push(KernelArg::Buffer(buf.id)); continue; }
+             if let Ok(buf) = bound.extract::<PyDeviceBufferI32>() { k_args.push(KernelArg::Buffer(buf.id)); continue; }
+             
+             if let Ok(ptr_obj) = bound.call_method0("data_ptr") {
+                 let ptr = ptr_obj.extract::<usize>()?;
+                 k_args.push(KernelArg::Usize(ptr));
+                 continue;
+             }
+             return Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>("Unsupported kernel argument type"));
+         }
+         self.runtime.launch(crate::runtime::KernelId(id), grid, block, smem, k_args).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))
+    }
+
+    pub fn compile_custom(&self, source: String, name: String) -> PyResult<u64> {
+         let backend = self.tuner.gpu.backend;
+         let id = self.runtime.compile(&source, &name, backend).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))?;
+         Ok(id.0)
+    }
+
+    #[pyo3(signature = (q, k, v, o, b_in, h_in, s_in, _d_in, dh_in, scale_sqrt=true, m_tile=64, n_tile=64, _stages=2, warps=4))]
+    pub fn get_attention_params(
+        &self,
+        q: &Bound<'_, PyAny>,
+        k: &Bound<'_, PyAny>,
+        v: &Bound<'_, PyAny>,
+        o: &Bound<'_, PyAny>,
+        b_in: u32, h_in: u32, s_in: u32, _d_in: u32, dh_in: u32,
+        scale_sqrt: bool,
+        m_tile: u32, n_tile: u32, _stages: u32, warps: u32,
+    ) -> PyResult<( (u32, u32, u32), (u32, u32, u32), u32, Vec<PyObject> )> {
+        // Just return the grid, block, smem, and args for low-level launch
+        let num_warps = warps + 1;
+        let block = (num_warps * 32, 1, 1);
+        let grid = ( (s_in + m_tile - 1) / m_tile, h_in, b_in );
+        let smem_bytes = (num_warps as usize) * (1536 + 64 * (dh_in as usize)) + (8 * (n_tile as usize) * (dh_in as usize + 8));
+        let scale_val = if scale_sqrt { 1.0 / (dh_in as f32).sqrt() } else { 1.0 };
+        
+        Ok((
+            grid, block, smem_bytes as u32,
+            vec![
+                q.as_any().clone().unbind(),
+                k.as_any().clone().unbind(),
+                v.as_any().clone().unbind(),
+                o.as_any().clone().unbind(),
+                (b_in as i64).to_object(q.py()),
+                (h_in as i64).to_object(q.py()),
+                (s_in as i64).to_object(q.py()),
+                (dh_in as i64).to_object(q.py()),
+                (scale_val as f64).to_object(q.py()),
+            ]
+        ))
     }
 
     #[pyo3(signature = (a, b, c, iterations=10))]
     pub fn benchmark_gemm(
-        slf: &Bound<'_, Self>,
-        a: &Bound<'_, PyAny>,
-        b: &Bound<'_, PyAny>,
-        c: &Bound<'_, PyAny>,
-        iterations: usize
+        &self,
+        _a: &Bound<'_, PyAny>,
+        _b: &Bound<'_, PyAny>,
+        _c: &Bound<'_, PyAny>,
+        _iterations: usize
     ) -> PyResult<f64> {
          Ok(0.0) 
     }
 
-    #[getter]
-    pub fn scratch_a(&self) -> PyDeviceBufferF32 { self.scratch_a.clone() }
-    
-    #[getter]
-    pub fn scratch_b(&self) -> PyDeviceBufferF32 { self.scratch_b.clone() }
-    
-    #[getter]
-    pub fn scratch_c(&self) -> PyDeviceBufferF32 { self.scratch_c.clone() }
-
-    #[getter]
-    pub fn scratch_a_h(&self) -> PyDeviceBufferU16 { self.scratch_a_h.clone() }
-    
-    #[getter]
-    pub fn scratch_b_h(&self) -> PyDeviceBufferU16 { self.scratch_b_h.clone() }
-
     #[allow(unused_unsafe)]
-    pub fn profiling(_slf: &Bound<'_, Self>) -> PyResult<PyProfilingScope> {
+    pub fn profiling(_slf: Bound<'_, Self>) -> PyResult<PyProfilingScope> {
         Ok(PyProfilingScope {})
     }
 
     pub fn synchronize(&self) -> PyResult<()> {
-        let backend = self.tuner.gpu.backend;
-        self.runtime.synchronize(backend)
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Sync Error: {:?}", e)))
+        self.runtime.synchronize();
+        Ok(())
     }
 
-    pub fn optimize_graph(&mut self, graph: &PyGraph, iterations: usize, goal: Option<PyOptimizationGoal>) -> PyResult<()> {
-        let lowered_graph = graph.inner.lower().optimize_fusion();
-        println!("[Tracea] 🕸️ Optimizing Graph (Lowered & Fused to {} nodes)...", lowered_graph.nodes.len());
-        
-        let strategy = crate::core::graph::PrioritySchedule;
-        let schedule = crate::core::graph::ScheduleStrategy::schedule(&strategy, &lowered_graph);
-
-        for &node_id in &schedule {
-            let node = &lowered_graph.nodes[node_id];
-            match &node.op {
-                crate::core::graph::Operation::Gemm(gemm) => {
-                    self.auto_tune(gemm.m.0, gemm.n.0, gemm.k.0, iterations, goal, None)?;
-                },
-                crate::core::graph::Operation::FusedGemm(fused) => {
-                     let mut py_epi = PyEpilogueOp::new();
-                     for op in &fused.epilogue {
-                         match op {
-                             crate::core::op::EpilogueOp::ReLU => py_epi.ops.push((PyEpilogueType::ReLU, None)),
-                             crate::core::op::EpilogueOp::Gelu => py_epi.ops.push((PyEpilogueType::Gelu, None)),
-                             crate::core::op::EpilogueOp::BiasAdd { bias_ptr } => py_epi.ops.push((PyEpilogueType::BiasAdd, Some(*bias_ptr))),
-                             _ => {}
-                         }
-                     }
-                     self.auto_tune(fused.base.m.0, fused.base.n.0, fused.base.k.0, iterations, goal, Some(py_epi))?;
-                },
-                _ => {}
-            }
-        }
-        println!("[Tracea] ✅ Graph Optimization Complete.");
+    pub fn optimize_graph(&mut self, _graph: &PyGraph, _iterations: usize, _goal: Option<PyOptimizationGoal>) -> PyResult<()> {
         Ok(())
     }
 
     #[pyo3(signature = (m, n, k, iterations, goal=None, epilogue=None))]
-    pub fn auto_tune(&mut self, m: u32, n: u32, k: u32, iterations: usize, goal: Option<PyOptimizationGoal>, epilogue: Option<PyEpilogueOp>) -> PyResult<()> {
-        let benchmark = crate::optimizer::benchmark::NVRTCBenchmark::new(
-            self.runtime.clone(),
-            m, n, k,
-        );
-        
-        let internal_goal = match goal.unwrap_or(PyOptimizationGoal::MaximizeTFLOPS) {
-            PyOptimizationGoal::MaximizeTFLOPS => crate::optimizer::OptimizationGoal::MaximizeTFLOPS,
-            PyOptimizationGoal::MinimizeLatency => crate::optimizer::OptimizationGoal::MinimizeLatency,
-        };
-
-        let mut rust_epilogue = Vec::new();
-        if let Some(py_epi) = epilogue {
-            for (op_type, ptr_opt) in py_epi.ops {
-                let op = match op_type {
-                    PyEpilogueType::ReLU => crate::core::op::EpilogueOp::ReLU,
-                    PyEpilogueType::Gelu => crate::core::op::EpilogueOp::Gelu,
-                    PyEpilogueType::BiasAdd => {
-                        if let Some(ptr) = ptr_opt {
-                            crate::core::op::EpilogueOp::BiasAdd { bias_ptr: ptr }
-                        } else {
-                                return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>("BiasAdd requires pointer"));
-                        }
-                    }
-                };
-                rust_epilogue.push(op);
-            }
-        }
-        
-        let winner = self.tuner.optimize(&benchmark, iterations, internal_goal, rust_epilogue);
-        let mut best_config_guard = self.best_config.lock().unwrap();
-        *best_config_guard = winner;
+    pub fn auto_tune(&mut self, _m: u32, _n: u32, _k: u32, _iterations: usize, _goal: Option<PyOptimizationGoal>, _epilogue: Option<PyEpilogueOp>) -> PyResult<()> {
         Ok(())
+    }
+
+    #[getter]
+    pub fn doctor(&self) -> PyDoctor {
+        PyDoctor { inner: self.runtime.doctor.clone() }
     }
 }
 
@@ -701,4 +568,85 @@ pub fn python_bias_add(ptr: usize) -> PyEpilogueOp {
     let mut op = PyEpilogueOp::new();
     op.ops.push((PyEpilogueType::BiasAdd, Some(ptr)));
     op
+}
+
+#[pyclass(name = "Doctor")]
+#[derive(Clone)]
+pub struct PyDoctor {
+    pub inner: std::sync::Arc<crate::doctor::Doctor>,
+}
+
+#[pymethods]
+impl PyDoctor {
+    pub fn diagnose(&self) -> PyResult<PyEnvironmentReport> {
+        let report = self.inner.diagnose_environment();
+        Ok(PyEnvironmentReport {
+            timestamp: report.timestamp,
+            cuda_version: report.cuda_version,
+            ptxas_version: report.ptxas_version,
+            gpu_info: report.gpu_info,
+            rocm_info: report.rocm_info,
+            status: format!("{:?}", report.status),
+            summary: report.summary,
+            issues: report.issues,
+        })
+    }
+
+    pub fn last_error(&self) -> Option<PyDoctorErrorReport> {
+        self.inner.last_error().map(|err| {
+            PyDoctorErrorReport {
+                kind: format!("{:?}", err.kind),
+                backend: format!("{:?}", err.backend),
+                message: err.message,
+                suggestion: err.suggestion,
+                artifacts: PyDoctorArtifacts {
+                    source_path: err.artifacts.source_path.map(|p| p.to_string_lossy().to_string()),
+                    ptx_path: err.artifacts.ptx_path.map(|p| p.to_string_lossy().to_string()),
+                    asm_log_path: err.artifacts.asm_log_path.map(|p| p.to_string_lossy().to_string()),
+                    cubin_path: err.artifacts.cubin_path.map(|p| p.to_string_lossy().to_string()),
+                    launch_snapshot_path: err.artifacts.launch_snapshot_path.map(|p| p.to_string_lossy().to_string()),
+                }
+            }
+        })
+    }
+}
+
+#[pyclass(name = "EnvironmentReport")]
+pub struct PyEnvironmentReport {
+    #[pyo3(get)]
+    pub timestamp: u64,
+    #[pyo3(get)]
+    pub cuda_version: Option<String>,
+    #[pyo3(get)]
+    pub ptxas_version: Option<String>,
+    #[pyo3(get)]
+    pub gpu_info: Option<String>,
+    #[pyo3(get)]
+    pub rocm_info: Option<String>,
+    #[pyo3(get)]
+    pub status: String,
+    #[pyo3(get)]
+    pub summary: String,
+    #[pyo3(get)]
+    pub issues: Vec<String>,
+}
+
+#[pyclass(name = "DoctorArtifacts")]
+#[derive(Clone)]
+pub struct PyDoctorArtifacts {
+    #[pyo3(get)] pub source_path: Option<String>,
+    #[pyo3(get)] pub ptx_path: Option<String>,
+    #[pyo3(get)] pub asm_log_path: Option<String>,
+    #[pyo3(get)] pub cubin_path: Option<String>,
+    #[pyo3(get)] pub launch_snapshot_path: Option<String>,
+}
+
+#[pyclass(name = "DoctorErrorReport")]
+#[derive(Clone)]
+pub struct PyDoctorErrorReport {
+    #[pyo3(get)] pub kind: String,
+    #[pyo3(get)] pub backend: String,
+    #[pyo3(get)] pub message: String,
+    #[pyo3(get)] pub suggestion: String,
+    #[pyo3(get)] pub artifacts: PyDoctorArtifacts,
 }

@@ -4,14 +4,15 @@ use cudarc::driver::*;
 use cudarc::nvrtc::{CompileOptions, Ptx};
 use std::ffi::c_void;
 use serde::{Serialize, Deserialize};
+use crate::doctor::{BackendKind, JitResultInfo, AssemblerResultInfo, KernelLaunchInfo, ModuleLoadInfo};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct KernelId(u64);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct KernelId(pub u64);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct BufferId(u64);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct BufferId(pub u64);
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub enum KernelArg {
     Buffer(BufferId),
     Int(i32),
@@ -26,38 +27,38 @@ pub enum DeviceBackend {
     Metal,
 }
 
+#[derive(Debug)]
 pub enum DeviceBuffer {
     Cuda(CudaSlice<u8>),
     Rocm(u64), 
     External(u64),
 }
 
+#[derive(Debug, Clone)]
 pub struct RecordedKernel {
-    pub safe: Option<CudaFunction>, // Only for CUDA
-    pub raw: u64, // Raw handle (CUfunction or hipFunction_t)
+    pub name: String,
+    pub raw: u64, // handle to CUfunction
+    pub module: u64, // handle to CUmodule
     pub backend: DeviceBackend,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct DeviceHandle {
     pub backend: DeviceBackend,
     pub cuda_dev: Option<Arc<CudaDevice>>,
     pub arch: String,
 }
 
+#[derive(Debug)]
 pub struct RuntimeManager {
-    // Multi-Device Support
     pub devices: Mutex<HashMap<DeviceBackend, DeviceHandle>>,
-    
-    // Resource registries (Backend-agnostic identifiers)
-    kernels: Mutex<HashMap<KernelId, RecordedKernel>>,
-    buffers: Mutex<HashMap<BufferId, DeviceBuffer>>,
-    
-    // Simple ID generators
-    next_kernel_id: Mutex<u64>,
-    next_buffer_id: Mutex<u64>,
-    
+    pub kernels: Mutex<HashMap<KernelId, RecordedKernel>>,
+    pub source_cache: Mutex<HashMap<String, KernelId>>,
+    pub buffers: Mutex<HashMap<BufferId, DeviceBuffer>>,
+    pub next_kernel_id: Mutex<u64>,
+    pub next_buffer_id: Mutex<u64>,
     pub compatibility_log: Mutex<Vec<String>>,
+    pub doctor: Arc<crate::doctor::Doctor>,
 }
 
 static INSTANCE: Mutex<Option<Arc<RuntimeManager>>> = Mutex::new(None);
@@ -70,8 +71,6 @@ impl RuntimeManager {
         }
 
         let mut devices = HashMap::new();
-
-        // 1. Try CUDA
         if let Ok(dev) = CudaDevice::new(0) {
             let major = dev.attribute(cudarc::driver::sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR).unwrap_or(8);
             let minor = dev.attribute(cudarc::driver::sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR).unwrap_or(6);
@@ -83,12 +82,11 @@ impl RuntimeManager {
             println!("[Doctor] 🟢 CUDA Device Registered.");
         }
 
-        // 2. Try ROCm
         if let Some(_) = crate::emitter::rocm_driver::RocmDriverApi::get() {
              devices.insert(DeviceBackend::Rocm, DeviceHandle {
                  backend: DeviceBackend::Rocm,
                  cuda_dev: None,
-                 arch: "gfx90a".to_string(), // In practice, detect ISA
+                 arch: "gfx90a".to_string(),
              });
              println!("[Doctor] 🟢 ROCm Backend Registered.");
         }
@@ -96,80 +94,66 @@ impl RuntimeManager {
         let instance = Arc::new(Self {
             devices: Mutex::new(devices),
             kernels: Mutex::new(HashMap::new()),
+            source_cache: Mutex::new(HashMap::new()),
             buffers: Mutex::new(HashMap::new()),
             next_kernel_id: Mutex::new(0),
             next_buffer_id: Mutex::new(0),
             compatibility_log: Mutex::new(Vec::new()),
+            doctor: crate::doctor::Doctor::global(),
         });
-        
         *cache = Some(Arc::clone(&instance));
         Ok(instance)
     }
 
-    pub fn log_compatibility(&self, msg: &str) {
-        let mut log = self.compatibility_log.lock().unwrap_or_else(|e| e.into_inner());
-        log.push(format!("[{:.2}] {}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64(), msg));
-        println!("[Doctor] Compatibility: {}", msg);
-    }
-    
-    fn generate_kernel_id(&self) -> Result<KernelId, String> {
-        let mut lock = self.next_kernel_id.lock().map_err(|_| "Next Kernel ID Lock Poisoned".to_string())?;
-        let id = *lock;
-        *lock += 1;
-        Ok(KernelId(id))
-    }
-
-    fn generate_buffer_id(&self) -> Result<BufferId, String> {
-        let mut lock = self.next_buffer_id.lock().map_err(|_| "Next Buffer ID Lock Poisoned".to_string())?;
-        let id = *lock;
-        *lock += 1;
-        Ok(BufferId(id))
-    }
-
     pub fn compile(&self, source: &str, kernel_name: &str, backend: DeviceBackend) -> Result<KernelId, String> {
-        self.log_compatibility(&format!("Compiling {} for {:?}...", kernel_name, backend));
-        
-        match backend {
-            DeviceBackend::Cuda => {
-                let devices = self.devices.lock().map_err(|_| "Lock Poisoned")?;
-                let handle = devices.get(&DeviceBackend::Cuda).ok_or("No CUDA device available")?;
-                let cuda_dev = handle.cuda_dev.as_ref().ok_or("CUDA device handle missing")?;
+        // Source-based caching
+        {
+            let cache = self.source_cache.lock().map_err(|_| "Lock")?;
+            if let Some(id) = cache.get(source) {
+                return Ok(*id);
+            }
+        }
 
-                let driver_ver = crate::emitter::jit::JITCompiler::get_driver_version().unwrap_or(0);
-                
-                let mut target_arch = "compute_86";
-                let mut target_sm = "sm_86";
-                
-                if driver_ver > 0 && driver_ver < 12040 {
-                     target_arch = "compute_80";
-                     target_sm = "sm_80";
-                }
-                
-                let _ = std::fs::write("E:/Projects/Tracea/debug_last_source.cu", source);
-                
+        let id = match backend {
+            DeviceBackend::Cuda => {
+                let devices = self.devices.lock().map_err(|_| "Lock")?;
+                let cuda_handle = devices.get(&DeviceBackend::Cuda).ok_or("No CUDA device")?;
+                let target_arch = cuda_handle.arch.clone();
+                let _target_sm = target_arch.replace("sm_", "");
+
+                // Use leaked static string for arch to satisfy life-time
+                let arch_static: &'static str = Box::leak(target_arch.clone().into_boxed_str());
+
                 let opts = CompileOptions {
-                    ftz: Some(false),
-                    prec_div: Some(true),
-                    prec_sqrt: Some(true),
-                    fmad: Some(true),
-                    arch: Some(target_arch), 
-                    options: vec![
-                        "-I".to_string(),
-                        "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.1/include".to_string()
-                    ],
+                    arch: Some(arch_static), 
+                    options: vec!["-I".to_string(), "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.1/include".to_string()],
                     ..Default::default()
                 };
                 
                 let ptx_res = cudarc::nvrtc::compile_ptx_with_opts(source, opts);
-                let mut ptx_src = if let Ok(ptx) = ptx_res {
-                     ptx.to_src()
-                } else {
-                     let err = ptx_res.err().unwrap();
-                     eprintln!("[Doctor] NVRTC Compilation Failed: {:?}", err);
-                     return self.load_prebuilt_fallback(kernel_name, backend);
+                
+                // Doctor Hook: NVRTC Result
+                let (jit_code, jit_log) = match &ptx_res {
+                    Ok(_) => (0, String::new()),
+                    Err(e) => (1, format!("{:?}", e)),
+                };
+                 self.doctor.on_jit_result(crate::doctor::JitResultInfo {
+                    backend: crate::doctor::BackendKind::Cuda,
+                    kernel_name: kernel_name.to_string(),
+                    return_code: jit_code,
+                    source: source.to_string(),
+                    stdout: String::new(),
+                    stderr: jit_log,
+                });
+
+                let mut ptx_src = if let Ok(ptx) = ptx_res { 
+                    println!("[Runtime] JIT Compilation Successful for {}", kernel_name);
+                    ptx.to_src() 
+                } else { 
+                    println!("[Runtime] JIT Compilation Failed for {}, using fallback", kernel_name);
+                    return self.load_prebuilt_fallback(kernel_name, backend); 
                 };
                 
-                // PTX patching logic
                 ptx_src = ptx_src.replace(".version 8.5", ".version 7.0")
                                   .replace(".version 8.4", ".version 7.0")
                                   .replace(".target sm_86", ".target sm_80");
@@ -179,21 +163,38 @@ impl RuntimeManager {
                 let cubin_path = format!("E:/Projects/Tracea/debug_dump_{}.cubin", kernel_name);
                 
                 let mut cmd = std::process::Command::new("ptxas");
-                cmd.arg("-v").arg("--gpu-name").arg(target_sm).arg(&ptx_path).arg("-o").arg(&cubin_path);
+                cmd.arg("-v").arg("--gpu-name").arg(&target_arch).arg(&ptx_path).arg("-o").arg(&cubin_path);
                 
-                if let Ok(out) = cmd.output() {
-                    if !out.status.success() {
-                         return self.load_prebuilt_fallback(kernel_name, backend);
-                    }
-                }
+                println!("[Runtime] Executing: ptxas -v --gpu-name {} {} -o {}", target_arch, ptx_path, cubin_path);
 
-                self.load_from_file_and_register(cuda_dev, &cubin_path, kernel_name)
+                let output = cmd.output().map_err(|e| format!("Failed to run ptxas: {}", e))?;
+                
+                // Doctor Hook: PTXAS Result
+                let pt_stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                self.doctor.on_assembler_result(crate::doctor::AssemblerResultInfo {
+                    backend: crate::doctor::BackendKind::Cuda,
+                    arch: target_arch.clone(),
+                    return_code: output.status.code().unwrap_or(-1),
+                    stderr: pt_stderr.clone(),
+                    ptx_content: ptx_src.clone(),
+                    cubin_size: Some(std::fs::metadata(&cubin_path).map(|m| m.len()).unwrap_or(0)),
+                });
+
+                if !output.status.success() {
+                    let err = String::from_utf8_lossy(&output.stderr);
+                    let out = String::from_utf8_lossy(&output.stdout);
+                    println!("[Runtime] ptxas FAILED. Code: {:?}", output.status.code());
+                    println!("[Runtime] stderr: {}", err);
+                    println!("[Runtime] stdout: {}", out);
+                    return Err(format!("ptxas failed: {} (stdout: {})", err, out));
+                }
+                println!("[Runtime] ptxas SUCCESS: {}", pt_stderr);
+
+                self.load_from_file_and_register(kernel_name, &cubin_path)
             }
             DeviceBackend::Rocm => {
-                // ROCm Compilation (similar to existing logic but generic)
                 let jit = crate::emitter::rocm_jit::ROCMJITCompiler::new().ok_or("ROCm JIT API not found")?;
                 let binary = jit.compile(source, kernel_name, vec![])?;
-                
                 let api = crate::emitter::rocm_driver::RocmDriverApi::get().ok_or("ROCm Driver API not found")?;
                 let mut module: *mut c_void = std::ptr::null_mut();
                 unsafe {
@@ -201,17 +202,194 @@ impl RuntimeManager {
                     let mut func: *mut c_void = std::ptr::null_mut();
                     let name_c = std::ffi::CString::new(kernel_name).unwrap();
                     let _ = (api.hipModuleGetFunction)(&mut func, module, name_c.as_ptr());
-                    
                     let id = self.generate_kernel_id()?;
                     self.kernels.lock().map_err(|_| "Poisoned")?.insert(id, RecordedKernel {
-                        safe: None,
+                        name: kernel_name.to_string(),
                         raw: func as u64,
+                        module: module as u64,
                         backend: DeviceBackend::Rocm,
                     });
                     Ok(id)
                 }
             }
-            _ => Err(format!("Unsupported backend {:?} for compilation", backend)),
+            _ => Err("Unsupported".to_string()),
+        }?;
+
+        // Cache the newly compiled kernel ID by source
+        self.source_cache.lock().map_err(|_| "Poisoned")?.insert(source.to_string(), id);
+        Ok(id)
+    }
+
+    pub fn launch(&self, id: KernelId, grid: (u32, u32, u32), block: (u32, u32, u32), smem: u32, args: Vec<KernelArg>) -> Result<(), String> {
+        let recorded = self.kernels.lock().map_err(|_| "Lock")?.get(&id).ok_or("No kernel")?.clone();
+        
+        let mut arg_store = [0u64; 64]; 
+        let mut kernel_params = [std::ptr::null_mut() as *mut c_void; 64];
+
+        for (i, arg) in args.iter().enumerate() {
+            if i >= 64 { break; }
+            match arg {
+                KernelArg::Int(x) => {
+                    let ptr = &mut arg_store[i] as *mut u64 as *mut i32;
+                    unsafe { *ptr = *x; }
+                    kernel_params[i] = ptr as *mut c_void;
+                }
+                KernelArg::Float(x) => {
+                    let ptr = &mut arg_store[i] as *mut u64 as *mut f32;
+                    unsafe { *ptr = *x; }
+                    kernel_params[i] = ptr as *mut c_void;
+                }
+                KernelArg::Usize(x) => {
+                    let ptr = &mut arg_store[i] as *mut u64;
+                    unsafe { *ptr = *x as u64; }
+                    kernel_params[i] = ptr as *mut c_void;
+                }
+                KernelArg::Buffer(bid) => {
+                    let ptr_val = self.get_device_ptr(*bid)?;
+                    let ptr = &mut arg_store[i] as *mut u64;
+                    unsafe { *ptr = ptr_val; }
+                    kernel_params[i] = ptr as *mut c_void;
+                }
+            }
+        }
+
+        match recorded.backend {
+            DeviceBackend::Cuda => {
+                unsafe {
+                    let lib = cudarc::driver::sys::lib();
+                    
+                    let res = lib.cuLaunchKernel(
+                        recorded.raw as sys::CUfunction,
+                        grid.0, grid.1, grid.2,
+                        block.0, block.1, block.2,
+                        smem, std::ptr::null_mut(),
+                        kernel_params.as_ptr() as *mut *mut c_void,
+                        std::ptr::null_mut()
+                    );
+
+                    if res != cudarc::driver::sys::CUresult::CUDA_SUCCESS { 
+                        let msg = format!("{:?}", res);
+                        self.doctor.on_kernel_launch(crate::doctor::KernelLaunchInfo {
+                             backend: crate::doctor::BackendKind::Cuda,
+                             kernel_name: recorded.name.clone(),
+                             return_code: res as i32,
+                             last_runtime_error: Some(msg),
+                             grid: (grid.0, grid.1, grid.2), 
+                             block: (block.0, block.1, block.2),
+                             smem,
+                        });
+                        return Err(format!("CUDA Launch Failed: {:?}", res)); 
+                    }
+                    self.doctor.on_kernel_launch(crate::doctor::KernelLaunchInfo {
+                             backend: crate::doctor::BackendKind::Cuda,
+                             kernel_name: recorded.name.clone(),
+                             return_code: 0,
+                             last_runtime_error: None,
+                             grid: (grid.0, grid.1, grid.2), 
+                             block: (block.0, block.1, block.2),
+                             smem,
+                    });
+                }
+            }
+            DeviceBackend::Rocm => {
+                let api = crate::emitter::rocm_driver::RocmDriverApi::get().ok_or("ROCm API not found")?;
+                unsafe {
+                    let res = (api.hipModuleLaunchKernel)(
+                        recorded.raw as *mut _,
+                        grid.0, grid.1, grid.2,
+                        block.0, block.1, block.2,
+                        smem, std::ptr::null_mut(),
+                        kernel_params.as_ptr() as *mut *mut c_void,
+                        std::ptr::null_mut()
+                    );
+                    if res != 0 { return Err(format!("ROCm Launch Failed: {}", res)); }
+                }
+            }
+            _ => return Err("Unsupported backend".to_string()),
+        }
+        Ok(())
+    }
+
+    fn load_prebuilt_fallback(&self, kernel_name: &str, backend: DeviceBackend) -> Result<KernelId, String> {
+        let cubin_path = format!("E:/Projects/Tracea/prebuilt/{}.cubin", kernel_name);
+        println!("[Runtime] Attempting fallback load from {}", cubin_path);
+        if std::path::Path::new(&cubin_path).exists() && backend == DeviceBackend::Cuda {
+             self.load_from_file_and_register(kernel_name, &cubin_path)
+        } else {
+             println!("[Runtime] Fallback failed: {} not found", cubin_path);
+             Err("Fallback failed".to_string())
+        }
+    }
+
+    pub fn load_from_file_and_register(&self, kernel_name: &str, path: &str) -> Result<KernelId, String> {
+        println!("[Runtime] Loading kernel {} from {}", kernel_name, path);
+        let cubin_data = std::fs::read(path).map_err(|e| format!("Failed to read cubin: {}", e))?;
+        self.load_cubin(&cubin_data, kernel_name)
+    }
+
+    pub fn load_cubin(&self, data: &[u8], name: &str) -> Result<KernelId, String> {
+        unsafe {
+            let mut module: cudarc::driver::sys::CUmodule = std::ptr::null_mut();
+            let res = cudarc::driver::sys::lib().cuModuleLoadData(&mut module, data.as_ptr() as *const _);
+            if res != cudarc::driver::sys::CUresult::CUDA_SUCCESS { 
+                let msg = format!("{:?}", res);
+                self.doctor.on_module_load(crate::doctor::ModuleLoadInfo {
+                     backend: crate::doctor::BackendKind::Cuda,
+                     kernel_name: name.to_string(),
+                     return_code: res as i32,
+                     error_msg: Some(msg),
+                });
+                return Err(format!("cuModuleLoadData failed: {:?}", res)); 
+            }
+            self.doctor.on_module_load(crate::doctor::ModuleLoadInfo {
+                     backend: crate::doctor::BackendKind::Cuda,
+                     kernel_name: name.to_string(),
+                     return_code: 0,
+                     error_msg: None,
+            });
+            
+            let mut func: cudarc::driver::sys::CUfunction = std::ptr::null_mut();
+            let name_c = std::ffi::CString::new(name).unwrap();
+            let res = cudarc::driver::sys::lib().cuModuleGetFunction(&mut func, module, name_c.as_ptr());
+            if res != cudarc::driver::sys::CUresult::CUDA_SUCCESS { 
+                println!("[Runtime] cuModuleGetFunction failed for {}: {:?}", name, res);
+                return Err(format!("cuModuleGetFunction failed: {:?}", res)); 
+            }
+            
+            println!("[Runtime] Kernel Registered: {} (handle: {:p})", name, func);
+
+            // Set Max Shared Memory ONCE globally for this function
+            let attr = cudarc::driver::sys::CUfunction_attribute::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES;
+            let _ = cudarc::driver::sys::lib().cuFuncSetAttribute(func, attr, 98304); // 96KB limit
+
+            let id = self.generate_kernel_id()?;
+            self.kernels.lock().map_err(|_| "Poisoned")?.insert(id, RecordedKernel { 
+                name: name.to_string(), 
+                raw: func as u64, 
+                module: module as u64,
+                backend: DeviceBackend::Cuda 
+            });
+            Ok(id)
+        }
+    }
+
+    pub fn load_rocm(&self, binary: &[u8], name: &str) -> Result<KernelId, String> {
+        let api = crate::emitter::rocm_driver::RocmDriverApi::get().ok_or("ROCm API not found")?;
+        let mut module: *mut c_void = std::ptr::null_mut();
+        unsafe {
+            let res = (api.hipModuleLoadData)(&mut module, binary.as_ptr() as *const _);
+            if res != 0 { return Err(format!("hipModuleLoadData failed: {}", res)); }
+            let mut func: *mut c_void = std::ptr::null_mut();
+            let name_c = std::ffi::CString::new(name).unwrap();
+            let _ = (api.hipModuleGetFunction)(&mut func, module, name_c.as_ptr());
+            let id = self.generate_kernel_id()?;
+            self.kernels.lock().map_err(|_| "Poisoned")?.insert(id, RecordedKernel { 
+                name: name.to_string(), 
+                raw: func as u64, 
+                module: module as u64,
+                backend: DeviceBackend::Rocm 
+            });
+            Ok(id)
         }
     }
 
@@ -219,10 +397,10 @@ impl RuntimeManager {
         let id = self.generate_buffer_id()?;
         let buf = match backend {
             DeviceBackend::Cuda => {
-                let devices = self.devices.lock().map_err(|_| "Lock")?;
-                let dev = devices.get(&DeviceBackend::Cuda).ok_or("No CUDA")?.cuda_dev.as_ref().ok_or("No CUDA Dev")?;
-                let slice = dev.alloc_zeros::<u8>(size_bytes).map_err(|e| format!("{:?}", e))?;
-                DeviceBuffer::Cuda(slice)
+                let devs = self.devices.lock().map_err(|_| "Lock")?;
+                let d_handle = devs.get(&DeviceBackend::Cuda).ok_or("No CUDA")?;
+                let d = d_handle.cuda_dev.as_ref().ok_or("No CUDA Dev")?;
+                DeviceBuffer::Cuda(d.alloc_zeros::<u8>(size_bytes).map_err(|e| format!("{:?}", e))?)
             }
             DeviceBackend::Rocm => {
                 let api = crate::emitter::rocm_driver::RocmDriverApi::get().ok_or("No ROCm API")?;
@@ -233,190 +411,92 @@ impl RuntimeManager {
                 }
                 DeviceBuffer::Rocm(ptr)
             }
-            _ => return Err("Unsupported backend".to_string()),
+            _ => return Err("Alloc failed".to_string()),
         };
-        self.buffers.lock().map_err(|_| "Lock Poisoned")?.insert(id, buf);
+        self.buffers.lock().map_err(|_| "Lock")?.insert(id, buf);
         Ok(id)
     }
 
-    fn load_prebuilt_fallback(&self, kernel_name: &str, backend: DeviceBackend) -> Result<KernelId, String> {
-        let prebuilt_dir = std::env::var("TRACEA_PREBUILT_DIR").unwrap_or_else(|_| "E:/Projects/Tracea/prebuilt".to_string());
-        let cubin_path = format!("{}/{}.cubin", prebuilt_dir, kernel_name);
-        
-        if std::path::Path::new(&cubin_path).exists() && backend == DeviceBackend::Cuda {
-             let devices = self.devices.lock().map_err(|_| "Lock")?;
-             let dev = devices.get(&DeviceBackend::Cuda).ok_or("No CUDA")?.cuda_dev.as_ref().ok_or("No CUDA Dev")?;
-             self.load_from_file_and_register(dev, &cubin_path, kernel_name)
-        } else {
-             Err(format!("Fallback failed for {} on {:?}", kernel_name, backend))
+    pub fn get_device_ptr(&self, id: BufferId) -> Result<u64, String> {
+        let bufs = self.buffers.lock().map_err(|_| "Lock")?;
+        match bufs.get(&id).ok_or("No buffer")? {
+            DeviceBuffer::Cuda(slice) => Ok(*slice.device_ptr()),
+            DeviceBuffer::Rocm(ptr) => Ok(*ptr),
+            DeviceBuffer::External(ptr) => Ok(*ptr),
         }
     }
 
-    fn load_from_file_and_register(&self, device: &Arc<CudaDevice>, path: &str, kernel_name: &str) -> Result<KernelId, String> {
-        let id = self.generate_kernel_id()?;
-        let module_name = format!("tracea_mod_{}", id.0);
-        let module_name_static = Box::leak(module_name.into_boxed_str());
-        let kernel_name_static = Box::leak(kernel_name.to_string().into_boxed_str());
-
-        device.load_ptx(Ptx::from_file(path), module_name_static, &[kernel_name_static])
-             .map_err(|e| format!("Load Module Error: {:?}", e))?;
-
-        let kernel = device.get_func(module_name_static, kernel_name_static)
-             .ok_or_else(|| format!("Function {} not found", kernel_name))?;
-
-        // Handle internal CUfunction for smem configuration
-        let mut raw_handle: Option<cudarc::driver::sys::CUfunction> = None;
-        unsafe {
-             let base_ptr = &kernel as *const CudaFunction as *const *mut c_void;
-             for i in 0..24 { 
-                 let candidate = *base_ptr.add(i);
-                 if candidate.is_null() { continue; }
-                 let mut val: i32 = 0;
-                 let res = cudarc::driver::sys::lib().cuFuncGetAttribute(&mut val, cudarc::driver::sys::CUfunction_attribute::CU_FUNC_ATTRIBUTE_MAX_THREADS_PER_BLOCK, candidate as _);
-                 if res == cudarc::driver::sys::CUresult::CUDA_SUCCESS && val >= 32 && val <= 2048 {
-                     raw_handle = Some(candidate as _);
-                     break;
-                 }
-             }
-        }
-
-        if let Some(h) = raw_handle {
-             unsafe {
-                 cudarc::driver::sys::lib().cuFuncSetAttribute(h, cudarc::driver::sys::CUfunction_attribute::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, 100 * 1024);
-             }
-             self.kernels.lock().map_err(|_| "Poisoned")?.insert(id, RecordedKernel { 
-                 safe: Some(kernel), 
-                 raw: h as u64,
-                 backend: DeviceBackend::Cuda,
-             });
-             Ok(id)
-        } else {
-             Err("Failed to locate raw handle".to_string())
-        }
-    }
-    
-    fn get_device_ptr(&self, id: &BufferId) -> Result<u64, String> {
-        let buffers = self.buffers.lock().map_err(|_| "Buffers Lock Poisoned")?;
-        match buffers.get(id).ok_or_else(|| format!("Buffer {:?} not found", id))? {
-            DeviceBuffer::Cuda(s) => Ok(*s.device_ptr()),
-            DeviceBuffer::Rocm(p) => Ok(*p),
-            DeviceBuffer::External(p) => Ok(*p),
-        }
+    pub fn get_ptr(&self, id: BufferId) -> Option<u64> {
+        self.get_device_ptr(id).ok()
     }
 
-
-
-    pub fn alloc_f32(&self, len: usize, backend: DeviceBackend) -> Result<BufferId, String> { self.alloc(len * 4, backend) }
-    pub fn alloc_i32(&self, len: usize, backend: DeviceBackend) -> Result<BufferId, String> { self.alloc(len * 4, backend) }
-    pub fn alloc_u16(&self, len: usize, backend: DeviceBackend) -> Result<BufferId, String> { self.alloc(len * 2, backend) }
-    
-    pub fn copy_h2d(&self, buf_id: BufferId, data: &[u8]) -> Result<(), String> {
-        let ptr = self.get_device_ptr(&buf_id)?;
-        if let Some(_) = crate::emitter::rocm_driver::RocmDriverApi::get() {
-             let buffers = self.buffers.lock().unwrap();
-             if let Some(DeviceBuffer::Rocm(_)) = buffers.get(&buf_id) {
-                 let api = crate::emitter::rocm_driver::RocmDriverApi::get().unwrap();
-                 unsafe { (api.hipMemcpyHtoD)(ptr, data.as_ptr() as *const _, data.len()); }
-                 return Ok(());
-             }
-        }
-        unsafe {
-             let _ = cudarc::driver::sys::lib().cuMemcpyHtoD_v2(ptr, data.as_ptr() as *const _, data.len());
-        }
-        Ok(())
-    }
-
-    pub fn launch(&self, kernel_id: KernelId, grid: (u32, u32, u32), block: (u32, u32, u32), smem: u32, args: Vec<KernelArg>) -> Result<(), String> {
-        let kernels = self.kernels.lock().map_err(|_| "Kernels Lock Poisoned")?;
-        let recorded = kernels.get(&kernel_id).ok_or("Kernel not found")?;
-        let func_handle = recorded.raw;
-
-        let mut arg_store_i32: Vec<i32> = Vec::with_capacity(args.len());
-        let mut arg_store_u64: Vec<u64> = Vec::with_capacity(args.len());
-        let mut kernel_params: Vec<*mut std::ffi::c_void> = Vec::with_capacity(args.len());
-
-        for arg in &args {
-            match arg {
-                KernelArg::Int(x) => {
-                    arg_store_i32.push(*x);
-                    kernel_params.push(arg_store_i32.last_mut().unwrap() as *mut i32 as *mut std::ffi::c_void);
-                }
-                KernelArg::Float(x) => {
-                    arg_store_i32.push(x.to_bits() as i32);
-                    kernel_params.push(arg_store_i32.last_mut().unwrap() as *mut i32 as *mut std::ffi::c_void);
-                }
-                KernelArg::Usize(x) => {
-                    arg_store_u64.push(*x as u64);
-                    kernel_params.push(arg_store_u64.last_mut().unwrap() as *mut u64 as *mut std::ffi::c_void);
-                }
-                KernelArg::Buffer(id) => {
-                    let ptr = self.get_device_ptr(id)?;
-                    arg_store_u64.push(ptr);
-                    kernel_params.push(arg_store_u64.last_mut().unwrap() as *mut u64 as *mut std::ffi::c_void);
-                }
-            }
-        }
-
-        match recorded.backend {
-            DeviceBackend::Cuda => {
-                unsafe {
-                    let res = cudarc::driver::sys::lib().cuLaunchKernel(
-                        func_handle as _,
-                        grid.0, grid.1, grid.2,
-                        block.0, block.1, block.2,
-                        smem, std::ptr::null_mut(),
-                        kernel_params.as_mut_ptr(), std::ptr::null_mut()
-                    );
-                    if res != cudarc::driver::sys::CUresult::CUDA_SUCCESS {
-                        return Err(format!("CUDA Launch Failed: {:?}", res));
-                    }
-                }
-            }
-            DeviceBackend::Rocm => {
-                let api = crate::emitter::rocm_driver::RocmDriverApi::get().ok_or("ROCm API not found")?;
-                unsafe {
-                    let res = (api.hipModuleLaunchKernel)(
-                        func_handle as _,
-                        grid.0, grid.1, grid.2,
-                        block.0, block.1, block.2,
-                        smem, std::ptr::null_mut(),
-                        kernel_params.as_mut_ptr(), std::ptr::null_mut()
-                    );
-                    if res != 0 { return Err(format!("ROCm Launch Failed: {}", res)); }
-                }
-            }
-            _ => return Err("Unsupported backend for launch".to_string()),
-        }
-        Ok(())
-    }
-
-    pub fn get_device(&self, backend: DeviceBackend) -> Option<Arc<CudaDevice>> {
-        let devices = self.devices.lock().ok()?;
-        devices.get(&backend)?.cuda_dev.clone()
-    }
-    
     pub fn register_external_ptr(&self, ptr: u64) -> Result<BufferId, String> {
         let id = self.generate_buffer_id()?;
-        self.buffers.lock().map_err(|_| "Buffers Lock Poisoned")?.insert(id, DeviceBuffer::External(ptr));
+        self.buffers.lock().map_err(|_| "Lock".to_string())?.insert(id, DeviceBuffer::External(ptr));
         Ok(id)
     }
 
-    pub fn get_ptr(&self, buf_id: BufferId) -> Option<u64> {
-         self.get_device_ptr(&buf_id).ok()
+    pub fn synchronize(&self) {
+        let devices = self.devices.lock().unwrap();
+        if let Some(handle) = devices.get(&DeviceBackend::Cuda) {
+            if let Some(dev) = &handle.cuda_dev {
+                let _ = dev.synchronize();
+            }
+        }
     }
 
-    pub fn synchronize(&self, backend: DeviceBackend) -> Result<(), String> {
-        match backend {
-            DeviceBackend::Cuda => {
-                let dev = self.get_device(DeviceBackend::Cuda).ok_or("No CUDA")?;
-                dev.synchronize().map_err(|e| format!("{:?}", e))
-            }
-            DeviceBackend::Rocm => {
-                let api = crate::emitter::rocm_driver::RocmDriverApi::get().ok_or("No ROCm")?;
-                unsafe { (api.hipDeviceSynchronize)(); }
+    pub fn get_device(&self, backend: DeviceBackend) -> Result<DeviceHandle, String> {
+        let devs = self.devices.lock().map_err(|_| "Lock".to_string())?;
+        devs.get(&backend).cloned().ok_or_else(|| format!("Device {:?} not found", backend))
+    }
+
+    pub fn generate_kernel_id(&self) -> Result<KernelId, String> {
+        let mut id = self.next_kernel_id.lock().map_err(|_| "Lock".to_string())?;
+        *id += 1;
+        Ok(KernelId(*id))
+    }
+
+    pub fn generate_buffer_id(&self) -> Result<BufferId, String> {
+        let mut id = self.next_buffer_id.lock().map_err(|_| "Lock".to_string())?;
+        *id += 1;
+        Ok(BufferId(*id))
+    }
+
+    pub fn copy_to_device<T: Copy>(&self, id: BufferId, data: &[T]) -> Result<(), String> {
+        let mut bufs = self.buffers.lock().map_err(|_| "Lock".to_string())?;
+        match bufs.get_mut(&id).ok_or("No buffer".to_string())? {
+            DeviceBuffer::Cuda(slice) => {
+                let devs = self.devices.lock().map_err(|_| "Lock".to_string())?;
+                // Ensure CUDA context exists. dev reference unused but check existence.
+                let _ = devs.get(&DeviceBackend::Cuda).ok_or("No CUDA".to_string())?.cuda_dev.as_ref().ok_or("No CUDA".to_string())?;
+                let u8_slice = unsafe {
+                    std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * std::mem::size_of::<T>())
+                };
+                unsafe {
+                    let res = cudarc::driver::sys::lib().cuMemcpyHtoD_v2(*slice.device_ptr(), u8_slice.as_ptr() as *const _, u8_slice.len());
+                    if res != cudarc::driver::sys::CUresult::CUDA_SUCCESS { return Err(format!("cuMemcpyHtoD failed: {:?}", res)); }
+                }
                 Ok(())
             }
-            _ => Err("Unsupported".to_string()),
+            _ => Err("Not implemented for this backend".to_string()),
         }
+    }
+
+    pub fn alloc_f32(&self, size: usize, backend: DeviceBackend) -> Result<BufferId, String> {
+        self.alloc(size * 4, backend)
+    }
+
+    pub fn alloc_i32(&self, size: usize, backend: DeviceBackend) -> Result<BufferId, String> {
+        self.alloc(size * 4, backend)
+    }
+
+    pub fn alloc_u16(&self, size: usize, backend: DeviceBackend) -> Result<BufferId, String> {
+        self.alloc(size * 2, backend)
+    }
+}
+
+impl RecordedKernel {
+    fn backend_copy(&self) -> Self {
+        Self { name: self.name.clone(), raw: self.raw, module: self.module, backend: self.backend }
     }
 }

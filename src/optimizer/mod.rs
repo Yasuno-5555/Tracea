@@ -176,16 +176,16 @@ impl GaussianProcess {
         let z = (mu - current_best_y) / sigma;
         
         let phi_z = ( -0.5 * z.powi(2) ).exp() / (2.0 * std::f32::consts::PI).sqrt();
-        let tau_z = 0.5 * (1.0 + (z / 2.0f32.sqrt()).erf()); 
+        let tau_z = 0.5 * (1.0 + (z / 2.0f32.sqrt()).mu_erf()); 
 
         (mu - current_best_y) * tau_z + sigma * phi_z
     }
 }
 
 // Minimal erf implementation for CDF
-trait Erf { fn erf(self) -> f32; }
-impl Erf for f32 {
-    fn erf(self) -> f32 {
+trait MuErf { fn mu_erf(self) -> f32; }
+impl MuErf for f32 {
+    fn mu_erf(self) -> f32 {
         let x = self;
         let a1 =  0.254829592;
         let a2 = -0.284496736;
@@ -208,7 +208,8 @@ pub struct AutoTuner {
     pub gpu: GPUInfo,
     pub gp: GaussianProcess,
     pub best_config: Option<PipelineConfig>,
-    pub blacklist: std::collections::HashSet<Vec<u32>>, // Store vector representation for hashing
+    pub blacklist: std::collections::HashSet<Vec<u32>>,
+    pub runtime: Option<Arc<crate::runtime::RuntimeManager>>, // Doctor access via Runtime
 }
 
 impl AutoTuner {
@@ -218,7 +219,13 @@ impl AutoTuner {
             gp: GaussianProcess::new(),
             best_config: None,
             blacklist: std::collections::HashSet::new(),
+            runtime: None,
         }
+    }
+    
+    pub fn with_runtime(mut self, runtime: Arc<crate::runtime::RuntimeManager>) -> Self {
+        self.runtime = Some(runtime);
+        self
     }
 
     pub fn optimize<B: MicroBenchmark>(&mut self, benchmark: &B, iterations: usize, goal: OptimizationGoal, epilogue: Vec<crate::core::op::EpilogueOp>) -> PipelineConfig {
@@ -295,8 +302,20 @@ impl AutoTuner {
             eprintln!("[Tracea] 🕵️ Probing Candidate: {}x{}x{}", candidate.m_tile, candidate.n_tile, candidate.k_tile);
             if !benchmark.validate_config(&candidate) {
                 eprintln!("[Tracea] ❌ Candidate Failed Validation. Blacklisting.");
-                // Add to blacklist logic if we loop.
-                // For now just skip measurement.
+                
+                // Doctor Consultation
+                if let Some(rt) = &self.runtime {
+                     // Check if Doctor has a critical diagnosis from the last attempt
+                     if let Some(error_report) = rt.doctor.last_error() {
+                         eprintln!("[Tracea Doctor] 🩺 Diagnosis on Validation Failure: {}", error_report.message);
+                         if error_report.message.contains("CUDA_ERROR_NO_BINARY_FOR_GPU") || 
+                            error_report.suggestion.contains("architecture mismatch") {
+                             eprintln!("[Tracea] 🛑 Critical Error Detected by Doctor. Aborting Tuning.");
+                             break;
+                         }
+                     }
+                }
+
                 self.gp.observe(Observation { m, n, k, config: candidate.clone(), score: -1.0 });
                 continue;
             }

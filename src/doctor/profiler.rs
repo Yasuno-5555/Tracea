@@ -1,6 +1,6 @@
 use super::capabilities::{TraceaCapabilities, BackendCapabilities};
 use super::registry::BackendKind;
-use cudarc::driver::*;
+use cudarc::driver::{CudaDevice, sys};
 use std::sync::Arc;
 
 // Mock/Stub logic for backends not available in this environment

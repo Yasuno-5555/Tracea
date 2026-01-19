@@ -27,16 +27,12 @@ if hasattr(tracea, 'PyContext') and not hasattr(tracea, 'Context'):
 print("Starting FA2 Parameter Sweep")
 
 configs = [
-    {'name': '64x32, 2S, 4W', 'args': {'m_tile': 64, 'n_tile': 32, 'stages': 2, 'warps': 4}},
     {'name': '64x64, 2S, 4W', 'args': {'m_tile': 64, 'n_tile': 64, 'stages': 2, 'warps': 4}},
-    {'name': '128x32, 2S, 4W', 'args': {'m_tile': 128, 'n_tile': 32, 'stages': 2, 'warps': 4}},
-    {'name': '128x64, 2S, 4W', 'args': {'m_tile': 128, 'n_tile': 64, 'stages': 2, 'warps': 4}},
-    {'name': '128x64, 2S, 8W', 'args': {'m_tile': 128, 'n_tile': 64, 'stages': 2, 'warps': 8}},
 ]
 
 try:
-    print(f"Running FA2 Benchmark (B=2, H=12, S=4096, D=64)")
-    b_sz, h, s, d = 2, 12, 4096, 64
+    print(f"Running FA2 Benchmark (B=2, H=12, S=8192, D=64)")
+    b_sz, h, s, d = 2, 12, 8192, 64
     
     ctx = tracea.Context("sm_86")
     q = torch.randn(b_sz, h, s, d, device="cuda", dtype=torch.float16)
@@ -79,14 +75,17 @@ try:
             
             # Warmup
             ctx.attention(t_q, t_k, t_v, t_o, b_sz, h, s, d, d, False, True, **cfg['args'])
+            # Warmup and Get Low-level Handles
+            kid = ctx.attention(t_q, t_k, t_v, t_o, b_sz, h, s, d, d, False, True, **cfg['args'])
+            grid, block, smem, args = ctx.get_attention_params(t_q, t_k, t_v, t_o, b_sz, h, s, d, d, True, **cfg['args'])
             ctx.synchronize()
             
             start = time.perf_counter()
-            for _ in range(10):
-                ctx.attention(t_q, t_k, t_v, t_o, b_sz, h, s, d, d, False, True, **cfg['args'])
+            for _ in range(100):
+                ctx.launch_kernel(kid, grid, block, smem, args)
             ctx.synchronize()
             end = time.perf_counter()
-            t_avg = (end - start) / 10.0
+            t_avg = (end - start) / 100.0
             t_tflops = flops / (t_avg * 1e12)
             
             # Check correctness

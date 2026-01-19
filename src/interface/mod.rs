@@ -8,6 +8,7 @@ pub mod nn;
 pub use self::python::{
     PyPipelineConfig, PyContext, PyProfilingScope, PyEpilogueOp, PyEpilogueType, PyOptimizationGoal, PyGraph,
     PyDeviceBufferF32, PyDeviceBufferU16, PyDeviceBufferI32, PyDecision,
+    PyDoctor, PyEnvironmentReport, PyDoctorErrorReport, PyDoctorArtifacts,
     python_relu, python_gelu, python_bias_add
 };
 

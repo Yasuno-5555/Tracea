@@ -56,6 +56,10 @@ fn tracea(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<interface::PyEpilogueType>()?;
     m.add_class::<interface::PyOptimizationGoal>()?;
     m.add_class::<interface::PyDecision>()?;
+    m.add_class::<interface::PyDoctor>()?;
+    m.add_class::<interface::PyEnvironmentReport>()?;
+    m.add_class::<interface::PyDoctorErrorReport>()?;
+    m.add_class::<interface::PyDoctorArtifacts>()?;
 
     // Register NN module
     interface::nn::register_nn_module(_py, m)?;

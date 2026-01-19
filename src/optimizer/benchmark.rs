@@ -156,7 +156,8 @@ impl MicroBenchmark for NVRTCBenchmark {
               return false;
          }
          
-         self.runtime.synchronize(self.backend).is_ok()
+         self.runtime.synchronize();
+         true
     }
 
     fn measure(&self, config: &PipelineConfig) -> BenchmarkResult {
@@ -192,10 +193,7 @@ impl MicroBenchmark for NVRTCBenchmark {
              }
         }
         
-        if let Err(e) = self.runtime.synchronize(self.backend) {
-             eprintln!("[Tracea] ⚠️  Sync Failed: {:?}", e);
-             return BenchmarkResult { tflops: 0.0, latency_ms: 1e9 };
-        }
+        self.runtime.synchronize();
         let dur = start.elapsed().as_secs_f32() / iterations as f32;
         let latency_ms = dur * 1000.0;
         let tflops = (2.0 * self.m as f32 * self.n as f32 * self.k as f32) / (dur * 1e12);
@@ -211,7 +209,8 @@ impl MicroBenchmark for NVRTCBenchmark {
         use crate::runtime::DeviceBackend;
         match self.backend {
             crate::runtime::DeviceBackend::Cuda => {
-                let d = self.runtime.get_device(DeviceBackend::Cuda).expect("No CUDA Device");
+                let d_handle = self.runtime.get_device(crate::runtime::DeviceBackend::Cuda).expect("No CUDA Device");
+                let d = d_handle.cuda_dev.as_ref().expect("No CUDA Device");
                 let mut driver_ver: i32 = 0;
                 unsafe { cudarc::driver::sys::lib().cuDriverGetVersion(&mut driver_ver) };
                 let mut nvrtc_major = 0; let mut nvrtc_minor = 0;

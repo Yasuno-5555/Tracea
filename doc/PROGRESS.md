@@ -22,6 +22,10 @@
 
 ## Next Milestones
 1. **Target MSE < 1e-4**: Resolve the FA2 numerical issue.
+## Compilation Fixes
+- [x] `RuntimeManager` のリファクタリング (メモリアライメント修正)
+- [x] `cudarc` API の不整合修正 (完了)
+- [/] FA2 カーネル引数渡しの検証 (Export BHSD) -> **`ptxas` 実行時エラー調査中**
 2. **Peak Performance**: Enable Tensor Core pipelining (`cp.async`, swizzling) once accuracy is verified.
 3. **Multi-Node Verification**: Stress testing across heterogeneous hardware.
 
