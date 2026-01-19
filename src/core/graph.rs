@@ -178,15 +178,20 @@ impl Graph {
                                     let s = qk_gemm.n.0;
                                     let dh = qk_gemm.k.0;
                                     let b_h_s = qk_gemm.m.0;
-                                    let h = 8; 
-                                    let b = b_h_s / (h * s);
+                                    
+                                    // Robustness Fix: Instead of assuming h=8, we flatten B and H.
+                                    // Treat effective batch size as B_eff = B * H.
+                                    // Set h=1 for the fused operator.
+                                    let b_eff = b_h_s / s;
+                                    let h_eff = 1;
+                                    
                                     let causal = true; // Heuristic for now
 
                                     let q_id = qk_node.dependencies[0];
                                     let k_id = qk_node.dependencies[1];
                                     let v_id = maybe_v_id;
 
-                                    fusion_mapping.insert(node.id, (b, s, 512, h, dh, causal, vec![q_id, k_id, v_id]));
+                                    fusion_mapping.insert(node.id, (b_eff, s, 512, h_eff, dh, causal, vec![q_id, k_id, v_id]));
                                     
                                     // Mark nodes to be swallowed by fusion
                                     fused_source_nodes.insert(node.id);

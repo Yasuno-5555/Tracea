@@ -55,43 +55,40 @@ pub fn get_variants_for_id(variant_id: &str) -> Vec<&'static KernelVariant> {
 static REGISTRY: &[KernelVariant] = &[
     // --- CUDA Variants ---
     KernelVariant {
-        id: "fa2_sm80_tensor_core",
-        kernel_id: "flash_attention_2",
+        id: "fa2_cuda_v2",
+        kernel_id: "flash_attention_v2_kernel",
         priority: 100,
         hard_requirements: &[
             Requirement::BackendIs(BackendKind::Cuda),
             Requirement::SmAtLeast(80),
             Requirement::HasTensorCoreLike,
-            Requirement::MaxSharedMemAtLeast(65536),
-            Requirement::Precision(super::engine::PrecisionPolicy::BF16),
         ],
         soft_preferences: &[Preference::PreferTensorCoreLike],
         backend: BackendKind::Cuda,
     },
     KernelVariant {
-        id: "fa2_generic_cuda",
-        kernel_id: "flash_attention_2",
-        priority: 10,
+        id: "gemm_cuda_v2",
+        kernel_id: "gemm_kernel",
+        priority: 100,
         hard_requirements: &[
             Requirement::BackendIs(BackendKind::Cuda),
-            Requirement::SmAtLeast(70),
-        ],
-        soft_preferences: &[],
-        backend: BackendKind::Cuda,
-    },
-    KernelVariant {
-        id: "gemm_cuda_standard",
-        kernel_id: "gemm",
-        priority: 50,
-        hard_requirements: &[
-            Requirement::BackendIs(BackendKind::Cuda),
-            Requirement::SmAtLeast(60)
         ],
         soft_preferences: &[],
         backend: BackendKind::Cuda,
     },
     
     // --- ROCm Variants ---
+    KernelVariant {
+        id: "gemm_rocm_matrix_core",
+        kernel_id: "gemm",
+        priority: 100,
+        hard_requirements: &[
+            Requirement::BackendIs(BackendKind::Rocm),
+            Requirement::HasTensorCoreLike,
+        ],
+        soft_preferences: &[Preference::PreferTensorCoreLike],
+        backend: BackendKind::Rocm,
+    },
     KernelVariant {
         id: "fa2_rocm_matrix_core",
         kernel_id: "flash_attention_2",
@@ -104,17 +101,7 @@ static REGISTRY: &[KernelVariant] = &[
         soft_preferences: &[Preference::PreferTensorCoreLike],
         backend: BackendKind::Rocm,
     },
-    KernelVariant {
-        id: "fa2_rocm_fp32",
-        kernel_id: "flash_attention_2",
-        priority: 20,
-        hard_requirements: &[
-            Requirement::BackendIs(BackendKind::Rocm),
-            Requirement::MaxSharedMemAtLeast(49152),
-        ],
-        soft_preferences: &[],
-        backend: BackendKind::Rocm,
-    },
+    // ... (existing variants) ...
     KernelVariant {
         id: "gemm_rocm_standard",
         kernel_id: "gemm",
@@ -126,6 +113,17 @@ static REGISTRY: &[KernelVariant] = &[
 
     // --- Metal Variants ---
     KernelVariant {
+        id: "gemm_metal_simdgroup",
+        kernel_id: "gemm",
+        priority: 100,
+        hard_requirements: &[
+            Requirement::BackendIs(BackendKind::Metal),
+            Requirement::HasTensorCoreLike,
+        ],
+        soft_preferences: &[Preference::PreferTensorCoreLike],
+        backend: BackendKind::Metal,
+    },
+    KernelVariant {
         id: "fa2_metal_simdgroup",
         kernel_id: "flash_attention_2",
         priority: 10,
@@ -135,17 +133,6 @@ static REGISTRY: &[KernelVariant] = &[
             Requirement::MaxSharedMemAtLeast(32768),
         ],
         soft_preferences: &[Preference::PreferTensorCoreLike],
-        backend: BackendKind::Metal,
-    },
-    KernelVariant {
-        id: "fa2_metal_fp32",
-        kernel_id: "flash_attention_2",
-        priority: 20,
-        hard_requirements: &[
-            Requirement::BackendIs(BackendKind::Metal),
-            Requirement::MaxSharedMemAtLeast(16384),
-        ],
-        soft_preferences: &[],
         backend: BackendKind::Metal,
     },
     KernelVariant {

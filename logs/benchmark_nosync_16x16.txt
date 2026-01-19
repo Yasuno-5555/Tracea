@@ -1,6 +1,0 @@
-Traceback (most recent call last):
-  File "<string>", line 1, in <module>
-  File "E:\Projects\Tracea\benchmarks\masterpiece_bench.py", line 83
-    Vinc	            
-                     ^
-IndentationError: unindent does not match any outer indentation level

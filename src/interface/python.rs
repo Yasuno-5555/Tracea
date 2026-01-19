@@ -3,8 +3,9 @@ use crate::core::config::PipelineConfig;
 use crate::optimizer::{AutoTuner, GPUInfo, OptimizationGoal};
 use crate::optimizer::cache::{TuningCache, CacheKey};
 use crate::optimizer::benchmark::NVRTCBenchmark;
-use crate::emitter::cuda::CUDAEmitter;
-use crate::runtime::{RuntimeManager, BufferId, KernelArg}; // Removed KernelId as it's not used directly here anymore (we use auto-inference)
+use crate::runtime::{RuntimeManager, BufferId, KernelArg, DeviceBackend};
+use crate::emitter::universal::UniversalEmitter;
+use crate::emitter::traits::{UnifiedOpIR, UnifiedOpType};
 use std::io::Write; 
 use std::sync::Arc;
 
@@ -19,7 +20,8 @@ pub struct PyDeviceBufferF32 {
 impl PyDeviceBufferF32 {
     #[staticmethod]
     pub fn unsafe_from_ptr(ptr: usize, _len: usize, device: &PyContext) -> PyResult<Self> {
-        let id = device.runtime.register_external_ptr(ptr as u64);
+        let id = device.runtime.register_external_ptr(ptr as u64)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))?;
         Ok(Self { id, runtime: device.runtime.clone() })
     }
     
@@ -41,7 +43,8 @@ pub struct PyDeviceBufferU16 {
 impl PyDeviceBufferU16 {
    #[staticmethod]
     pub fn unsafe_from_ptr(ptr: usize, _len: usize, device: &PyContext) -> PyResult<Self> {
-        let id = device.runtime.register_external_ptr(ptr as u64);
+        let id = device.runtime.register_external_ptr(ptr as u64)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))?;
         Ok(Self { id, runtime: device.runtime.clone() })
     }
     
@@ -63,7 +66,8 @@ pub struct PyDeviceBufferI32 {
 impl PyDeviceBufferI32 {
     #[staticmethod]
     pub fn unsafe_from_ptr(ptr: usize, _len: usize, device: &PyContext) -> PyResult<Self> {
-        let id = device.runtime.register_external_ptr(ptr as u64);
+        let id = device.runtime.register_external_ptr(ptr as u64)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))?;
         Ok(Self { id, runtime: device.runtime.clone() })
     }
     
@@ -109,6 +113,12 @@ impl PyPipelineConfig {
     pub fn add_bias(&mut self, ptr: usize) {
         self.inner.epilogue.push(crate::core::op::EpilogueOp::BiasAdd { bias_ptr: ptr });
     }
+
+    #[getter]
+    pub fn force_num_warps(&self) -> Option<u32> { self.inner.force_num_warps }
+
+    #[setter]
+    pub fn set_force_num_warps(&mut self, val: Option<u32>) { self.inner.force_num_warps = val; }
 }
 
 #[pyclass(name = "Graph")]
@@ -159,7 +169,7 @@ pub struct PyContext {
 }
 
 #[pyclass(name = "OptimizationGoal")]
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PyOptimizationGoal {
     MaximizeTFLOPS,
     MinimizeLatency,
@@ -186,39 +196,40 @@ impl PyContext {
         let caps = crate::doctor::get_capabilities();
         
         let target_arch = arch.unwrap_or_else(|| {
-            // Auto-detect best GPU if available, or fallback to CPU
             if let Some(cuda) = caps.get_backend(crate::doctor::BackendKind::Cuda) {
                 format!("sm_{}", cuda.arch_code)
             } else {
-                "cpu".to_string()
+                "gfx90a".to_string() 
             }
         });
 
-        println!("[Tracea] ⚕️ Initializing Context via Doctor (Target: {})", target_arch);
+        println!("[Tracea] ⚕️ Initializing Heterogeneous Context (Target: {})", target_arch);
         
-        // Existing runtime init logic (CUDA specific for now, needs multi-backend runtime later)
-        let sm_arch = if target_arch.contains("80") { "sm_80" } else { "sm_86" };
-        let runtime = RuntimeManager::init(sm_arch).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))?;
+        let runtime = RuntimeManager::init(None).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))?;
+        
+        let primary_backend = if target_arch.contains("sm") { DeviceBackend::Cuda } else { DeviceBackend::Rocm };
 
         let bit_arch = if target_arch.contains("80") {
              GPUInfo::a100()
+        } else if target_arch.contains("gfx") {
+             GPUInfo::mi250()
         } else {
              GPUInfo::rtx3070()
         };
 
-        // Allocate Scratchpad Memory (256MB each for A, B, C - up to 8k x 8k float32)
         let size = 8192 * 8192; 
-        println!("[Tracea Debug] Allocating Scratch A..."); std::io::stdout().flush().unwrap();
-        
-        let id_a = runtime.alloc_f32(size).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))?;
-        let id_b = runtime.alloc_f32(size).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))?;
-        let id_c = runtime.alloc_f32(size).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))?;
-        
-        let id_a_h = runtime.alloc_u16(size).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))?;
-        let id_b_h = runtime.alloc_u16(size).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))?;
+        let id_a = runtime.alloc_f32(size, primary_backend).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))?;
+        let id_b = runtime.alloc_f32(size, primary_backend).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))?;
+        let id_c = runtime.alloc_f32(size, primary_backend).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))?;
+        let id_a_h = runtime.alloc_u16(size, primary_backend).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))?;
+        let id_b_h = runtime.alloc_u16(size, primary_backend).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))?;
 
         let mut initial_config = PipelineConfig::new(1, 64, 64, 32);
-        initial_config.use_tensor_cores = true;
+        initial_config.instruction = if primary_backend == DeviceBackend::Cuda {
+             crate::core::config::SpecializedInstruction::CudaMMA
+        } else {
+             crate::core::config::SpecializedInstruction::RocmMFMA
+        };
 
         Ok(Self {
             tuner: AutoTuner::new(bit_arch),
@@ -295,23 +306,33 @@ impl PyContext {
                 }
             }
 
-            let env = AutoTuner::get_env_info(&ctx.runtime.get_device());
+            let env = AutoTuner::get_env_info(&ctx.runtime.get_device(ctx.tuner.gpu.backend));
             
             let is_b_int32 = b.extract::<PyDeviceBufferI32>().is_ok();
+            let is_a_f32 = a.extract::<PyDeviceBufferF32>().is_ok();
+
             let quant_mode = if is_b_int32 { 
                 crate::core::config::QuantizationMode::Int4 
             } else { 
                 crate::core::config::QuantizationMode::None 
             };
 
+            let dtype_str = if is_b_int32 {
+                "int4".to_string()
+            } else if is_a_f32 {
+                "f32".to_string()
+            } else {
+                "f16".to_string()
+            };
+
             let key = CacheKey {
+                backend: ctx.tuner.gpu.backend,
                 gpu: ctx.tuner.gpu.name.clone(),
                 m, n, k,
-                dtype: if is_b_int32 { "int4".to_string() } else { "f16".to_string() },
+                dtype: dtype_str.clone(),
                 epilogue: rust_epilogue.clone(),
-                cuda_version: env.cuda_version,
-                driver_version: env.driver_version,
-                sm_arch: env.sm_arch,
+                env_version: env.api_version.clone(),
+                arch: env.arch.clone(),
             };
 
             let mut cache = TuningCache::new();
@@ -331,18 +352,17 @@ impl PyContext {
             final_config.epilogue = rust_epilogue;
             final_config.quantization = quant_mode;
 
-            println!("[Tracea Debug] Compiling Kernel (via Runtime)..."); std::io::stdout().flush().unwrap();
-            let emitter = CUDAEmitter::new();
-            let source = if final_config.use_tensor_cores {
-                 emitter.generate_tensor_core_gemm(final_config.clone())
-            } else {
-                 emitter.generate_pipelined_gemm(final_config.clone())
+            let backend = ctx.tuner.gpu.backend;
+            let emitter = UniversalEmitter::new(backend);
+            let ir = UnifiedOpIR {
+                op_type: UnifiedOpType::Gemm { m, n, k },
+                precison: dtype_str.clone(),
+                tiling: final_config.clone(),
             };
+            let source = emitter.generate(ir);
             
-            let kernel_id = ctx.runtime.compile(&source, "gemm_pipelined_kernel")
+            let kernel_id = ctx.runtime.compile(&source, "gemm_kernel", backend)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Compilation Failed: {}", e)))?;
-                
-            println!("[Tracea Debug] Compilation Success (ID: {:?}).", kernel_id); std::io::stdout().flush().unwrap();
                 
             (final_config, kernel_id)
         };
@@ -352,7 +372,7 @@ impl PyContext {
         let block_dim = (128, 1, 1);
         
         let is_int4 = config.quantization == crate::core::config::QuantizationMode::Int4;
-        let smem_size = if config.use_tensor_cores {
+        let smem_size = if config.use_tensor_cores() {
             if is_int4 {
                  (n_stages * mt * kt * 2) + (n_stages * kt * nt / 2)
             } else {
@@ -407,7 +427,7 @@ impl PyContext {
         Ok(())
     }
 
-    #[pyo3(signature = (q, k, v, o, b_in, h_in, s_in, d_in, dh_in, causal=false, scale_sqrt=true))]
+    #[pyo3(signature = (q, k, v, o, b_in, h_in, s_in, d_in, dh_in, causal=false, scale_sqrt=true, m_tile=None, n_tile=None, stages=None, warps=None))]
     pub fn attention(
         slf: &Bound<'_, Self>,
         q: &Bound<'_, PyAny>,
@@ -417,16 +437,36 @@ impl PyContext {
         b_in: u32, h_in: u32, s_in: u32, d_in: u32, dh_in: u32,
         causal: bool,
         scale_sqrt: bool,
+        m_tile: Option<u32>,
+        n_tile: Option<u32>,
+        stages: Option<u32>,
+        warps: Option<u32>,
     ) -> PyResult<()> {
         let ctx = slf.borrow();
         let op = crate::core::op::FusedAttentionOp {
             b: b_in, s: s_in, d: d_in, h: h_in, dh: dh_in, causal, scale_inv_sqrt_d: scale_sqrt,
         };
 
-        let emitter = CUDAEmitter::new();
-        let source = emitter.generate_fused_attention(op);
+        let config = if let (Some(m), Some(n), Some(s)) = (m_tile, n_tile, stages) {
+            let mut c = crate::core::config::PipelineConfig::new(s, m, n, dh_in);
+            c.force_num_warps = warps;
+            Some(c)
+        } else {
+            None
+        };
+
+        let backend = ctx.tuner.gpu.backend;
+        let emitter = UniversalEmitter::new(backend);
+        let ir = UnifiedOpIR {
+            op_type: UnifiedOpType::FusedAttention {
+                b: op.b, s: op.s, d: op.d, h: op.h, dh: op.dh, causal: op.causal
+            },
+            precison: "f16".to_string(), // Attention usually f16
+            tiling: config.clone().unwrap_or_else(|| PipelineConfig::new(2, 64, 64, dh_in)),
+        };
+        let source = emitter.generate(ir);
         
-        let kernel_id = ctx.runtime.compile(&source, "flash_attention_v2_kernel")
+        let kernel_id = ctx.runtime.compile(&source, "flash_attention_v2_kernel", backend)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Attention Compilation Failed: {}", e)))?;
 
         fn get_arg(obj: &Bound<'_, PyAny>) -> PyResult<KernelArg> {
@@ -448,21 +488,27 @@ impl PyContext {
         let arg_v = get_arg(v)?;
         let arg_o = get_arg(o)?;
 
-        let br = 64;
-        let grid = ( (s_in + br - 1) / br, h_in, b_in );
-        let block = (128, 1, 1);
-        let smem = 0; 
+        let final_config = config.unwrap_or_else(|| PipelineConfig::new(2, 64, 64, dh_in));
+        let mt = final_config.m_tile;
+        let nt = final_config.n_tile;
 
         let scale_val = if scale_sqrt { 1.0 / (dh_in as f32).sqrt() } else { 1.0 };
 
+        let num_warps = final_config.force_num_warps.unwrap_or(mt / 16);
+        let block = (num_warps * 32, 1, 1);
+        let grid = ( (s_in + mt - 1) / mt, h_in, b_in );
+        
+        // Single-buffer Smem calculation: sQ(mt*D) + sK(nt*D) + sV(nt*D) + sP(mt*nt)
+        let smem_bytes = (mt * dh_in + 2 * nt * dh_in + mt * nt) * 2;
+
         ctx.runtime.launch(
-            kernel_id, grid, block, smem,
+            kernel_id, grid, block, smem_bytes as u32,
             vec![
                 arg_q, arg_k, arg_v, arg_o,
                 KernelArg::Int(b_in as i32),
                 KernelArg::Int(h_in as i32),
                 KernelArg::Int(s_in as i32),
-                KernelArg::Int(d_in as i32),
+                KernelArg::Int(dh_in as i32),
                 KernelArg::Float(scale_val)
             ]
         ).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Attention Launch Error: {}", e)))?;
@@ -502,7 +548,8 @@ impl PyContext {
     }
 
     pub fn synchronize(&self) -> PyResult<()> {
-        self.runtime.get_device().synchronize()
+        let backend = self.tuner.gpu.backend;
+        self.runtime.synchronize(backend)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Sync Error: {:?}", e)))
     }
 

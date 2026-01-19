@@ -172,7 +172,7 @@ pub fn select_variant(
         Decision {
             selected_variant: Some(best.id),
             compile_strategy: match best.backend {
-                BackendKind::Cuda => CompileStrategy::JIT, // Or Precompiled, dependent on specific variant details not fully exposed here, defaulting to JIT for now or AOT
+                BackendKind::Cuda => CompileStrategy::Precompiled, // Defaulting to Precompiled until JIT is fully implemented
                 BackendKind::Rocm => CompileStrategy::AOT,
                 BackendKind::Metal => CompileStrategy::AOT,
                 BackendKind::Cpu => CompileStrategy::AOT, 

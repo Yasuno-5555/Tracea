@@ -35,21 +35,34 @@ impl JITCompiler {
         Ok((major as usize) * 10 + (minor as usize))
     }
 
+    pub fn get_driver_version() -> Result<i32, String> {
+        unsafe {
+            let driver = crate::emitter::driver::get_driver_api()
+                .map_err(|e| format!("Failed to get driver API: {}", e))?;
+            let func_get_ver = &driver.cu_driver_get_version;
+            let mut version: i32 = 0;
+            let res = func_get_ver(&mut version);
+            if res == 0 {
+                Ok(version)
+            } else {
+                Err(format!("cuDriverGetVersion failed: {}", res))
+            }
+        }
+    }
+
     pub fn compile_cuda(&self, source: &str, kernel_name: &str) -> Result<CudaFunction, String> {
         eprintln!("[Tracea Debug] ENTERING compile_cuda for {}", kernel_name);
+
         let cwd = std::env::current_dir().unwrap_or_default();
         eprintln!("[Tracea Debug] CWD: {:?}", cwd);
 
         let cache_key = format!("{}:{}", kernel_name, source.len());
-            let cache = self.kernel_cache.lock().unwrap();
+            let cache = self.kernel_cache.lock().map_err(|_| "Cache Lock Poisoned".to_string())?;
             if let Some(kernel) = cache.get(&cache_key) {
                 return Ok(kernel.clone());
             }
         
-        
         let compute_cap = Self::get_compute_capability(&self.device).unwrap_or(75);
-        // Cap at 80 because some NVRTC versions in the path might not support 86
-        // But we need at least 80 for cp.async
         let effective_cap = if compute_cap > 80 { 80 } else { compute_cap };
         let arch = format!("compute_{}", effective_cap);
         let arch_static = Box::leak(arch.into_boxed_str());
@@ -67,31 +80,33 @@ impl JITCompiler {
             .map_err(|e| format!("NVRTC Error: {:?}", e))?;
             
         let mut ptx_src = ptx.to_src();
-        let mut ptx_src = ptx.to_src();
-        let mut ptx_src = ptx.to_src();
         
-        // Robust PTX Version Patching
-        let mut lines: Vec<&str> = ptx_src.lines().collect();
-        let mut new_lines = Vec::new();
+        // Smart PTX Version Patching (Phase X: Compatibility Layer)
+        let driver_ver = Self::get_driver_version().unwrap_or(0);
+        eprintln!("[Doctor] Detected Driver Version: {}", driver_ver);
         
-        eprintln!("[Tracea Debug] PTX Dump Head:");
-        for (i, line) in lines.iter().take(5).enumerate() {
-            eprintln!("  L{}: {}", i, line);
+        // CUDA 12.4 -> 12040. If driver < 12.4, it won't support PTX 8.4.
+        if driver_ver > 0 && driver_ver < 12040 {
+             eprintln!("[Doctor] Driver is older than 12.4. Applying PTX downgrade patch to 7.0/sm_80.");
+             let ptx_src_raw = ptx_src.clone();
+             let ptx_src_patched = ptx_src_raw
+                .replace(".version 8.4", ".version 7.0")
+                .replace(".version 8.3", ".version 7.0")
+                .replace(".version 8.2", ".version 7.0")
+                .replace(".version 8.1", ".version 7.0")
+                .replace(".version 8.0", ".version 7.0")
+                .replace(".target sm_86", ".target sm_80"); // Force sm_80 for broad compatibility
+             ptx_src = ptx_src_patched;
+        } else {
+             eprintln!("[Doctor] Driver {} is sufficient for native PTX.", driver_ver);
+             // Still patch .target sm_86 to sm_80 if we capped effective_cap at 80?
+             // effective_cap is set to 80 above. The generated PTX likely says .target sm_80 unless NVRTC defaults higher.
+             // If NVRTC generates .target sm_86 but we asked for compute_80, it might be weird.
+             // Let's safe-guard sm_86 -> sm_80 anyway if effective_cap is 80.
+             if effective_cap <= 80 {
+                 ptx_src = ptx_src.replace(".target sm_86", ".target sm_80");
+             }
         }
-
-        for line in lines {
-            if line.trim().starts_with(".version") {
-                eprintln!("[Tracea Debug] Replacing Version: {} -> .version 7.0", line);
-                new_lines.push(".version 7.0");
-            } else if line.trim().starts_with(".target") {
-                 eprintln!("[Tracea Debug] Replacing Target: {} -> .target sm_80", line);
-                 new_lines.push(".target sm_80");
-            } else {
-                new_lines.push(line);
-            }
-        }
-        ptx_src = new_lines.join("\n");
-        eprintln!("[Tracea Debug] PTX Patching Done.");
         
         // Dump the final PTX to disk for debugging
         let dump_path = format!("E:/Projects/Tracea/debug_dump_{}.ptx", kernel_name);
@@ -100,11 +115,10 @@ impl JITCompiler {
         }
 
         let head = if ptx_src.len() > 500 { &ptx_src[..500] } else { &ptx_src };
-        panic!("DEBUG EXFILTRATION: {}", head);
         
         let ptx = cudarc::nvrtc::Ptx::from_src(ptx_src);
         
-        let mut counter = self.module_counter.lock().unwrap();
+        let mut counter = self.module_counter.lock().map_err(|_| "Counter Lock Poisoned".to_string())?;
         let module_name = format!("tracea_module_{}", *counter);
         *counter += 1;
         let module_name_static = Box::leak(module_name.into_boxed_str());
@@ -118,7 +132,7 @@ impl JITCompiler {
         let kernel = self.device.get_func(module_name_static, kernel_name_static)
             .ok_or_else(|| format!("Function {} not found", kernel_name))?;
 
-        let mut cache = self.kernel_cache.lock().unwrap();
+        let mut cache = self.kernel_cache.lock().map_err(|_| "Cache Lock Poisoned".to_string())?;
         cache.insert(cache_key, kernel.clone());
         
         Ok(kernel)
@@ -170,22 +184,30 @@ impl JITCompiler {
     }
 
     pub fn clear_cache(&self) {
-        let mut cache = self.kernel_cache.lock().unwrap();
+        let mut cache = self.kernel_cache.lock().unwrap(); // Keep unwrap for clear methods for now or fix silently
         cache.clear();
     }
 
     pub fn compile_fused_attention(&self, op: &crate::core::op::FusedAttentionOp) -> Result<Arc<CudaFunction>, String> {
-        // Keeping Arc for Attention for now as it's used elsewhere as Arc
-        let source = self.emitter.generate_fused_attention(op.clone());
+        // Use UnifiedOpIR and UniversalEmitter/CUDAEmitter logic
+        use crate::emitter::traits::{UnifiedOpIR, UnifiedOpType};
+        let ir = UnifiedOpIR {
+            op_type: UnifiedOpType::FusedAttention {
+                b: op.b, s: op.s, d: op.d, h: op.h, dh: op.dh, causal: op.causal
+            },
+            precison: "f16".to_string(),
+            tiling: crate::PipelineConfig::new(2, 64, 64, op.dh),
+        };
+        
+        let source = self.emitter.generate_from_ir(&ir);
         let key = format!("fused_attn_dh{}_c{}_s{}", op.dh, op.causal, op.scale_inv_sqrt_d);
         
-        let mut cache = self.kernel_cache.lock().unwrap();
+        let mut cache = self.kernel_cache.lock().map_err(|_| "Cache Lock Poisoned".to_string())?;
         if let Some(kernel) = cache.get(&key) {
             return Ok(Arc::new(kernel.clone()));
         }
         
-        
-        let kernel = self.compile_nvrtc(&source, "fused_attention_kernel")
+        let kernel = self.compile_nvrtc(&source, "flash_attention_v2_kernel")
             .map_err(|e| format!("NVRTC Error: {}", e))?;
             
         cache.insert(key, kernel.clone());

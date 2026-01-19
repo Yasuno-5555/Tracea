@@ -1,5 +1,11 @@
-﻿pub mod cuda;
-pub mod traits;
-pub mod macros;
+﻿pub(crate) mod traits;
+pub mod cuda;
+pub mod fa2;
 pub mod jit;
 pub mod driver;
+pub mod rocm;
+pub mod rocm_driver;
+pub mod rocm_jit;
+pub mod metal;
+pub mod universal;
+pub(crate) mod macros;

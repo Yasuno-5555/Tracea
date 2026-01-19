@@ -6,6 +6,7 @@ use crate::core::config::PipelineConfig;
 
 #[derive(Serialize, Deserialize, Hash, PartialEq, Eq, Clone, Debug)]
 pub struct CacheKey {
+    pub backend: crate::runtime::manager::DeviceBackend,
     pub gpu: String,
     pub m: u32,
     pub n: u32,
@@ -13,9 +14,8 @@ pub struct CacheKey {
     pub dtype: String,
     pub epilogue: Vec<crate::core::op::EpilogueOp>,
     // Environment Invalidation
-    pub cuda_version: String,
-    pub driver_version: String,
-    pub sm_arch: u32,
+    pub env_version: String, // CUDA/ROCm/Metal API version
+    pub arch: String,        // sm_86, gfx90a, etc.
 }
 
 #[derive(Serialize, Deserialize)]
@@ -69,13 +69,10 @@ impl TuningCache {
             }
         }).collect();
         let epi_str = normalized_epilogue.join(",");
-        eprintln!("[Tracea] 🔑 Normalized Epilogue: {}", epi_str);
 
-        let s_key = format!("{}:{}:{}:{}:{}:{}:{}:{}:{}", 
-            key.gpu, key.m, key.n, key.k, key.dtype, epi_str,
-            key.cuda_version, key.driver_version, key.sm_arch);
-        eprintln!("[Tracea] 🔑 Final Key: {}", s_key);
-        s_key
+        format!("{:?}:{}:{}:{}:{}:{}:{}:{}:{}", 
+            key.backend, key.gpu, key.m, key.n, key.k, key.dtype, epi_str,
+            key.env_version, key.arch)
     }
 
     pub fn get(&self, key: &CacheKey) -> Option<PipelineConfig> {

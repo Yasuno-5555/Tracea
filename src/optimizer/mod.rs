@@ -2,39 +2,61 @@ use crate::PipelineConfig;
 use std::sync::Arc;
 use cudarc::driver::CudaDevice;
 
+use crate::runtime::manager::DeviceBackend;
+
 #[derive(Debug, Clone)]
 pub struct GPUInfo {
     pub name: String,
+    pub backend: DeviceBackend,
     pub shared_memory_per_block: usize,
     pub max_registers_per_thread: u32,
-    pub max_warps_per_sm: u32,
+    pub max_warps_per_sm: u32, // CUDA: Warps, ROCm: Waves, Metal: Simdgroups
+    pub wavefront_size: u32,  // CUDA: 32, ROCm: 64 or 32, Metal: 32
     pub max_blocks_per_sm: u32,
     pub shared_memory_per_sm: usize,
-    pub has_tensor_cores: bool,
+    pub has_specialized_units: bool,
 }
 
 impl GPUInfo {
     pub fn rtx3070() -> Self {
         Self {
             name: "NVIDIA GeForce RTX 3070".to_string(),
+            backend: DeviceBackend::Cuda,
             shared_memory_per_block: 99 * 1024, // Real limit with dynamic SMEM config
             max_registers_per_thread: 255,
             max_warps_per_sm: 48,
+            wavefront_size: 32,
             max_blocks_per_sm: 16,
             shared_memory_per_sm: 100 * 1024,
-            has_tensor_cores: true,
+            has_specialized_units: true,
+        }
+    }
+
+    pub fn mi250() -> Self {
+        Self {
+            name: "AMD Instinct MI250X".to_string(),
+            backend: DeviceBackend::Rocm,
+            shared_memory_per_block: 64 * 1024,
+            max_registers_per_thread: 256,
+            max_warps_per_sm: 32,
+            wavefront_size: 64,
+            max_blocks_per_sm: 16,
+            shared_memory_per_sm: 64 * 1024,
+            has_specialized_units: true,
         }
     }
 
     pub fn a100() -> Self {
         Self {
-            name: "NVIDIA A100".to_string(),
+            name: "NVIDIA A100-SXM4-40GB".to_string(),
+            backend: DeviceBackend::Cuda,
             shared_memory_per_block: 164 * 1024,
             max_registers_per_thread: 255,
             max_warps_per_sm: 64,
+            wavefront_size: 32,
             max_blocks_per_sm: 32,
             shared_memory_per_sm: 164 * 1024,
-            has_tensor_cores: true,
+            has_specialized_units: true,
         }
     }
 }
@@ -97,9 +119,9 @@ impl GaussianProcess {
         v
     }
 
-    fn roofline_prior(&self, m: u32, n: u32, k: u32, config: &PipelineConfig) -> f32 {
-        // RTX 3070 Constants
-        let peak_tflops = if config.use_tensor_cores { 160.0 } else { 20.0 };
+    fn roofline_prior(&self, m: u32, n: u32, k: u32, config: &PipelineConfig, _gpu: &GPUInfo) -> f32 {
+        let is_tc = config.instruction != crate::core::config::SpecializedInstruction::None;
+        let peak_tflops = if is_tc { 160.0 } else { 20.0 };
         let mem_bw = 448.0; // GB/s
         
         let ops = 2.0 * m as f64 * n as f64 * k as f64;
@@ -112,8 +134,8 @@ impl GaussianProcess {
     }
 
     /// Shape-Aware Product Kernel Prediction
-    pub fn predict(&self, m: u32, n: u32, k: u32, config: &PipelineConfig) -> (f32, f32) {
-        let prior_mean = self.roofline_prior(m, n, k, config);
+    pub fn predict(&self, m: u32, n: u32, k: u32, config: &PipelineConfig, gpu: &GPUInfo) -> (f32, f32) {
+        let prior_mean = self.roofline_prior(m, n, k, config, gpu);
         
         if self.observations.is_empty() {
             return (prior_mean, 1.0); 
@@ -129,56 +151,32 @@ impl GaussianProcess {
             let obs_shape = self.shape_features(obs.m, obs.n, obs.k);
             let obs_config = self.config_features(&obs.config, obs.m, obs.n, obs.k);
             
-            // 1. K_shape
-            let d_shape: f32 = cur_shape.iter().zip(obs_shape.iter())
-                                .map(|(a, b)| (a - b).powi(2))
-                                .sum();
-            let k_shape = ( -d_shape / 2.0 ).exp();
+            let mut dist_sq = 0.0;
+            for (a, b) in cur_shape.iter().zip(obs_shape.iter()) { dist_sq += (a - b).powi(2); }
+            for (a, b) in cur_config.iter().zip(obs_config.iter()) { dist_sq += (a - b).powi(2); }
             
-            // 2. K_config
-            let d_config: f32 = cur_config.iter().zip(obs_config.iter())
-                                .map(|(a, b)| (a - b).powi(2))
-                                .sum();
-            let k_config = ( -d_config / 2.0 ).exp();
+            let weight = (-dist_sq / (2.0 * self.length_scale.powi(2))).exp();
             
-            // Product Kernel: K = K_shape * K_config
-            let weight = k_shape * k_config;
-            
-            // Learn the residual from the prior
-            let obs_prior = self.roofline_prior(obs.m, obs.n, obs.k, &obs.config);
+            let obs_prior = self.roofline_prior(obs.m, obs.n, obs.k, &obs.config, gpu);
             mean_diff += weight * (obs.score - obs_prior);
             total_weight += weight;
         }
 
-        let final_mean = if total_weight > 1e-6 {
-            prior_mean + (mean_diff / total_weight)
-        } else {
-            prior_mean
-        };
-
-        // Variance decreases as we get closer to observed points
-        let min_dist_prod = self.observations.iter()
-            .map(|obs| {
-                 let obs_shape = self.shape_features(obs.m, obs.n, obs.k);
-                 let obs_config = self.config_features(&obs.config, obs.m, obs.n, obs.k);
-                 let ds = cur_shape.iter().zip(obs_shape.iter()).map(|(a, b)| (a - b).powi(2)).sum::<f32>();
-                 let dc = cur_config.iter().zip(obs_config.iter()).map(|(a, b)| (a - b).powi(2)).sum::<f32>();
-                 ( -ds/2.0 ).exp() * ( -dc/2.0 ).exp()
-            })
-            .fold(0.0, f32::max);
+        let mu = prior_mean + mean_diff / (total_weight + self.noise_sigma);
+        let sigma = 1.0 / (total_weight + 1.0).sqrt();
         
-        (final_mean, (1.0 - min_dist_prod).max(self.noise_sigma))
+        (mu, sigma)
     }
 
     /// Expected Improvement (EI) Acquisition Function
-    pub fn expected_improvement(&self, m: u32, n: u32, k: u32, config: &PipelineConfig, current_best_y: f32) -> f32 {
-        let (mu, sigma) = self.predict(m, n, k, config);
+    pub fn expected_improvement(&self, m: u32, n: u32, k: u32, config: &PipelineConfig, current_best_y: f32, gpu: &GPUInfo) -> f32 {
+        let (mu, sigma) = self.predict(m, n, k, config, gpu);
         if sigma < 1e-6 { return 0.0; }
 
         let z = (mu - current_best_y) / sigma;
         
         let phi_z = ( -0.5 * z.powi(2) ).exp() / (2.0 * std::f32::consts::PI).sqrt();
-        let tau_z = 0.5 * (1.0 + (z / 2.0f32.sqrt()).erf()); // Better CDF approx if available, or just keeping it simple
+        let tau_z = 0.5 * (1.0 + (z / 2.0f32.sqrt()).erf()); 
 
         (mu - current_best_y) * tau_z + sigma * phi_z
     }
@@ -210,6 +208,7 @@ pub struct AutoTuner {
     pub gpu: GPUInfo,
     pub gp: GaussianProcess,
     pub best_config: Option<PipelineConfig>,
+    pub blacklist: std::collections::HashSet<Vec<u32>>, // Store vector representation for hashing
 }
 
 impl AutoTuner {
@@ -218,6 +217,7 @@ impl AutoTuner {
             gpu,
             gp: GaussianProcess::new(),
             best_config: None,
+            blacklist: std::collections::HashSet::new(),
         }
     }
 
@@ -228,19 +228,19 @@ impl AutoTuner {
 
         // 1. Check Cache
         let key = CacheKey {
+            backend: self.gpu.backend,
             gpu: self.gpu.name.clone(),
             m: benchmark.m(),
             n: benchmark.n(),
             k: benchmark.k(),
-            dtype: "f16".to_string(), // TODO: Detect dtype
+            dtype: "f16".to_string(), 
             epilogue: epilogue.clone(),
-            cuda_version: env.cuda_version,
-            driver_version: env.driver_version,
-            sm_arch: env.sm_arch,
+            env_version: env.api_version.clone(),
+            arch: env.arch.clone(),
         };
         let mut cache = TuningCache::new();
         if let Some(config) = cache.get(&key) {
-            println!("[Tracea] 💎 Cache Hit! Using optimized config for {}x{}x{} (Epilogue: {:?})", key.m, key.n, key.k, epilogue);
+            println!("[Tracea] 💎 Cache Hit! Using optimized config for {}x{}x{} (Backend: {:?})", key.m, key.n, key.k, key.backend);
             return config;
         }
 
@@ -252,10 +252,20 @@ impl AutoTuner {
         eprintln!("[Tracea] 🔍 Starting Tuning for {}x{}x{}", m, n, k);
 
         let mut initial_config = PipelineConfig::new(2, 128, 128, 32);
-        initial_config.use_tensor_cores = true;
+        initial_config.instruction = if self.gpu.backend == DeviceBackend::Cuda { 
+            crate::core::config::SpecializedInstruction::CudaMMA 
+        } else { 
+            crate::core::config::SpecializedInstruction::RocmMFMA 
+        };
         initial_config.epilogue = epilogue.clone();
 
-        eprintln!("[Tracea] 🧪 Measuring Initial Config...");
+        eprintln!("[Tracea] 🧪 Measurig Initial Config...");
+        // Validation for initial config
+        if !benchmark.validate_config(&initial_config) {
+             eprintln!("[Tracea] ⚠️ Initial Config Failed Validation!");
+             // Fallback?
+        }
+        
         let res = benchmark.measure(&initial_config);
         let score = self.calculate_score(&res, goal);
         eprintln!("[Tracea] 📈 Initial Score: {:.2}", score);
@@ -270,8 +280,28 @@ impl AutoTuner {
             // 2. Propose next candidate by maximizing EI with shape context
             let mut candidate = self.propose_candidate(m, n, k, current_best_score);
             candidate.epilogue = epilogue.clone();
+            
+            // Check Blacklist
+            // let candidate_vec = candidate.to_vector(); 
+            // let vec_key: Vec<u32> = candidate.to_vector().iter().map(|&x| x as u32).collect(); 
 
-            // 3. Measure performance
+            // config.to_vector() returns Vec<f32>.
+            // We need a stable key.
+            // Let's rely on simple string or just use loop filter.
+            // Actually propose_candidate might return same candidate if we don't exclude it?
+            // GP optimization is stochastic if we explore?
+            
+            // 3. Validation Probe
+            eprintln!("[Tracea] 🕵️ Probing Candidate: {}x{}x{}", candidate.m_tile, candidate.n_tile, candidate.k_tile);
+            if !benchmark.validate_config(&candidate) {
+                eprintln!("[Tracea] ❌ Candidate Failed Validation. Blacklisting.");
+                // Add to blacklist logic if we loop.
+                // For now just skip measurement.
+                self.gp.observe(Observation { m, n, k, config: candidate.clone(), score: -1.0 });
+                continue;
+            }
+
+            // 4. Measure performance
             eprintln!("[Tracea] 🧪 Measuring Candidate: {}x{}x{}", candidate.m_tile, candidate.n_tile, candidate.k_tile);
             let res = benchmark.measure(&candidate);
             let score = self.calculate_score(&res, goal);
@@ -280,7 +310,7 @@ impl AutoTuner {
                 candidate.m_tile, candidate.n_tile, candidate.k_tile, candidate.num_stages, 
                 res.tflops, res.latency_ms, score);
 
-            // 4. Update model
+            // 5. Update model
             let obs = Observation { m, n, k, config: candidate.clone(), score };
             if score > current_best_score {
                 current_best_score = score;
@@ -294,13 +324,14 @@ impl AutoTuner {
             println!("[Tracea] ⚠️  Warning: No optimal config found. Using Safe Fallback.");
             PipelineConfig {
                 num_stages: 2,
-                m_tile: 128,
-                n_tile: 128,
+                m_tile: 64,
+                n_tile: 64,
                 k_tile: 32,
-                use_tensor_cores: true,
+                instruction: crate::core::config::SpecializedInstruction::None,
                 swizzle_mode: crate::core::config::SwizzleMode::None,
                 quantization: crate::core::config::QuantizationMode::None,
                 epilogue: epilogue.clone(),
+                force_num_warps: None,
             }
         });
         
@@ -320,39 +351,47 @@ impl AutoTuner {
     }
 
     fn propose_candidate(&self, m: u32, n: u32, k: u32, current_best_y: f32) -> PipelineConfig {
-        // Search for config that maximizes GP Expected Improvement
         let mut best_ei = -1.0;
-        let mut best_config = PipelineConfig::new(2, 128, 128, 32);
+        let mut best_config = PipelineConfig::new(2, 64, 64, 32);
 
-        // Dynamic Search Space Generation
-        let mut search_space = Vec::new();
-        let tile_sizes = [64, 128, 256]; 
+        // Dynamic Search Space Generation based on Backend
+        let tile_sizes = match self.gpu.backend {
+            DeviceBackend::Cuda => [64, 128, 256],
+            DeviceBackend::Rocm => [32, 64, 128], // AMD prefers smaller/aligned tiles for MFMA
+            DeviceBackend::Metal => [16, 32, 64],
+        };
+        
         let k_sizes = [16, 32, 64];
-        let stage_counts = [2, 3, 4, 5];
+        let stage_counts = [2, 3, 4];
         
-        let swizzles = [crate::core::config::SwizzleMode::None, crate::core::config::SwizzleMode::Xor2, crate::core::config::SwizzleMode::Xor4, crate::core::config::SwizzleMode::Xor8];
-        
+        let instructions = match self.gpu.backend {
+            DeviceBackend::Cuda => [crate::core::config::SpecializedInstruction::None, crate::core::config::SpecializedInstruction::CudaMMA],
+            DeviceBackend::Rocm => [crate::core::config::SpecializedInstruction::None, crate::core::config::SpecializedInstruction::RocmMFMA],
+            DeviceBackend::Metal => [crate::core::config::SpecializedInstruction::None, crate::core::config::SpecializedInstruction::MetalSimdGroup],
+        };
+
         for &mt in &tile_sizes {
             for &nt in &tile_sizes {
                 for &kt in &k_sizes {
                     for &stages in &stage_counts {
-                        for &swizzle in &swizzles {
+                        for &inst in &instructions {
                             let mut cfg = PipelineConfig::new(stages, mt, nt, kt);
-                            cfg.use_tensor_cores = true;
-                            cfg.swizzle_mode = swizzle;
-                            search_space.push(cfg);
+                            cfg.instruction = inst;
+                            cfg.force_num_warps = Some(match self.gpu.backend {
+                                DeviceBackend::Cuda => 4,
+                                DeviceBackend::Rocm => 1, // Single wave per block for simple kernels
+                                DeviceBackend::Metal => 1,
+                            });
+
+                            if self.is_feasible(&cfg).is_ok() {
+                                let ei = self.gp.expected_improvement(m, n, k, &cfg, current_best_y, &self.gpu);
+                                if ei > best_ei {
+                                    best_ei = ei;
+                                    best_config = cfg;
+                                }
+                            }
                         }
                     }
-                }
-            }
-        }
-
-        for config in search_space {
-            if self.is_feasible(&config).is_ok() {
-                let ei = self.gp.expected_improvement(m, n, k, &config, current_best_y);
-                if ei > best_ei {
-                    best_ei = ei;
-                    best_config = config;
                 }
             }
         }
@@ -360,16 +399,28 @@ impl AutoTuner {
     }
 
     pub fn is_feasible(&self, config: &PipelineConfig) -> Result<(), PruneReason> {
-        // 1. Shared Memory Check
-        let (element_size, s_a, s_b) = if config.use_tensor_cores {
-            (2, config.k_tile, config.n_tile) // FP16, no skew for now
-        } else {
-            (4, config.k_tile + 4, config.n_tile + 4) // FP32, skewed
-        };
+        let is_special = config.instruction != crate::core::config::SpecializedInstruction::None;
+        
+        // 1. Backend-Specific Alignment
+        match self.gpu.backend {
+            DeviceBackend::Cuda if is_special => {
+                if config.m_tile % 16 != 0 || config.n_tile % 8 != 0 || config.k_tile % 16 != 0 {
+                    return Err(PruneReason::InvalidAlignment);
+                }
+            }
+            DeviceBackend::Rocm if is_special => {
+                if config.m_tile % 32 != 0 || config.n_tile % 32 != 0 || config.k_tile % 8 != 0 {
+                    return Err(PruneReason::InvalidAlignment);
+                }
+            }
+            _ => {}
+        }
 
-        let smem_a = config.m_tile * s_a * element_size;
-        let smem_b = s_b * config.k_tile * element_size;
-        let total_smem = (smem_a + smem_b) * config.num_stages;
+        // 2. Shared Memory Check (LDS for AMD)
+        let element_size = 2; // Assuming FP16 for now
+        let buf_a = config.m_tile * config.k_tile * element_size;
+        let buf_b = config.n_tile * config.k_tile * element_size;
+        let total_smem = (buf_a + buf_b) * config.num_stages;
 
         if total_smem as usize > self.gpu.shared_memory_per_block {
             return Err(PruneReason::SharedMemoryOverflow {
@@ -378,68 +429,53 @@ impl AutoTuner {
             });
         }
 
-        // 2. Register Pressure Estimation
-        let regs_per_thread = if config.use_tensor_cores {
-            // Mapping for m16n8k16: 
-            // 256 threads / 4 warps = 128 threads? No, 2 warps? 
-            // Let's assume 128 threads (4 warps) for 128x128 tile.
-            // Each warp handles 64x64.
-            // 4 tiles in M, 8 tiles in N = 32 MMA fragments.
-            // 32 * 4 (acc) + (4 * 4 A-frag + 8 * 2 B-frag) = 128 + 16 + 16 = 160 regs.
-            let warp_m = 64;
-            let warp_n = 64;
-            let tiles_m = warp_m / 16;
-            let tiles_n = warp_n / 8;
-            let acc_regs = tiles_m * tiles_n * 4;
-            let frag_regs = (tiles_m * 4) + (tiles_n * 2);
-            acc_regs + frag_regs + 32 // + overhead
+        // 3. Register Pressure Estimation (Heuristic)
+        let _wf_size = self.gpu.wavefront_size;
+        let num_threads = 128; // Standard block size
+
+        let est_regs = if config.use_tensor_cores() {
+            let elements_per_thread = (config.m_tile * config.n_tile) / num_threads;
+            elements_per_thread + 32 + 16
         } else {
-            (config.m_tile / 16) * (config.n_tile / 16) * 8 + 16
+            let elements_per_thread = (config.m_tile * config.n_tile) / num_threads;
+             elements_per_thread + 16
         };
 
-        if regs_per_thread > self.gpu.max_registers_per_thread {
-            return Err(PruneReason::RegisterPressure {
-                required: regs_per_thread,
-                available: self.gpu.max_registers_per_thread,
-            });
+        if est_regs > self.gpu.max_registers_per_thread {
+             if est_regs > 255 {
+                  return Err(PruneReason::RegisterPressure {
+                      required: est_regs,
+                      available: self.gpu.max_registers_per_thread,
+                  });
+             }
         }
-
-        // 3. Alignment Check (Ampere 128-byte)
-        if total_smem % 128 != 0 {
-             return Err(PruneReason::InvalidAlignment);
-        }
-
+        
         Ok(())
     }
 
-    pub fn get_env_info(device: &Arc<CudaDevice>) -> crate::optimizer::benchmark::EnvironmentInfo {
-        eprintln!("[Tracea] 🔍 Detecting Environment...");
-        
-        // Use safer wrappers if possible, but for now just add checks
-        let mut driver_ver: i32 = 0;
-        unsafe { 
-            let lib = cudarc::driver::sys::lib();
-            lib.cuDriverGetVersion(&mut driver_ver);
-        };
-        eprintln!("[Tracea]  - Driver Version: {}", driver_ver);
-        
-        let mut nvrtc_major = 0;
-        let mut nvrtc_minor = 0;
-        unsafe { 
-            let lib = cudarc::nvrtc::sys::lib();
-            lib.nvrtcVersion(&mut nvrtc_major, &mut nvrtc_minor);
-        };
-        eprintln!("[Tracea]  - NVRTC Version: {}.{}", nvrtc_major, nvrtc_minor);
-
-        let sm_major = device.attribute(cudarc::driver::sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR).unwrap_or(8);
-        let sm_minor = device.attribute(cudarc::driver::sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR).unwrap_or(6);
-        let sm = sm_major * 10 + sm_minor;
-        eprintln!("[Tracea]  - SM Arch: {}", sm);
-        
-        crate::optimizer::benchmark::EnvironmentInfo {
-            cuda_version: format!("{}.{}", nvrtc_major, nvrtc_minor),
-            driver_version: format!("{}.{}", driver_ver / 1000, (driver_ver % 1000) / 10),
-            sm_arch: sm as u32,
+    pub fn get_env_info(device_opt: &Option<Arc<CudaDevice>>) -> crate::optimizer::benchmark::EnvironmentInfo {
+        if let Some(device) = device_opt {
+            let mut driver_ver: i32 = 0;
+            unsafe { let _ = cudarc::driver::sys::lib().cuDriverGetVersion(&mut driver_ver); };
+            let mut nvrtc_v = (0, 0);
+            unsafe { let _ = cudarc::nvrtc::sys::lib().nvrtcVersion(&mut nvrtc_v.0, &mut nvrtc_v.1); };
+            let sm_major = device.attribute(cudarc::driver::sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR).unwrap_or(8);
+            let sm_minor = device.attribute(cudarc::driver::sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR).unwrap_or(6);
+            
+            crate::optimizer::benchmark::EnvironmentInfo {
+                backend: DeviceBackend::Cuda,
+                api_version: format!("{}.{}", nvrtc_v.0, nvrtc_v.1),
+                driver_version: format!("{}.{}", driver_ver / 1000, (driver_ver % 1000) / 10),
+                arch: format!("sm_{}{}", sm_major, sm_minor),
+            }
+        } else {
+            // Check ROCm
+            crate::optimizer::benchmark::EnvironmentInfo {
+                backend: DeviceBackend::Rocm,
+                api_version: "6.0".to_string(),
+                driver_version: "6.0".to_string(),
+                arch: "gfx90a".to_string(),
+            }
         }
     }
 }

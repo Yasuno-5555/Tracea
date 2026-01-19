@@ -95,6 +95,7 @@ Tracea's design separates logical meaning from physical execution:
 - `examples/`: Demonstration of multi-backend capabilities (`doctor_demo.rs`).
 - `benchmarks/`: Python scripts for performance testing.
 - `scripts/`: Utility scripts.
+- `doc/`: Technical documentation and [Progress Report](doc/PROGRESS.md).
 - `logs/`: Build logs and diagnostic telemetry.
 
 ---

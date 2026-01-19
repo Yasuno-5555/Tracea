@@ -7,7 +7,8 @@
     "use_tensor_cores": true,
     "swizzle_mode": "None",
     "quantization": "None",
-    "epilogue": []
+    "epilogue": [],
+    "force_num_warps": null
   },
   "NVIDIA GeForce RTX 3070:16:16:16:f16::13.1:13.0:86": {
     "num_stages": 2,
@@ -17,7 +18,19 @@
     "use_tensor_cores": true,
     "swizzle_mode": "None",
     "quantization": "None",
-    "epilogue": []
+    "epilogue": [],
+    "force_num_warps": null
+  },
+  "NVIDIA GeForce RTX 3070:4096:4096:4096:f16::12.4:13.0:86": {
+    "num_stages": 2,
+    "m_tile": 64,
+    "n_tile": 64,
+    "k_tile": 16,
+    "use_tensor_cores": true,
+    "swizzle_mode": "None",
+    "quantization": "None",
+    "epilogue": [],
+    "force_num_warps": null
   },
   "NVIDIA GeForce RTX 3070:32:16:16:f16::13.1:13.0:86": {
     "num_stages": 2,
@@ -27,6 +40,7 @@
     "use_tensor_cores": true,
     "swizzle_mode": "None",
     "quantization": "None",
-    "epilogue": []
+    "epilogue": [],
+    "force_num_warps": null
   }
 }

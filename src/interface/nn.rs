@@ -1,6 +1,6 @@
 use pyo3::prelude::*;
 use crate::interface::python::{PyGraph, PyEpilogueOp, PyEpilogueType};
-use crate::core::op::{EpilogueOp, Dim};
+use crate::core::op::EpilogueOp;
 
 #[pyclass]
 #[derive(Clone)]

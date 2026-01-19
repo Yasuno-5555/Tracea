@@ -30,23 +30,25 @@ pub fn load_kernel(device: Arc<CudaDevice>, decision: &Decision) -> Result<CudaF
             // Simplified check: usually we decide between JIT or prebuilt based on compile_strategy from decision
             match decision.compile_strategy {
                  CompileStrategy::Precompiled => {
-                     let path = format!("E:/Projects/Tracea/prebuilt/{}.cubin", variant_id);
-                     if std::path::Path::new(&path).exists() {
+                     let prebuilt_dir = std::env::var("TRACEA_PREBUILT_DIR").unwrap_or_else(|_| "./prebuilt".to_string());
+                     let path = std::path::Path::new(&prebuilt_dir).join(format!("{}.cubin", variant_id));
+                     
+                     if path.exists() {
                          let module_name = format!("doctor_mod_{}", variant_id);
                          let module_name_static = Box::leak(module_name.into_boxed_str());
                          let kernel_name_static = Box::leak(variant.kernel_id.to_string().into_boxed_str());
                          
-                         device.load_ptx(Ptx::from_file(path), module_name_static, &[kernel_name_static])
+                         device.load_ptx(Ptx::from_file(&path), module_name_static, &[kernel_name_static])
                              .map_err(|e| format!("Load CUBIN via Driver error: {:?}", e))?;
                          
                          device.get_func(module_name_static, kernel_name_static)
                              .ok_or_else(|| format!("Function {} not found in loaded module", variant.kernel_id))
                      } else {
-                         Err(format!("CUBIN file not found at {}", path))
+                         Err(format!("CUBIN file not found at {:?}", path))
                      }
                  },
                  CompileStrategy::JIT | CompileStrategy::AOT => {
-                     Err("JIT compilation not yet implemented in Doctor for CUDA".to_string())
+                     Err("JIT/AOT compilation strategy is currently disabled/unimplemented.".to_string())
                  }
             }
         },
