@@ -1,8 +1,10 @@
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use cudarc::driver::*;
 use cudarc::nvrtc::{CompileOptions, Ptx};
 use std::ffi::c_void;
+use std::io::Write;
 use serde::{Serialize, Deserialize};
 use crate::doctor::{BackendKind, JitResultInfo, AssemblerResultInfo, KernelLaunchInfo, ModuleLoadInfo};
 
@@ -30,8 +32,24 @@ pub enum DeviceBackend {
 #[derive(Debug)]
 pub enum DeviceBuffer {
     Cuda(CudaSlice<u8>),
-    Rocm(u64), 
+    Rocm(RocmBuffer), 
     External(u64),
+}
+
+#[derive(Debug)]
+pub struct RocmBuffer {
+    pub ptr: u64,
+}
+
+impl Drop for RocmBuffer {
+    fn drop(&mut self) {
+        if self.ptr != 0 {
+             if let Some(api) = crate::emitter::rocm_driver::RocmDriverApi::get() {
+                 unsafe { (api.hipFree)(self.ptr); }
+                 // println!("[Runtime] 🧹 ROCm Buffer freed: 0x{:x}", self.ptr);
+             }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -91,6 +109,9 @@ impl RuntimeManager {
              println!("[Doctor] 🟢 ROCm Backend Registered.");
         }
 
+        let doctor = crate::doctor::Doctor::global();
+        doctor.diagnose_environment();
+
         let instance = Arc::new(Self {
             devices: Mutex::new(devices),
             kernels: Mutex::new(HashMap::new()),
@@ -99,7 +120,7 @@ impl RuntimeManager {
             next_kernel_id: Mutex::new(0),
             next_buffer_id: Mutex::new(0),
             compatibility_log: Mutex::new(Vec::new()),
-            doctor: crate::doctor::Doctor::global(),
+            doctor,
         });
         *cache = Some(Arc::clone(&instance));
         Ok(instance)
@@ -121,17 +142,35 @@ impl RuntimeManager {
                 let target_arch = cuda_handle.arch.clone();
                 let _target_sm = target_arch.replace("sm_", "");
 
-                // Use leaked static string for arch to satisfy life-time
                 let arch_static: &'static str = Box::leak(target_arch.clone().into_boxed_str());
 
-                let opts = CompileOptions {
+                // Source-aware AOT Cache Check
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                source.hash(&mut hasher);
+                let source_hash = hasher.finish();
+                let cache_name = format!("{}_{:x}", kernel_name, source_hash);
+
+                if let Ok(id) = self.load_binary(&cache_name, &target_arch) {
+                    self.source_cache.lock().unwrap().insert(source.to_string(), id);
+                    return Ok(id);
+                }
+
+                let mut opts = CompileOptions {
                     arch: Some(arch_static), 
-                    options: vec!["-I".to_string(), "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.1/include".to_string()],
+                    options: vec![
+                        "-I".to_string(), 
+                        "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.1/include".to_string(),
+                        "--use_fast_math".to_string(),
+                    ],
                     ..Default::default()
                 };
                 
+                let _ = std::fs::write("jit_trace.log", "DEBUG: Starting Compile\n"); 
+                
                 let ptx_res = cudarc::nvrtc::compile_ptx_with_opts(source, opts);
                 
+                let _ = std::fs::OpenOptions::new().append(true).open("jit_trace.log").unwrap().write_all(b"DEBUG: Finished Compile\n");
+
                 // Doctor Hook: NVRTC Result
                 let (jit_code, jit_log) = match &ptx_res {
                     Ok(_) => (0, String::new()),
@@ -146,21 +185,31 @@ impl RuntimeManager {
                     stderr: jit_log,
                 });
 
-                let mut ptx_src = if let Ok(ptx) = ptx_res { 
-                    println!("[Runtime] JIT Compilation Successful for {}", kernel_name);
-                    ptx.to_src() 
-                } else { 
-                    println!("[Runtime] JIT Compilation Failed for {}, using fallback", kernel_name);
-                    return self.load_prebuilt_fallback(kernel_name, backend); 
+                if ptx_res.is_err() {
+                     let _ = std::fs::write("failed_source.cu", source);
+                     println!("[Runtime] 📝 Dumped failed source to failed_source.cu");
+                }
+
+                let mut ptx_src = match ptx_res {
+                    Ok(ptx) => {
+                        println!("[Runtime] JIT Compilation Successful for {}", kernel_name);
+                        ptx.to_src()
+                    }
+                    Err(e) => {
+                         println!("[Runtime] ❌ JIT Compilation Failed for {}: {}", kernel_name, e);
+                         let _ = std::fs::write("jit_error.log", format!("Error: {}", e));
+                         return self.load_prebuilt_fallback(kernel_name, backend); 
+                    }
                 };
                 
                 ptx_src = ptx_src.replace(".version 8.5", ".version 7.0")
                                   .replace(".version 8.4", ".version 7.0")
                                   .replace(".target sm_86", ".target sm_80");
 
-                let ptx_path = format!("E:/Projects/Tracea/debug_dump_{}.ptx", kernel_name);
+                let safe_name: String = kernel_name.chars().map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' }).collect();
+                let ptx_path = format!("E:/Projects/Tracea/debug_dump_{}.ptx", safe_name);
                 let _ = std::fs::write(&ptx_path, &ptx_src);
-                let cubin_path = format!("E:/Projects/Tracea/debug_dump_{}.cubin", kernel_name);
+                let cubin_path = format!("E:/Projects/Tracea/debug_dump_{}.cubin", safe_name);
                 
                 let mut cmd = std::process::Command::new("ptxas");
                 cmd.arg("-v").arg("--gpu-name").arg(&target_arch).arg(&ptx_path).arg("-o").arg(&cubin_path);
@@ -190,7 +239,17 @@ impl RuntimeManager {
                 }
                 println!("[Runtime] ptxas SUCCESS: {}", pt_stderr);
 
-                self.load_from_file_and_register(kernel_name, &cubin_path)
+                let id = self.load_from_file_and_register(kernel_name, &cubin_path)?;
+                
+                // Save to AOT Cache with source-aware name
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                source.hash(&mut hasher);
+                let source_hash = hasher.finish();
+                let cache_name = format!("{}_{:x}", kernel_name, source_hash);
+                
+                let _ = self.save_binary(&cache_name, &target_arch, &cubin_path);
+                
+                Ok(id)
             }
             DeviceBackend::Rocm => {
                 let jit = crate::emitter::rocm_jit::ROCMJITCompiler::new().ok_or("ROCm JIT API not found")?;
@@ -223,6 +282,8 @@ impl RuntimeManager {
     pub fn launch(&self, id: KernelId, grid: (u32, u32, u32), block: (u32, u32, u32), smem: u32, args: Vec<KernelArg>) -> Result<(), String> {
         let recorded = self.kernels.lock().map_err(|_| "Lock")?.get(&id).ok_or("No kernel")?.clone();
         
+        println!("[Runtime] Launching {}: Grid{:?}, Block{:?}, Smem: {}", recorded.name, grid, block, smem);
+
         let mut arg_store = [0u64; 64]; 
         let mut kernel_params = [std::ptr::null_mut() as *mut c_void; 64];
 
@@ -311,7 +372,8 @@ impl RuntimeManager {
     }
 
     fn load_prebuilt_fallback(&self, kernel_name: &str, backend: DeviceBackend) -> Result<KernelId, String> {
-        let cubin_path = format!("E:/Projects/Tracea/prebuilt/{}.cubin", kernel_name);
+        let safe_name: String = kernel_name.chars().map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' }).collect();
+        let cubin_path = format!("E:/Projects/Tracea/prebuilt/{}.cubin", safe_name);
         println!("[Runtime] Attempting fallback load from {}", cubin_path);
         if std::path::Path::new(&cubin_path).exists() && backend == DeviceBackend::Cuda {
              self.load_from_file_and_register(kernel_name, &cubin_path)
@@ -358,9 +420,9 @@ impl RuntimeManager {
             
             println!("[Runtime] Kernel Registered: {} (handle: {:p})", name, func);
 
-            // Set Max Shared Memory ONCE globally for this function
+            // Set Max Shared Memory (Safe 96KB limit, up to 100KB on Ampere)
             let attr = cudarc::driver::sys::CUfunction_attribute::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES;
-            let _ = cudarc::driver::sys::lib().cuFuncSetAttribute(func, attr, 98304); // 96KB limit
+            let _ = cudarc::driver::sys::lib().cuFuncSetAttribute(func, attr, 101376); 
 
             let id = self.generate_kernel_id()?;
             self.kernels.lock().map_err(|_| "Poisoned")?.insert(id, RecordedKernel { 
@@ -409,7 +471,7 @@ impl RuntimeManager {
                     let res = (api.hipMalloc)(&mut ptr, size_bytes);
                     if res != 0 { return Err(format!("hipMalloc failed: {}", res)); }
                 }
-                DeviceBuffer::Rocm(ptr)
+                DeviceBuffer::Rocm(RocmBuffer { ptr })
             }
             _ => return Err("Alloc failed".to_string()),
         };
@@ -421,7 +483,7 @@ impl RuntimeManager {
         let bufs = self.buffers.lock().map_err(|_| "Lock")?;
         match bufs.get(&id).ok_or("No buffer")? {
             DeviceBuffer::Cuda(slice) => Ok(*slice.device_ptr()),
-            DeviceBuffer::Rocm(ptr) => Ok(*ptr),
+            DeviceBuffer::Rocm(buf) => Ok(buf.ptr),
             DeviceBuffer::External(ptr) => Ok(*ptr),
         }
     }
@@ -438,9 +500,18 @@ impl RuntimeManager {
 
     pub fn synchronize(&self) {
         let devices = self.devices.lock().unwrap();
+        
+        // Sync CUDA
         if let Some(handle) = devices.get(&DeviceBackend::Cuda) {
             if let Some(dev) = &handle.cuda_dev {
                 let _ = dev.synchronize();
+            }
+        }
+        
+        // Sync ROCm
+        if let Some(_) = devices.get(&DeviceBackend::Rocm) {
+            if let Some(api) = crate::emitter::rocm_driver::RocmDriverApi::get() {
+                unsafe { (api.hipDeviceSynchronize)(); }
             }
         }
     }
@@ -492,6 +563,64 @@ impl RuntimeManager {
 
     pub fn alloc_u16(&self, size: usize, backend: DeviceBackend) -> Result<BufferId, String> {
         self.alloc(size * 2, backend)
+    }
+
+    pub fn get_max_shared_memory(&self, backend: DeviceBackend) -> usize {
+        match backend {
+            DeviceBackend::Cuda => {
+                let devs = self.devices.lock().unwrap();
+                if let Some(handle) = devs.get(&DeviceBackend::Cuda) {
+                    if let Some(dev) = &handle.cuda_dev {
+                        // On Ampere+ GPUs, the limit is often higher than 48KB but needs opt-in.
+                        // We query the maximum possible opt-in size.
+                        let optin = dev.attribute(cudarc::driver::sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN).unwrap_or(0);
+                        let total = dev.attribute(cudarc::driver::sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK).unwrap_or(49152);
+                        let limit = std::cmp::max(optin as i32, total as i32);
+                        return limit as usize;
+                    }
+                }
+                49152 // Fallback
+            }
+            _ => 32768, // Conservative fallback for others
+        }
+    }
+
+    pub fn get_max_threads_per_block(&self, backend: DeviceBackend) -> usize {
+        match backend {
+            DeviceBackend::Cuda => {
+                let devs = self.devices.lock().unwrap();
+                if let Some(handle) = devs.get(&DeviceBackend::Cuda) {
+                    if let Some(dev) = &handle.cuda_dev {
+                        return dev.attribute(cudarc::driver::sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK).unwrap_or(1024) as usize;
+                    }
+                }
+                1024
+            }
+            _ => 1024,
+        }
+    }
+
+    pub fn save_binary(&self, kernel_name: &str, arch: &str, cubin_path: &str) -> Result<(), String> {
+        let env_id = self.doctor.get_environment_id();
+        let cache_dir = format!("E:/Projects/Tracea/cache/{}/{}", env_id, arch);
+        std::fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
+        
+        let dest_path = format!("{}/{}.cubin", cache_dir, kernel_name);
+        std::fs::copy(cubin_path, &dest_path).map_err(|e| e.to_string())?;
+        println!("[Runtime] 💾 Binary cached to {}", dest_path);
+        Ok(())
+    }
+
+    pub fn load_binary(&self, kernel_name: &str, arch: &str) -> Result<KernelId, String> {
+        let env_id = self.doctor.get_environment_id();
+        let cache_path = format!("E:/Projects/Tracea/cache/{}/{}/{}.cubin", env_id, arch, kernel_name);
+        
+        if std::path::Path::new(&cache_path).exists() {
+            println!("[Runtime] 🚀 AOT Cache Hit: {}", cache_path);
+            self.load_from_file_and_register(kernel_name, &cache_path)
+        } else {
+            Err("Cache miss".to_string())
+        }
     }
 }
 

@@ -1,16 +1,6 @@
-#[cfg(feature = "python")]
-pub mod python;
+// Expose the new C-API bindings
 #[cfg(feature = "cpp")]
-pub mod cpp;
-#[cfg(feature = "python")]
-pub mod nn;
-#[cfg(feature = "python")]
-pub use self::python::{
-    PyPipelineConfig, PyContext, PyProfilingScope, PyEpilogueOp, PyEpilogueType, PyOptimizationGoal, PyGraph,
-    PyDeviceBufferF32, PyDeviceBufferU16, PyDeviceBufferI32, PyDecision,
-    PyDoctor, PyEnvironmentReport, PyDoctorErrorReport, PyDoctorArtifacts,
-    python_relu, python_gelu, python_bias_add
-};
+pub mod c_bindings;
 
 
 #[derive(Debug, Clone)]

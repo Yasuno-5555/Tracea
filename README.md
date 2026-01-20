@@ -91,12 +91,11 @@ Tracea's design separates logical meaning from physical execution:
 
 ## 📂 Project Structure
 
-- `src/`: Rust source code (Core, Doctor, Optimizer, Emitters).
-- `examples/`: Demonstration of multi-backend capabilities (`doctor_demo.rs`).
-- `benchmarks/`: Python scripts for performance testing.
-- `scripts/`: Utility scripts.
-- `doc/`: Technical documentation and [Progress Report](doc/PROGRESS.md).
-- `logs/`: Build logs and diagnostic telemetry.
+- `src/core/`: IR definitions and graph logic.
+- `src/kernels/`: Optimized kernel implementations (CUDA/ROCm/Metal/CPU).
+- `src/bindings/`: Python and C++ bindings.
+- `src/optimizer/`: Bayesian Tuner and Profiler.
+- `examples/`: Demonstration code.
 
 ---
 

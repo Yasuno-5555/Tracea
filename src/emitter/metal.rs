@@ -20,10 +20,10 @@ impl MetalEmitter {
         let mt = config.m_tile;
         let nt = config.n_tile;
         let kt = config.k_tile;
+        let primitives = crate::backend::metal::MetalBackend::get_primitive_defs();
         
         format!(r#"
-#include <metal_stdlib>
-using namespace metal;
+{primitives}
 
 kernel void gemm_metal_kernel(
     device const half* A [[buffer(0)]],
@@ -90,7 +90,7 @@ kernel void gemm_metal_kernel(
     uint sg_c = (simd_id % 2) * 8;
     simdgroup_store(acc, (device float*)&C[(bid.y * {mt} + sg_r) * N + (bid.x * {nt} + sg_c)], N);
 }}
-"#, mt=mt, nt=nt, kt=kt)
+"#, mt=mt, nt=nt, kt=kt, primitives=primitives)
     }
 }
 

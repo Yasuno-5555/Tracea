@@ -169,6 +169,17 @@ impl Doctor {
         }
     }
 
+    pub fn get_environment_id(&self) -> String {
+        let state = self.state.lock().unwrap();
+        if let Some(env) = &state.last_env {
+            let gpu = env.gpu_name.as_ref().map(|s| s.replace(" ", "_")).unwrap_or_else(|| "unknown_gpu".to_string());
+            let cuda = env.cuda_version.as_ref().map(|s| s.chars().filter(|c| c.is_alphanumeric()).collect()).unwrap_or_else(|| "no_cuda".to_string());
+            format!("{}_{}", gpu, cuda)
+        } else {
+            "initial".to_string()
+        }
+    }
+
     // --- Hooks ---
 
     pub fn on_jit_result(&self, info: JitResultInfo) {

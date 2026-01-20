@@ -79,7 +79,7 @@ impl SpecializedInstruction {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PipelineConfig {
     pub num_stages: u32,
     pub m_tile: u32,

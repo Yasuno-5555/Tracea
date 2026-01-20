@@ -1,43 +1,64 @@
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{Read, Write};
-use serde::{Serialize, Deserialize};
-use crate::PipelineConfig;
+use std::fs;
+use std::path::PathBuf;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
-#[derive(Serialize, Deserialize)]
-pub struct ConfigCache {
-    // Key: "DeviceName:M:N:K"
-    pub entries: HashMap<String, PipelineConfig>,
+fn get_cache_path() -> PathBuf {
+    let mut path = if let Ok(home) = std::env::var("USERPROFILE") {
+        PathBuf::from(home)
+    } else if let Ok(home) = std::env::var("HOME") {
+        PathBuf::from(home)
+    } else {
+        PathBuf::from(".")
+    };
+    
+    path.push(".tracea");
+    if !path.exists() {
+        let _ = fs::create_dir_all(&path);
+    }
+    path.push("tuning_cache.json");
+    path
 }
 
-impl ConfigCache {
-    pub fn new() -> Self {
-        Self { entries: HashMap::new() }
+#[derive(Serialize, Deserialize, Default)]
+struct TuningCacheFile {
+    entries: HashMap<String, Value>,
+}
+
+pub fn load_cache<T: serde::de::DeserializeOwned>(key: &str) -> Option<T> {
+    let path = get_cache_path();
+    if !path.exists() {
+        return None;
     }
 
-    pub fn load(path: &str) -> Self {
-        let mut file = match File::open(path) {
-            Ok(f) => f,
-            Err(_) => return Self::new(),
-        };
-        let mut content = String::new();
-        file.read_to_string(&mut content).unwrap_or(0);
-        serde_json::from_str(&content).unwrap_or_else(|_| Self::new())
+    let content = fs::read_to_string(path).ok()?;
+    let cache: TuningCacheFile = serde_json::from_str(&content).ok()?;
+    
+    if let Some(val) = cache.entries.get(key) {
+        serde_json::from_value(val.clone()).ok()
+    } else {
+        None
     }
+}
 
-    pub fn save(&self, path: &str) {
-        let content = serde_json::to_string_pretty(self).unwrap();
-        let mut file = File::create(path).unwrap();
-        file.write_all(content.as_bytes()).unwrap();
-    }
+pub fn save_cache<T: Serialize>(key: &str, config: &T) {
+    let path = get_cache_path();
+    
+    // Read existing
+    let mut cache = if path.exists() {
+         fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<TuningCacheFile>(&s).ok())
+            .unwrap_or_default()
+    } else {
+        TuningCacheFile::default()
+    };
 
-    pub fn get(&self, device: &str, m: u32, n: u32, k: u32) -> Option<&PipelineConfig> {
-        let key = format!("{}:{}:{}:{}", device, m, n, k);
-        self.entries.get(&key)
-    }
-
-    pub fn insert(&mut self, device: &str, m: u32, n: u32, k: u32, config: PipelineConfig) {
-        let key = format!("{}:{}:{}:{}", device, m, n, k);
-        self.entries.insert(key, config);
+    if let Ok(val) = serde_json::to_value(config) {
+         cache.entries.insert(key.to_string(), val);
+         if let Ok(s) = serde_json::to_string_pretty(&cache) {
+             let _ = fs::write(path, s);
+         }
     }
 }

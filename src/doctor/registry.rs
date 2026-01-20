@@ -43,19 +43,68 @@ pub enum Preference {
 }
 
 pub fn get_variants_for(kernel_id: &str) -> Vec<KernelVariant> {
-     // Stub implementation of registry lookup
-     if kernel_id == "gemm_kernel" {
-         vec![
+     match kernel_id {
+         "fa2" => vec![
              KernelVariant {
-                 id: "gemm_cuda_v1",
+                 id: "fa2_cuda",
+                 backend: BackendKind::Cuda,
+                 hard_requirements: vec![Requirement::BackendIs(BackendKind::Cuda)],
+                 soft_preferences: vec![Preference::PreferTensorCoreLike, Preference::PreferLargerSharedMem],
+                 priority: 100,
+             },
+             KernelVariant {
+                 id: "fa2_rocm",
+                 backend: BackendKind::Rocm,
+                 hard_requirements: vec![Requirement::BackendIs(BackendKind::Rocm)],
+                 soft_preferences: vec![Preference::PreferTensorCoreLike],
+                 priority: 90,
+             },
+             KernelVariant {
+                 id: "fa2_metal",
+                 backend: BackendKind::Metal,
+                 hard_requirements: vec![Requirement::BackendIs(BackendKind::Metal)],
+                 soft_preferences: vec![],
+                 priority: 80,
+             },
+             KernelVariant {
+                 id: "fa2_cpu",
+                 backend: BackendKind::Cpu,
+                 hard_requirements: vec![Requirement::BackendIs(BackendKind::Cpu)],
+                 soft_preferences: vec![],
+                 priority: 10,
+             },
+         ],
+         "gemm" => vec![
+             KernelVariant {
+                 id: "gemm_cuda",
                  backend: BackendKind::Cuda,
                  hard_requirements: vec![Requirement::BackendIs(BackendKind::Cuda)],
                  soft_preferences: vec![Preference::PreferTensorCoreLike],
+                 priority: 100,
+             },
+             KernelVariant {
+                 id: "gemm_rocm",
+                 backend: BackendKind::Rocm,
+                 hard_requirements: vec![Requirement::BackendIs(BackendKind::Rocm)],
+                 soft_preferences: vec![Preference::PreferTensorCoreLike],
+                 priority: 90,
+             },
+             KernelVariant {
+                 id: "gemm_metal",
+                 backend: BackendKind::Metal,
+                 hard_requirements: vec![Requirement::BackendIs(BackendKind::Metal)],
+                 soft_preferences: vec![],
+                 priority: 80,
+             },
+             KernelVariant {
+                 id: "gemm_cpu",
+                 backend: BackendKind::Cpu,
+                 hard_requirements: vec![Requirement::BackendIs(BackendKind::Cpu)],
+                 soft_preferences: vec![],
                  priority: 10,
-             }
-         ]
-     } else {
-         vec![]
+             },
+         ],
+         _ => vec![]
      }
 }
 

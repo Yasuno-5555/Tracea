@@ -1,6 +1,6 @@
 ﻿pub(crate) mod traits;
+pub mod cpu;
 pub mod cuda;
-pub mod fa2;
 pub mod jit;
 pub mod driver;
 pub mod rocm;

@@ -1,6 +1,7 @@
 use cudarc::driver::safe::{CudaDevice, CudaFunction};
 // use cudarc::driver::LaunchAsync; (not found or unused)
 use cudarc::nvrtc::{compile_ptx_with_opts, CompileOptions};
+use crate::emitter::traits::{Emitter, UnifiedOpIR, UnifiedOpType};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::ffi::c_void;
@@ -73,11 +74,19 @@ impl JITCompiler {
             prec_div: Some(true),
             prec_sqrt: Some(true),
             fmad: Some(true),
+            options: vec![
+                "--include-path=C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.1/include".to_string()
+            ],
             ..Default::default()
         };
 
         let ptx = compile_ptx_with_opts(source, opts)
-            .map_err(|e| format!("NVRTC Error: {:?}", e))?;
+            .map_err(|e| {
+                let err_msg = format!("NVRTC Error: {:?}", e);
+                let _ = std::fs::write("jit_error.log", &err_msg);
+                eprintln!("[JIT] {}", err_msg);
+                err_msg
+            })?;
             
         let mut ptx_src = ptx.to_src();
         

@@ -1,9 +1,15 @@
 {
-  "timestamp": 1768815311,
-  "cuda_version": "nvcc: NVIDIA (R) Cuda compiler driver\r\nCopyright (c) 2005-2025 NVIDIA Corporation\r\nBuilt on Fri_Nov__7_19:25:04_Pacific_Standard_Time_2025\r\nCuda compilation tools, release 13.1, V13.1.80\r\nBuild cuda_13.1.r13.1/compiler.36836380_0\r\n",
-  "ptxas_version": "ptxas: NVIDIA (R) Ptx optimizing assembler\r\nCopyright (c) 2005-2025 NVIDIA Corporation\r\nBuilt on Fri_Nov__7_19:21:52_Pacific_Standard_Time_2025\r\nCuda compilation tools, release 13.1, V13.1.80\r\nBuild cuda_13.1.r13.1/compiler.36836380_0\r\n",
-  "gpu_info": "\r\n==============NVSMI LOG==============\r\n\r\nTimestamp                                              : Mon Jan 19 18:35:11 2026\r\nDriver Version                                         : 591.74\r\nCUDA Version                                           : 13.1\r\n\r\nAttached GPUs                                          : 1\r\nGPU 00000000:06:00.0\r\n    FB Memory Usage\r\n        Total                                          : 8192 MiB\r\n        Reserved                                       : 174 MiB\r\n        Used                                           : 2984 MiB\r\n        Free                                           : 5035 MiB\r\n    BAR1 Memory Usage\r\n        Total                                          : 256 MiB\r\n        Used                                           : 228 MiB\r\n        Free                                           : 28 MiB\r\n    Conf Compute Protected Memory Usage\r\n        Total                                          : N/A\r\n        Used                                           : N/A\r\n        Free                                           : N/A\r\n    Compute Mode                                       : Default\r\n\r\n",
+  "timestamp": 1768878419,
+  "status": "Ok",
+  "cuda_version": "nvcc: NVIDIA (R) Cuda compiler driver\r\nCopyright (c) 2005-2025 NVIDIA Corporation\r\nBuilt on Fri_Nov__7_19:25:04_Pacific_Standard_Time_2025\r\nCuda compilation tools, release 13.1, V13.1.80\r\nBuild cuda_13.1.r13.1/compiler.36836380_0",
+  "ptxas_version": "ptxas: NVIDIA (R) Ptx optimizing assembler\r\nCopyright (c) 2005-2025 NVIDIA Corporation\r\nBuilt on Fri_Nov__7_19:21:52_Pacific_Standard_Time_2025\r\nCuda compilation tools, release 13.1, V13.1.80\r\nBuild cuda_13.1.r13.1/compiler.36836380_0",
+  "rocm_version": null,
+  "metal_version": null,
+  "gpu_name": null,
+  "gpu_arch": null,
+  "driver_version": null,
+  "gpu_info": "==============NVSMI LOG==============\r\n\r\nTimestamp                                              : Tue Jan 20 12:06:59 2026\r\nDriver Version                                         : 591.74\r\nCUDA Version                                           : 13.1\r\n\r\nAttached GPUs                                          : 1\r\nGPU 00000000:06:00.0\r\n    FB Memory Usage\r\n        Total                                          : 8192 MiB\r\n        Reserved                                       : 174 MiB\r\n        Used                                           : 1733 MiB\r\n        Free                                           : 6286 MiB\r\n    BAR1 Memory Usage\r\n        Total                                          : 256 MiB\r\n        Used                                           : 228 MiB\r\n        Free                                           : 28 MiB\r\n    Conf Compute Protected Memory Usage\r\n        Total                                          : N/A\r\n        Used                                           : N/A\r\n        Free                                           : N/A\r\n    Compute Mode                                       : Default",
   "rocm_info": null,
-  "hipcc_version": null,
-  "status": "Ok"
+  "issues": [],
+  "summary": "Environment Healthy"
 }

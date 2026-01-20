@@ -20,11 +20,14 @@
 //! - `cpp`: Enables C-ABI export functions for C++ integration.
 
 pub mod interface;
+pub mod bindings;
+pub mod kernels;
 pub mod core;
 pub(crate) mod semantic;
 pub(crate) mod optimized;
-pub(crate) mod emitter;
+pub mod emitter;
 pub mod runtime;
+pub mod backend;
 pub mod optimizer;
 pub mod doctor;
 
@@ -44,26 +47,28 @@ use pyo3::prelude::*;
 #[cfg(feature = "python")]
 #[pymodule]
 fn tracea(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<interface::PyContext>()?;
-    m.add_class::<interface::PyPipelineConfig>()?;
-    m.add_class::<interface::PyProfilingScope>()?;
-    m.add_class::<interface::PyGraph>()?;
-    m.add_class::<interface::PyDeviceBufferF32>()?;
-    m.add_class::<interface::PyDeviceBufferU16>()?;
-    m.add_class::<interface::PyDeviceBufferI32>()?; // Int4 packed
+    m.add_class::<bindings::python::PyContext>()?;
+    m.add_class::<bindings::python::PyPipelineConfig>()?;
+    m.add_class::<bindings::python::PyProfilingScope>()?;
+    m.add_class::<bindings::python::PyGraph>()?;
+    m.add_class::<bindings::python::PyDeviceBufferF32>()?;
+    m.add_class::<bindings::python::PyDeviceBufferU16>()?;
+    m.add_class::<bindings::python::PyDeviceBufferI32>()?; // Int4 packed
     
     // Enum exports
-    m.add_class::<interface::PyEpilogueType>()?;
-    m.add_class::<interface::PyOptimizationGoal>()?;
-    m.add_class::<interface::PyDecision>()?;
-    m.add_class::<interface::PyDoctor>()?;
-    m.add_class::<interface::PyEnvironmentReport>()?;
-    m.add_class::<interface::PyDoctorErrorReport>()?;
-    m.add_class::<interface::PyDoctorArtifacts>()?;
+    m.add_class::<bindings::python::PyEpilogueType>()?;
+    m.add_class::<bindings::python::PyOptimizationGoal>()?;
+    m.add_class::<bindings::python::PyDecision>()?;
+    m.add_class::<bindings::python::PyDoctor>()?;
+    m.add_class::<bindings::python::PyEnvironmentReport>()?;
+    m.add_class::<bindings::python::PyDoctorErrorReport>()?;
+    m.add_class::<bindings::python::PyDoctorArtifacts>()?;
+    m.add_class::<bindings::python::PyTuner>()?;
 
     // Register NN module
-    interface::nn::register_nn_module(_py, m)?;
+    // interface::nn::register_nn_module(_py, m)?;
 
+    /*
     // Factory functions for Epilogue
     #[pyfn(m)]
     #[pyo3(name = "ReLU")]
@@ -94,6 +99,7 @@ fn tracea(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     fn python_epilogue() -> interface::PyEpilogueOp {
         interface::PyEpilogueOp { ops: vec![] }
     }
+    */
 
     Ok(())
 }

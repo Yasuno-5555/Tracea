@@ -16,10 +16,12 @@ sys.path.insert(0, os.path.join(release_path, "deps"))
 
 try:
     import tracea
+    # Release mode loaded
 except ImportError:
     # Fallback/Retry from root
     sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
     import tracea
+    print(f"DEBUG: tracea loaded from: {tracea.__file__}")
 
 if hasattr(tracea, 'PyContext') and not hasattr(tracea, 'Context'):
     tracea.Context = tracea.PyContext
@@ -27,7 +29,11 @@ if hasattr(tracea, 'PyContext') and not hasattr(tracea, 'Context'):
 print("Starting FA2 Parameter Sweep")
 
 configs = [
-    {'name': '64x64, 2S, 4W', 'args': {'m_tile': 64, 'n_tile': 64, 'stages': 2, 'warps': 4}},
+    {'name': '64x64, 2S (Baseline)', 'args': {'m_tile': 64, 'n_tile': 64, 'stages': 2}},
+    {'name': '32x64, 2S (Low M)',     'args': {'m_tile': 32, 'n_tile': 64, 'stages': 2}},
+    {'name': '64x64, 2S (5W)',        'args': {'m_tile': 64, 'n_tile': 64, 'stages': 2}},
+    {'name': '128x64, 2S (9W)',       'args': {'m_tile': 128, 'n_tile': 64, 'stages': 2}},
+    {'name': '64x64, 3S (Pipe)',      'args': {'m_tile': 64, 'n_tile': 64, 'stages': 3}},
 ]
 
 try:

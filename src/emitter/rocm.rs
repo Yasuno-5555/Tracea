@@ -47,6 +47,7 @@ impl ROCMEmitter {
         
         let mfma_intrinsic = self.get_mfma_intrinsic(mt, nt, kt);
         let wf_size = self.wavefront_size;
+        let primitives = crate::backend::rocm::RocmBackend::get_primitive_defs();
 
         // Tiling logic:
         // For a 128-thread block (Cuda default), it's 2 waves on CDNA.
@@ -58,6 +59,8 @@ impl ROCMEmitter {
         format!(r#"
 #include <hip/hip_runtime.h>
 #include <hip/hip_fp16.h>
+
+{primitives}
 
 extern "C" __global__ void gemm_rocm_kernel(
     const half* __restrict__ A,
