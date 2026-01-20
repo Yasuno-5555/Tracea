@@ -12,6 +12,9 @@ use crate::core::tuning::{tune_kernel, SearchMode, TunableKernel};
 use crate::kernels::gemm::cpu_adapter::{GemmAdapter, GemmProblem};
 use crate::kernels::attention::cuda_adapter::{Fa2Adapter, Fa2Problem};
 use crate::backend::cpu::CpuBackend;
+use crate::optimizer::benchmark::{Conv2dProblem, NVRTCConvBenchmark};
+use crate::optimizer::{AutoTuner, GPUInfo};
+use std::sync::Mutex;
 
 #[pyclass(name = "Context")]
 #[derive(Clone)]
@@ -108,6 +111,7 @@ impl PyContext {
             },
             precison: "f16".to_string(),
             tiling: final_config.clone(),
+            conv_magic_strategy: None,
         };
         let final_config = ir.tiling.clone(); // Clone before move
         let source = emitter.generate(ir);
@@ -189,6 +193,7 @@ impl PyContext {
             op_type: UnifiedOpType::Gemm { m, n, k },
             precison: "f16".to_string(),
             tiling: config.clone(),
+            conv_magic_strategy: None,
         };
         
         let source = emitter.generate(ir);
@@ -378,7 +383,17 @@ pub enum PyOptimizationGoal { MaximizeTFLOPS }
 
 #[pyclass]
 #[derive(Clone)]
-pub struct PyGraph {}
+pub struct PyGraph {
+    pub inner: crate::core::graph::Graph,
+}
+
+#[pymethods]
+impl PyGraph {
+    #[new]
+    pub fn new() -> Self {
+        Self { inner: crate::core::graph::Graph::new() }
+    }
+}
 
 #[pyclass]
 #[derive(Clone)]
@@ -410,13 +425,29 @@ pub fn python_bias_add() {}
 
 #[pyclass(name = "Tuner")]
 #[derive(Clone)]
-pub struct PyTuner {}
+pub struct PyTuner {
+    inner: Arc<Mutex<AutoTuner>>,
+}
 
 #[pymethods]
 impl PyTuner {
     #[new]
     pub fn new() -> Self {
-        Self {}
+        // Initialize with default/detected GPU info. 
+        // Real implementation should query RuntimeManager/CUDA driver.
+        let gpu = GPUInfo {
+            name: "Generic GPU".to_string(), 
+            backend: DeviceBackend::Cuda,
+            shared_memory_per_block: 102400,
+            max_registers_per_thread: 255,
+            max_warps_per_sm: 32,
+            wavefront_size: 32,
+            max_blocks_per_sm: 16,
+            shared_memory_per_sm: 102400,
+            has_specialized_units: true,
+        };
+        let tuner = AutoTuner::new(gpu);
+        Self { inner: Arc::new(Mutex::new(tuner)) }
     }
 
     pub fn tune_gemm(&self, m: usize, n: usize, k: usize) -> PyResult<String> {
@@ -437,6 +468,29 @@ impl PyTuner {
         let best_config = tune_kernel(&adapter, SearchMode::GridSearch);
         
         serde_json::to_string(&best_config).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))
+    }
+
+    #[pyo3(signature = (ctx, n, c, h, w, k, r, s, stride=1, pad=0, dilation=1))]
+    #[allow(clippy::too_many_arguments)]
+    pub fn tune_conv2d(
+        &self, 
+        ctx: &PyContext, 
+        n: usize, c: usize, h: usize, w: usize, k: usize, 
+        r: usize, s: usize, 
+        stride: usize, pad: usize, dilation: usize
+    ) -> PyResult<String> {
+        let problem = Conv2dProblem::new("CustomConv", n, h, w, c, k, r, s, stride, pad, dilation);
+        
+        let benchmark = NVRTCConvBenchmark::new(ctx.runtime.clone(), problem);
+        
+        // Update tuner's runtime reference for Doctor
+        let mut tuner = self.inner.lock().map_err(|_| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Lock Poisoned"))?;
+        tuner.runtime = Some(ctx.runtime.clone());
+        
+        let goal = crate::optimizer::OptimizationGoal::MaximizeTFLOPS;
+        let config = tuner.optimize_conv(&benchmark, 20, goal); // 20 iterations default
+        
+        serde_json::to_string(&config).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))
     }
 }
 

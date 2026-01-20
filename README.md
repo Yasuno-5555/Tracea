@@ -41,7 +41,7 @@ Tracea has been rigorously verified for the following high-performance primitive
 
 3.  **Convolution (Conv2d)**
     -   **Strategy**: Implicit GEMM with Magic Number Addressing.
-    -   **Support**: NHWC / NCHW Layouts.
+    -   **Support**: NHWC / NCHW Layouts, Dilation, Striding.
     -   **Verification**: Verified outputs on CUDA backend.
 
 ---

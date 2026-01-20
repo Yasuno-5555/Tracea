@@ -180,3 +180,34 @@ impl PipelineConfig {
         }
     }
 }
+
+/// Magic Number Division Strategy (for address calculation)
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub enum MagicNumberStrategy {
+    /// Standard magic number: multiply + shift + add. Universal but more instructions.
+    Standard,
+    /// Simple bit shift. Only valid when divisor is power of 2.
+    PowerOfTwo,
+    /// 32-bit fast division. Valid for small divisors (<= 65535).
+    FastSmall,
+}
+
+impl MagicNumberStrategy {
+    pub fn to_f32(self) -> f32 {
+        match self {
+            Self::Standard => 0.0,
+            Self::PowerOfTwo => 1.0,
+            Self::FastSmall => 2.0,
+        }
+    }
+    
+    pub fn select_for(divisor: usize) -> Self {
+        if divisor > 0 && divisor.is_power_of_two() {
+            Self::PowerOfTwo
+        } else if divisor <= 65535 {
+            Self::FastSmall
+        } else {
+            Self::Standard
+        }
+    }
+}

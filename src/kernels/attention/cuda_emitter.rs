@@ -17,11 +17,17 @@ impl FlashAttentionEmitter {
         let stride = d + 8; // BANK PADDING
 
         // 1. Barriers
+        // GEMM pipeline doesn't use mbarrier buffers in Shared Mem explicitly if using syncthreads/standard pipeline?
+        // But if preserving layout...
+        // Actually, if using standard pipeline, we don't need explicit barrier memory usually?
+        // But let's keep the layout calculation robust.
+        
         let barrier_bytes = (stages * 16) as usize;
         let s_offset = (barrier_bytes + 127) / 128 * 128;
 
         // 2. S / O Buffer (Aliased)
-        let sS_bytes = (mt * nt * 4) as usize; // float P scores
+        let pad_s = 8;
+        let sS_bytes = (mt * (nt + pad_s) * 4) as usize; // float P scores (padded)
         let sO_bytes = (mt as usize) * d * 4;  // float O results
         let shared_so_bytes = std::cmp::max(sS_bytes, sO_bytes);
         
@@ -40,11 +46,12 @@ impl FlashAttentionEmitter {
 
     pub fn generate_kernel(&self, _h: usize, d: usize, is_causal: bool) -> String {
         let mt = self.config.m_tile;
-        let nt = self.config.n_tile;
+        let nt = self.config.n_tile; // This acts as KT for Attention (Block size of K/V)
         let num_warps = self.config.force_num_warps.unwrap_or(1 + mt / 16); 
         let stages = self.config.num_stages;
         let stride = d + 8; // BANK PADDING
         let d_over_16 = d / 16;
+        let d_val = d;
 
         let (_total_bytes, s_offset, p_offset, k_offset, v_offset) = Self::calculate_smem_layout(&self.config, d);
 
@@ -55,12 +62,13 @@ impl FlashAttentionEmitter {
 
 using namespace nvcuda;
 
-#define TR {mt}
-#define TC {nt}
+#define MT {mt}
+#define KT {nt}
 #define NUM_WARPS {num_warps}
 #define STAGES {stages}
 #define D_VAL {d}
 #define STRIDE {stride}
+#define STRIDE_S ({nt} + 8)
 #define D_OVER_16 {d_over_16}
 
 {primitives}
@@ -82,100 +90,111 @@ extern "C" __global__ void __launch_bounds__(NUM_WARPS * 32, 1) flash_attention_
     Q += offset_base; K += offset_base; V += offset_base; O += offset_base;
 
     extern __shared__ char smem[];
-    uint64_t* bar_full = (uint64_t*)smem; 
-    uint64_t* bar_empty = (uint64_t*)&bar_full[STAGES]; 
     
+    // Pointers for K/V buffers (Circular for Pipeline)
+    half* smem_K_base = (half*)(smem + {k_offset});
+    half* smem_V_base = (half*)(smem + {v_offset});
+    
+    // Pointers for S/P/O buffers (Fixed/Aliased for Consumers)
+    // S and O share memory generally, P is intermediate
     float* smem_S_ptr = (float*)(smem + {s_offset});
-    float* smem_O_ptr = smem_S_ptr;
+    float* smem_O_ptr = smem_S_ptr; 
     half* smem_P_ptr = (half*)(smem + {p_offset});
-    half* smem_K_ptr = (half*)(smem + {k_offset}); 
-    half* smem_V_ptr = (half*)(smem + {v_offset}); 
 
-    if (tid == 0) {{
-         #pragma unroll
-         for(int i=0; i<STAGES; ++i) mbarrier_init(&bar_full[i], 32);
-         int total_consumers = NUM_WARPS - PRODUCER_WARPS;
-         int needed_cons = (TR + 15) / 16;
-         int active_cons = (needed_cons < total_consumers) ? needed_cons : total_consumers;
-         #pragma unroll
-         for(int i=0; i<STAGES; ++i) mbarrier_init(&bar_empty[i], active_cons * 32);
-    }}
-    __syncthreads();
-
-    int total_ks = (S + TC - 1) / TC;
-    int cons_warp = warp_id - PRODUCER_WARPS; 
-    int q_row_start = cons_warp * 16;
-    int q_row_glob = tile_idx * TR + q_row_start;
+    int cons_warp = warp_id - PRODUCER_WARPS;
+    int mt_per_warp = MT / (NUM_WARPS - PRODUCER_WARPS);
     
+    // Q Logic: Load Once
+    int q_row_start = cons_warp * 16;
+    int q_row_glob = tile_idx * MT + q_row_start; // Corrected MT
+    
+    // Fragments
     wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::row_major> frag_Q[D_OVER_16];
-    wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_O[D_VAL/16];
+    wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_O[D_VAL/16]; // Accumulator is float because O is accumulated math
+    // Initialize O accumulator
     #pragma unroll
     for(int k=0; k<D_VAL/16; ++k) wmma::fill_fragment(acc_O[k], 0.0f);
     
+    // Softmax Stats
     float m_prev[16]; float l_prev[16];
     #pragma unroll
     for(int i=0; i<16; ++i) {{ m_prev[i] = -50000.0f; l_prev[i] = 0.0f; }}
 
-    // Load Q once for this tile
-    if (!is_producer && cons_warp < (TR / 16)) {{
-        half* my_sq_buf = smem_P_ptr + cons_warp * 16 * TC;
+    // 1. Load Q (Consumers Only)
+    if (!is_producer && cons_warp < (MT / 16)) {{
+        // We use P buffer temporarily to load Q tile parts? Or just use register load if D is small?
+        // Reuse P buffer for Q loading scratchpad allows coalesced load
+        half* my_sq_buf = smem_P_ptr + cons_warp * 16 * KT; // Careful with sizing
         #pragma unroll
         for(int k=0; k<D_OVER_16; ++k) {{
-            int r_ld = lane_id / 2; int c_bs = (lane_id % 2) * 8;
-            long long sqr = (q_row_glob + r_ld < S) ? (q_row_glob + r_ld) : (S - 1);
-            if (sqr < 0) sqr = 0;
-            if (q_row_glob + r_ld < S && k*16 + c_bs < D) {{
-                *((uint4*)&my_sq_buf[r_ld*16 + c_bs]) = *((uint4*)&Q[sqr*D + k*16 + c_bs]);
-            }} else {{
-                *((uint4*)&my_sq_buf[r_ld*16 + c_bs]) = make_uint4(0,0,0,0);
-            }}
-            __syncwarp();
-            wmma::load_matrix_sync(frag_Q[k], my_sq_buf, 16);
-            __syncwarp();
+            // Coalesced Load Logic... simplified from original
+             int r_ld = lane_id / 2; int c_bs = (lane_id % 2) * 8;
+             long long sqr = (q_row_glob + r_ld < S) ? (q_row_glob + r_ld) : (S - 1);
+             if (sqr < 0) sqr = 0;
+             if (q_row_glob + r_ld < S && k*16 + c_bs < D) {{
+                 *((uint4*)&my_sq_buf[r_ld*16 + c_bs]) = *((uint4*)&Q[sqr*D + k*16 + c_bs]);
+             }} else {{
+                 *((uint4*)&my_sq_buf[r_ld*16 + c_bs]) = make_uint4(0,0,0,0);
+             }}
+             __syncwarp();
+             wmma::load_matrix_sync(frag_Q[k], my_sq_buf, 16);
+             __syncwarp();
         }}
+    }}
+    __syncthreads(); // Barrier 1: Q Loaded
+
+    // Pipeline Setup
+    int total_tiles = (S + KT - 1) / KT;
+    
+    // PROLOGUE
+    if (is_producer) {{
+        for (int s = 0; s < STAGES - 1; ++s) {{
+            if (s < total_tiles) {{
+                int stage = s; 
+                half* sK = smem_K_base + stage * KT * STRIDE;
+                half* sV = smem_V_base + stage * KT * STRIDE;
+                int k_tile_idx = s;
+                int k_start = k_tile_idx * KT;
+                
+                // Load K and V
+                for (int idx = tid * 8; idx < KT * D_VAL; idx += 32 * 8) {{
+                     int r = idx / D_VAL; int c = idx % D_VAL;
+                     half* k_ptr_dst = &sK[r*STRIDE + c];
+                     half* v_ptr_dst = &sV[r*STRIDE + c];
+                     long long safe_r = (k_start + r < S) ? (k_start + r) : (S - 1);
+                     if (safe_r < 0) safe_r = 0;
+                     // Predicated Load
+                     cp_async_ampere(k_ptr_dst, &K[safe_r * D + c], (k_start + r < S) ? 16 : 0);
+                     cp_async_ampere(v_ptr_dst, &V[safe_r * D + c], (k_start + r < S) ? 16 : 0);
+                     // Zero padding handled implicitly by cp_async 0? No, need explicit zeroing if OOB
+                     if (k_start + r >= S) {{
+                          *((uint4*)k_ptr_dst) = make_uint4(0,0,0,0);
+                          *((uint4*)v_ptr_dst) = make_uint4(0,0,0,0);
+                     }}
+                }}
+                cp_async_commit_group();
+            }}
+        }}
+        cp_async_wait_group<STAGES - 1>();
     }}
     __syncthreads();
 
-    if (is_producer) {{
-        for (int j_tile = 0; j_tile < total_ks; ++j_tile) {{
-            int stage = j_tile % STAGES;
-            int j_start = j_tile * TC;
-            // DEADLOCK INVESTIGATION: Restore ^ 1 logic
-            if (j_tile >= STAGES) mbarrier_wait(&bar_empty[stage], (j_tile / STAGES % 2) ^ 1);
+    // MAIN LOOP
+    for (int k_tile = 0; k_tile < total_tiles; ++k_tile) {{
+        // CONSUMER
+        if (!is_producer && cons_warp < (MT / 16)) {{
+            int stage = k_tile % STAGES;
+            half* sK_base = smem_K_base + stage * KT * STRIDE;
+            half* sV_base = smem_V_base + stage * KT * STRIDE;
+            
+            // 1. Compute S = Q * K^T
+            // We iterate over the K tile in 16-step chunks? No, KT is usually 16 or 32 or 64.
+            // Assuming KT is multiple of 16.
+            
+            float* my_sS = smem_S_ptr + cons_warp * 16 * KT; 
+            half* my_sP = smem_P_ptr + cons_warp * 16 * KT;
 
-            half* sK = smem_K_ptr + stage * TC * STRIDE;
-            half* sV = smem_V_ptr + stage * TC * STRIDE;
-            for (int idx = tid * 8; idx < TC * D_VAL; idx += 32 * 8) {{
-                  int r = idx / D_VAL; int c = idx % D_VAL;
-                  half* k_ptr_dst = &sK[r*STRIDE + c];
-                  half* v_ptr_dst = &sV[r*STRIDE + c];
-                  
-                  long long safe_r = (j_start + r < S) ? (j_start + r) : (S - 1);
-                  if (safe_r < 0) safe_r = 0; 
-                  
-                  cp_async_ampere(k_ptr_dst, &K[safe_r * D + c], (j_start + r < S) ? 16 : 0);
-                  cp_async_ampere(v_ptr_dst, &V[safe_r * D + c], (j_start + r < S) ? 16 : 0);
-                  
-                  if (j_start + r >= S) {{
-                      *((uint4*)k_ptr_dst) = make_uint4(0,0,0,0);
-                      *((uint4*)v_ptr_dst) = make_uint4(0,0,0,0);
-                  }}
-             }}
-            cp_async_commit_group();
-            cp_async_wait_group<0>();
-            mbarrier_arrive(&bar_full[stage]);
-        }}
-    }} else if (cons_warp < (TR / 16)) {{
-        for (int j_tile = 0; j_tile < total_ks; ++j_tile) {{
-            int stage = j_tile % STAGES;
-            mbarrier_wait(&bar_full[stage], (j_tile / STAGES % 2));
-
-            float* my_sS = smem_S_ptr + cons_warp * 16 * TC; 
-            half* my_sP = smem_P_ptr + cons_warp * 16 * TC;
-            half* sK_base = smem_K_ptr + stage * TC * STRIDE;
-            half* sV_base = smem_V_ptr + stage * TC * STRIDE;
-
-            for (int step = 0; step < TC / 16; ++step) {{
+            for (int step = 0; step < KT / 16; ++step) {{
                 wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_S;
                 wmma::fill_fragment(acc_S, 0.0f);
                 #pragma unroll
@@ -184,15 +203,18 @@ extern "C" __global__ void __launch_bounds__(NUM_WARPS * 32, 1) flash_attention_
                     wmma::load_matrix_sync(frag_K, sK_base + step * 16 * STRIDE + k * 16, STRIDE);
                     wmma::mma_sync(acc_S, frag_Q[k], frag_K, acc_S);
                 }}
-                wmma::store_matrix_sync(my_sS + step * 16, acc_S, TC, wmma::mem_row_major);
+                // Store S to Smem for Softmax
+                wmma::store_matrix_sync(my_sS + step * 16, acc_S, STRIDE_S, wmma::mem_row_major);
                 __syncwarp(); 
 
+                // 2. Softmax (Inter-warp sync not needed here, intra-warp is enough as we own the row)
                 float row_m_curr = -50000.0f;
+                // ... (Softmax Logic Copied verbatim mostly) ...
                 if (lane_id < 16) {{ 
                     #pragma unroll 
                     for(int c=0; c<16; ++c) {{ 
-                        int col_glob = j_tile * TC + step * 16 + c;
-                        float sv = my_sS[lane_id * TC + step * 16 + c] * scale; 
+                        int col_glob = k_tile * KT + step * 16 + c;
+                        float sv = my_sS[lane_id * STRIDE_S + step * 16 + c] * scale; 
                         if (col_glob >= S || q_row_glob + lane_id >= S) sv = -50000.0f;
                         if ({is_causal} && col_glob > q_row_glob + lane_id) sv = -50000.0f;
                         if(sv > row_m_curr) row_m_curr = sv; 
@@ -209,17 +231,18 @@ extern "C" __global__ void __launch_bounds__(NUM_WARPS * 32, 1) flash_attention_
                 if (lane_id < 16) {{ 
                     #pragma unroll 
                     for(int c=0; c<16; ++c) {{ 
-                        int col_glob = j_tile * TC + step * 16 + c;
-                        float sv = my_sS[lane_id * TC + step * 16 + c] * scale;
+                        int col_glob = k_tile * KT + step * 16 + c;
+                        float sv = my_sS[lane_id * STRIDE_S + step * 16 + c] * scale;
                         if (col_glob >= S || q_row_glob + lane_id >= S) sv = -50000.0f; 
                         if ({is_causal} && col_glob > q_row_glob + lane_id) sv = -50000.0f;
                         float s = expf(sv - m_new_vals[lane_id]); 
-                        my_sP[lane_id * TC + step * 16 + c] = __float2half(s); 
+                        my_sP[lane_id * KT + step * 16 + c] = __float2half(s); 
                         row_p_sum += s; 
                     }} 
                 }}
                 __syncwarp();
 
+                // Correction of O accumulator using new Max
                 #pragma unroll
                 for(int k=0; k<D_VAL/16; ++k) {{
                     float m_p = __shfl_sync(0xffffffff, (lane_id < 16) ? m_prev[lane_id] : -50000.0f, lane_id/4);
@@ -233,6 +256,7 @@ extern "C" __global__ void __launch_bounds__(NUM_WARPS * 32, 1) flash_attention_
                     }}
                 }}
 
+                // Update L/M
                 #pragma unroll
                 for(int i=0; i<16; ++i) {{
                      float cur_ps = __shfl_sync(0xffffffff, (lane_id < 16) ? row_p_sum : 0.0f, i);
@@ -241,8 +265,9 @@ extern "C" __global__ void __launch_bounds__(NUM_WARPS * 32, 1) flash_attention_
                      m_prev[i] = m_new_vals[i];
                 }}
                 
+                // 3. Compute O += P * V
                 wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::row_major> frag_P;
-                wmma::load_matrix_sync(frag_P, my_sP + step * 16, TC);
+                wmma::load_matrix_sync(frag_P, my_sP + step * 16, KT);
                 #pragma unroll
                 for(int k_v=0; k_v<D_VAL/16; ++k_v) {{ 
                     wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::row_major> frag_V;
@@ -250,14 +275,50 @@ extern "C" __global__ void __launch_bounds__(NUM_WARPS * 32, 1) flash_attention_
                     wmma::mma_sync(acc_O[k_v], frag_P, frag_V, acc_O[k_v]);
                 }}
             }}
-            mbarrier_arrive(&bar_empty[stage]); 
         }}
 
-        if (q_row_glob < S) {{
+        // PRODUCER (Prefetch Next)
+        if (is_producer) {{
+            int next_k = k_tile + STAGES - 1;
+            if (next_k < total_tiles) {{
+                int stage = next_k % STAGES;
+                half* sK = smem_K_base + stage * KT * STRIDE;
+                half* sV = smem_V_base + stage * KT * STRIDE;
+                int k_next_idx = next_k;
+                int k_start = k_next_idx * KT;
+                
+                for (int idx = tid * 8; idx < KT * D_VAL; idx += 32 * 8) {{
+                     int r = idx / D_VAL; int c = idx % D_VAL;
+                     half* k_ptr_dst = &sK[r*STRIDE + c];
+                     half* v_ptr_dst = &sV[r*STRIDE + c];
+                     long long safe_r = (k_start + r < S) ? (k_start + r) : (S - 1);
+                     if (safe_r < 0) safe_r = 0;
+                     cp_async_ampere(k_ptr_dst, &K[safe_r * D + c], (k_start + r < S) ? 16 : 0);
+                     cp_async_ampere(v_ptr_dst, &V[safe_r * D + c], (k_start + r < S) ? 16 : 0);
+                     if (k_start + r >= S) {{
+                          *((uint4*)k_ptr_dst) = make_uint4(0,0,0,0);
+                          *((uint4*)v_ptr_dst) = make_uint4(0,0,0,0);
+                     }}
+                }}
+                cp_async_commit_group();
+                cp_async_wait_group<STAGES - 1>();
+            }} else {{
+                cp_async_wait_group<0>(); // Drain for safety at end
+            }}
+        }}
+        __syncthreads();
+    }}
+
+    // EPILOGUE: Store O
+    if (!is_producer && cons_warp < (MT / 16)) {{
+         if (q_row_glob < S) {{
              float* my_sO = smem_O_ptr + cons_warp * 16 * D_VAL;
+             // Store un-normalized O to smem for final division
              #pragma unroll
              for(int k=0; k<D_VAL/16; ++k) wmma::store_matrix_sync(my_sO + k * 16, acc_O[k], D_VAL, wmma::mem_row_major);
              __syncwarp();
+             
+             // Final Division by L and Store to Global
              if (lane_id < 16) {{
                  if (q_row_glob + lane_id < S) {{
                      float lp = l_prev[lane_id];
@@ -270,8 +331,8 @@ extern "C" __global__ void __launch_bounds__(NUM_WARPS * 32, 1) flash_attention_
                      }}
                  }}
              }}
-        }}
-        }}
+         }}
+    }}
 }}
 "#, mt=mt, nt=nt, num_warps=num_warps, stages=stages, d=d, stride=stride, d_over_16=d_over_16, s_offset=s_offset, p_offset=p_offset, k_offset=k_offset, v_offset=v_offset, is_causal=is_causal, primitives=CudaBackend::get_primitive_defs())
     }

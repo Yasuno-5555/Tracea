@@ -1,69 +1,56 @@
-use tracea::core::tuning::TunableKernel;
-use tracea::kernels::gemm::cuda_gemm::CudaGemmAdapter;
 use tracea::runtime::manager::{RuntimeManager, DeviceBackend};
-use half::f16;
-use std::io::Write;
+use tracea::optimizer::benchmark::{NVRTCBenchmark, MicroBenchmark, BenchmarkResult};
+use tracea::optimizer::{AutoTuner, OptimizationGoal, GPUInfo};
+use std::sync::Arc;
 
 fn main() {
-    let runtime = RuntimeManager::init(Some(DeviceBackend::Cuda)).expect("Failed to init runtime");
-    
+    println!("╔══════════════════════════════════════════════════════════════╗");
+    println!("║     Tracea Phase 4: Meta Tuner Validation (GEMM)             ║");
+    println!("║     Target: Validate robust scoring and policy derivation    ║");
+    println!("╚══════════════════════════════════════════════════════════════╝");
+    println!();
+
+    // Initialize Runtime
+    let runtime = RuntimeManager::init(Some(DeviceBackend::Cuda))
+        .expect("Failed to initialize CUDA runtime");
+    runtime.doctor.diagnose_environment();
+    println!();
+
     let m = 2048;
     let n = 2048;
     let k = 2048;
-    
-    println!("Benchmarking GEMM {}x{}x{}", m, n, k);
-    
-    let problem = tracea::kernels::gemm::cuda_gemm::CudaGemmProblem { m, n, k };
-    let mut adapter = CudaGemmAdapter::new(runtime.clone(), problem);
-    
-    // Initialize with some data to avoid NaNs/Underflows if it matters
-    let a_init = vec![f16::from_f32(0.1); (m*k) as usize];
-    let b_init = vec![f16::from_f32(0.1); (k*n) as usize];
-    runtime.copy_to_device(adapter.a_buf, &a_init).unwrap();
-    runtime.copy_to_device(adapter.b_buf, &b_init).unwrap();
 
-    // Search for best config
-    let candidates = adapter.search_space();
-    println!("Found {} candidates", candidates.candidates.len());
-    std::io::stdout().flush().unwrap();
+    println!("🔬 Benchmarking GEMM [M={}, N={}, K={}]", m, n, k);
+
+    // Create benchmark
+    let benchmark = NVRTCBenchmark::new(runtime.clone(), m, n, k);
     
-    let mut best_tflops = 0.0;
-    let mut best_cfg = None;
+    // Use AutoTuner to find optimal config
+    let mut tuner = AutoTuner::new(GPUInfo::rtx3070()).with_runtime(runtime.clone());
     
-    for (i, cfg) in candidates.candidates.iter().enumerate() {
-        if !adapter.is_feasible(cfg) {
-            continue;
-        }
-        
-        let warmups = 3;
-        let iters = 10;
-        let mut total_gflops = 0.0;
-        
-        for j in 0..(warmups + iters) {
-            if let Some(gflops) = adapter.benchmark(cfg) {
-                if j >= warmups {
-                    total_gflops += gflops;
-                }
-            } else {
-                println!("  Iteration {} failed", j);
-                std::io::Write::flush(&mut std::io::stdout()).unwrap();
-            }
-        }
-        
-        let avg_gflops = total_gflops / iters as f32;
-        let tflops = avg_gflops as f64 / 1000.0;
-        
-        println!("[{}/{}] Config: {:?} -> {:.2} TFLOPS", i+1, candidates.candidates.len(), cfg, tflops);
-        std::io::Write::flush(&mut std::io::stdout()).unwrap();
-        
-        if tflops > best_tflops {
-            best_tflops = tflops;
-            best_cfg = Some(cfg.clone());
-        }
-    }
+    // Note: AutoTuner::optimize uses default "Sniper" policy internally now (fixed in mod.rs)
+    let config = tuner.optimize(
+        &benchmark, 
+        40, // 40 iterations to test stability
+        OptimizationGoal::MaximizeTFLOPS,
+        vec![] // No epilogue
+    );
     
-    if let Some(cfg) = best_cfg {
-        println!("Best Configuration Found: {:?}", cfg);
-        println!("Best Performance: {:.2} TFLOPS", best_tflops);
+    println!("👉 Best Config Found: {:?}", config);
+
+    // Measure final performance logic
+    let result = benchmark.measure(&config);
+    println!("------------------------------------------------------------");
+    println!("🏆 Final Result:");
+    println!("   TFLOPS:      {:.2}", result.tflops);
+    println!("   Mean TFLOPS: {:.2}", result.mean_tflops);
+    println!("   StdDev:      {:.4}", result.std_dev);
+    println!("   Latency:     {:.3} ms", result.latency_ms);
+    println!("------------------------------------------------------------");
+
+    if result.mean_tflops > 20.0 {
+        println!("✅ GEMM > 20 TFLOPS. Meta Tuner is working correctly.");
+    } else {
+        println!("⚠️ GEMM performance low. Meta Tuner or Kernel issue.");
     }
 }

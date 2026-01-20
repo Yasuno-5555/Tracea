@@ -5,35 +5,76 @@
 extern "C" {
 #endif
 
-#include <stdint.h>
 #include <stdbool.h>
+#include <stdint.h>
 
-// Opaque struct for configuration result
-// Actually we return a simple struct with C-compatible layout.
+
+/**
+ * @brief Tracea Tuning Result
+ */
 typedef struct {
-    bool success;
-    char* error_msg;
-    float score;
-    void* config_ptr; // Generic pointer to config (serialized string for now)
+  bool success;
+  char *error_msg;
+  float score;
+  void *config_ptr; // JSON string (char*) containing the optimal configuration
 } TraceaResult;
 
-// Initialize the Tracea Runtime. Returns 0 on success.
+/**
+ * @brief Initialize the Tracea Runtime (CUDA Backend).
+ * @return 0 on success, non-zero on failure.
+ */
 int tracea_init();
 
-// Shutdown the Tracea Runtime.
+/**
+ * @brief Shutdown the Tracea Runtime.
+ */
 void tracea_shutdown();
 
-// Tune GEMM on CPU.
-// Returns a TraceaResult containing the score and a pointer to the JSON config string.
-// Important: You must free the config_ptr string using tracea_free_string if success is true.
+/**
+ * @brief Tune a GEMM Kernel (Matrix Multiplication).
+ * @param m M dimension
+ * @param n N dimension
+ * @param k K dimension
+ * @return TraceaResult containing the optimal config JSON. Caller must free
+ * config_ptr using tracea_free_string.
+ */
 TraceaResult tracea_tune_gemm(size_t m, size_t n, size_t k);
 
-// Tune FlashAttention-2 on GPU.
-// Returns a TraceaResult containing the score and a pointer to the JSON config string.
-TraceaResult tracea_tune_fa2(size_t b, size_t h, size_t s, size_t d, bool causal);
+/**
+ * @brief Tune a FlashAttention-2 Kernel.
+ * @param b Batch size
+ * @param h Number of heads
+ * @param s Sequence length
+ * @param d Head dimension
+ * @param causal Whether to apply causal mask
+ * @return TraceaResult containing the optimal config JSON.
+ */
+TraceaResult tracea_tune_fa2(size_t b, size_t h, size_t s, size_t d,
+                             bool causal);
 
-// Free the string returned in TraceaResult.config_ptr
-void tracea_free_string(char* s);
+/**
+ * @brief Tune a Conv2d Kernel (Implicit GEMM).
+ * @param n Batch size
+ * @param c Input channels
+ * @param h Input height
+ * @param w Input width
+ * @param k Output channels (Filters)
+ * @param r Kernel height
+ * @param s_kernel Kernel width
+ * @param stride Stride
+ * @param pad Padding
+ * @param dilation Dilation
+ * @return TraceaResult containing the optimal config JSON.
+ */
+TraceaResult tracea_tune_conv2d(size_t n, size_t c, size_t h, size_t w,
+                                size_t k, size_t r, size_t s_kernel,
+                                size_t stride, size_t pad, size_t dilation);
+
+/**
+ * @brief Free a string returned by Tracea (e.g., config_ptr or error_msg).
+ * @param s Pointer to the string to free.
+ */
+void tracea_free_string(char *s);
 
 #ifdef __cplusplus
 }

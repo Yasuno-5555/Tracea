@@ -16,6 +16,8 @@ pub struct CacheKey {
     // Environment Invalidation
     pub env_version: String, // CUDA/ROCm/Metal API version
     pub arch: String,        // sm_86, gfx90a, etc.
+    // Op-specific fingerprint (e.g., conv parameters)
+    pub op_fingerprint: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -70,9 +72,9 @@ impl TuningCache {
         }).collect();
         let epi_str = normalized_epilogue.join(",");
 
-        format!("{:?}:{}:{}:{}:{}:{}:{}:{}:{}", 
+        format!("{:?}:{}:{}:{}:{}:{}:{}:{}:{}:{}", 
             key.backend, key.gpu, key.m, key.n, key.k, key.dtype, epi_str,
-            key.env_version, key.arch)
+            key.env_version, key.arch, key.op_fingerprint.as_deref().unwrap_or("none"))
     }
 
     pub fn get(&self, key: &CacheKey) -> Option<PipelineConfig> {

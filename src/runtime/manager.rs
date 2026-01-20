@@ -127,6 +127,7 @@ impl RuntimeManager {
     }
 
     pub fn compile(&self, source: &str, kernel_name: &str, backend: DeviceBackend) -> Result<KernelId, String> {
+        println!("[Runtime] Debug: compile called for {}", kernel_name);
         // Source-based caching
         {
             let cache = self.source_cache.lock().map_err(|_| "Lock")?;
@@ -150,7 +151,7 @@ impl RuntimeManager {
                 let source_hash = hasher.finish();
                 let cache_name = format!("{}_{:x}", kernel_name, source_hash);
 
-                if let Ok(id) = self.load_binary(&cache_name, &target_arch) {
+                if let Ok(id) = self.load_binary(&cache_name, kernel_name, &target_arch) {
                     self.source_cache.lock().unwrap().insert(source.to_string(), id);
                     return Ok(id);
                 }
@@ -173,8 +174,14 @@ impl RuntimeManager {
 
                 // Doctor Hook: NVRTC Result
                 let (jit_code, jit_log) = match &ptx_res {
-                    Ok(_) => (0, String::new()),
-                    Err(e) => (1, format!("{:?}", e)),
+                    Ok(_) => {
+                         println!("[Runtime] NVRTC Success!");
+                         (0, String::new())
+                    },
+                    Err(e) => {
+                        println!("[Runtime] NVRTC Error: {:?}", e);
+                        (1, format!("{:?}", e))
+                    },
                 };
                  self.doctor.on_jit_result(crate::doctor::JitResultInfo {
                     backend: crate::doctor::BackendKind::Cuda,
@@ -395,6 +402,7 @@ impl RuntimeManager {
             let res = cudarc::driver::sys::lib().cuModuleLoadData(&mut module, data.as_ptr() as *const _);
             if res != cudarc::driver::sys::CUresult::CUDA_SUCCESS { 
                 let msg = format!("{:?}", res);
+                println!("[Runtime] cuModuleLoadData FAILED for {}: {:?}", name, res);
                 self.doctor.on_module_load(crate::doctor::ModuleLoadInfo {
                      backend: crate::doctor::BackendKind::Cuda,
                      kernel_name: name.to_string(),
@@ -630,9 +638,9 @@ impl RuntimeManager {
         Ok(())
     }
 
-    pub fn load_binary(&self, kernel_name: &str, arch: &str) -> Result<KernelId, String> {
+    pub fn load_binary(&self, cache_name: &str, kernel_name: &str, arch: &str) -> Result<KernelId, String> {
         let env_id = self.doctor.get_environment_id();
-        let cache_path = format!("E:/Projects/Tracea/cache/{}/{}/{}.cubin", env_id, arch, kernel_name);
+        let cache_path = format!("E:/Projects/Tracea/cache/{}/{}/{}.cubin", env_id, arch, cache_name);
         
         if std::path::Path::new(&cache_path).exists() {
             println!("[Runtime] 🚀 AOT Cache Hit: {}", cache_path);

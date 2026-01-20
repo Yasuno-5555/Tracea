@@ -16,18 +16,18 @@ fn main() {
     runtime.doctor.diagnose_environment();
 
     println!("=== 1. Small 8x8 Debug Case ===");
-    run_bench(&runtime, 1, 8, 8, 3, 4, 3, 3, 1, 1, true);
+    run_bench(&runtime, 1, 8, 8, 3, 4, 3, 3, 1, 1, 1, true);
 
     println!("\n=== 2. ResNet-50 Layer 1 (224x224x3 -> 64, k=7, s=2) ===");
-    // run_bench(&runtime, 1, 224, 224, 3, 64, 7, 7, 2, 3, false);
+    // run_bench(&runtime, 1, 224, 224, 3, 64, 7, 7, 2, 3, 1, false);
     // Let's start with a simpler one first: VGG style 3x3
     // 224x224x64 -> 64, k=3, s=1, p=1
-    run_bench(&runtime, 1, 224, 224, 64, 64, 3, 3, 1, 1, false);
+    run_bench(&runtime, 1, 224, 224, 64, 64, 3, 3, 1, 1, 1, false);
 }
 
-fn run_bench(runtime: &RuntimeManager, n: usize, h: usize, w: usize, c: usize, k: usize, r: usize, s: usize, stride: usize, pad: usize, verify: bool) {
-    let h_out = (h + 2 * pad - r) / stride + 1;
-    let w_out = (w + 2 * pad - s) / stride + 1;
+fn run_bench(runtime: &RuntimeManager, n: usize, h: usize, w: usize, c: usize, k: usize, r: usize, s: usize, stride: usize, pad: usize, dilation: usize, verify: bool) {
+    let h_out = (h + 2 * pad - dilation * (r - 1) - 1) / stride + 1;
+    let w_out = (w + 2 * pad - dilation * (s - 1) - 1) / stride + 1;
     
     println!("Conv2d: Input[{},{},{},{}] Filter[{},{},{},{}] -> Output[{},{},{},{}]", 
              n, h, w, c, k, r, s, c, n, h_out, w_out, k);
@@ -35,7 +35,7 @@ fn run_bench(runtime: &RuntimeManager, n: usize, h: usize, w: usize, c: usize, k
     // 1. Generate Kernel
     let ir = UnifiedOpIR {
         op_type: UnifiedOpType::Conv2d { 
-            n, h, w, c, k, r, s, stride, pad,
+            n, h, w, c, k, r, s, stride, pad, dilation,
             layout: LayoutPolicy::NHWC
         },
         precison: "f16".to_string(),

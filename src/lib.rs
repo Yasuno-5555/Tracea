@@ -39,6 +39,7 @@ pub use crate::semantic::fragment::{Fragment, FragmentType, FragmentOp, Fragment
 pub use crate::optimizer::{AutoTuner, GPUInfo};
 pub use crate::optimizer::benchmark::{MicroBenchmark, SimulatedBenchmark};
 pub use crate::emitter::cuda::CUDAEmitter;
+pub use half;
 
 
 #[cfg(feature = "python")]

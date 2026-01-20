@@ -5,14 +5,14 @@
 
 using namespace nvcuda;
 
-#define MT 128
-#define NT 128
-#define KT 64
-#define STAGES 3
-#define NUM_WARPS 4
-#define PRODUCER_WARPS 1
-#define A_STRIDE 72
-#define B_STRIDE 136
+#define MT 64
+#define KT 32
+#define NUM_WARPS 5
+#define STAGES 2
+#define D_VAL 64
+#define STRIDE 72
+#define STRIDE_S (32 + 8)
+#define D_OVER_16 4
 
 
 __device__ __forceinline__ void ldmatrix_m8n8_x4(uint32_t* regs, void* smem_ptr) {
@@ -113,132 +113,264 @@ __device__ __forceinline__ uint32_t smem_swizzle(uint32_t addr) {
 }
 
 
-extern "C" __global__ void __launch_bounds__(NUM_WARPS * 32, 1) gemm_mma_kernel(
-    const half* __restrict__ A,
-    const half* __restrict__ B,
-    half* __restrict__ C_global,
-    int M, int N, int K
+extern "C" __global__ void __launch_bounds__(NUM_WARPS * 32, 1) flash_attention_v2_kernel(
+    const half* __restrict__ Q,
+    const half* __restrict__ K,
+    const half* __restrict__ V,
+    half* __restrict__ O,
+    long long B, long long H, long long S, long long D,
+    float scale
 ) {
-    int tid = threadIdx.x;
-    int warp_id = tid / 32;
+    int tile_idx = blockIdx.x; int h = blockIdx.y; int b = blockIdx.z;
+    int tid = threadIdx.x; int warp_id = tid / 32; int lane_id = tid % 32;
+    const int PRODUCER_WARPS = 1; 
     bool is_producer = (warp_id < PRODUCER_WARPS);
 
-    extern __shared__ char smem[];
-    int a_smem_offset = 128;
-    int b_smem_offset = a_smem_offset + 18432 * STAGES;
+    long long offset_base = b * H * S * D + h * S * D;
+    Q += offset_base; K += offset_base; V += offset_base; O += offset_base;
 
-    int a_tile_row = blockIdx.y * MT;
-    int b_tile_col = blockIdx.x * NT;
+    extern __shared__ char smem[];
+    
+    // Pointers for K/V buffers (Circular for Pipeline)
+    half* smem_K_base = (half*)(smem + 20608);
+    half* smem_V_base = (half*)(smem + 29824);
+    
+    // Pointers for S/P/O buffers (Fixed/Aliased for Consumers)
+    // S and O share memory generally, P is intermediate
+    float* smem_S_ptr = (float*)(smem + 128);
+    float* smem_O_ptr = smem_S_ptr; 
+    half* smem_P_ptr = (half*)(smem + 16512);
+
     int cons_warp = warp_id - PRODUCER_WARPS;
     int mt_per_warp = MT / (NUM_WARPS - PRODUCER_WARPS);
-    const int M_FRAGS = MT / (NUM_WARPS - PRODUCER_WARPS) / 16;
-    const int N_FRAGS = NT / 16;
-
-    wmma::fragment<wmma::accumulator, 16, 16, 16, half> frag_acc[M_FRAGS][N_FRAGS];
+    
+    // Q Logic: Load Once
+    int q_row_start = cons_warp * 16;
+    int q_row_glob = tile_idx * MT + q_row_start; // Corrected MT
+    
+    // Fragments
+    wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::row_major> frag_Q[D_OVER_16];
+    wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_O[D_VAL/16]; // Accumulator is float because O is accumulated math
+    // Initialize O accumulator
     #pragma unroll
-    for(int mi=0; mi<M_FRAGS; mi++) {
-        for(int ni=0; ni<N_FRAGS; ni++) {
-            wmma::fill_fragment(frag_acc[mi][ni], (half)0.0f);
+    for(int k=0; k<D_VAL/16; ++k) wmma::fill_fragment(acc_O[k], 0.0f);
+    
+    // Softmax Stats
+    float m_prev[16]; float l_prev[16];
+    #pragma unroll
+    for(int i=0; i<16; ++i) { m_prev[i] = -50000.0f; l_prev[i] = 0.0f; }
+
+    // 1. Load Q (Consumers Only)
+    if (!is_producer && cons_warp < (MT / 16)) {
+        // We use P buffer temporarily to load Q tile parts? Or just use register load if D is small?
+        // Reuse P buffer for Q loading scratchpad allows coalesced load
+        half* my_sq_buf = smem_P_ptr + cons_warp * 16 * KT; // Careful with sizing
+        #pragma unroll
+        for(int k=0; k<D_OVER_16; ++k) {
+            // Coalesced Load Logic... simplified from original
+             int r_ld = lane_id / 2; int c_bs = (lane_id % 2) * 8;
+             long long sqr = (q_row_glob + r_ld < S) ? (q_row_glob + r_ld) : (S - 1);
+             if (sqr < 0) sqr = 0;
+             if (q_row_glob + r_ld < S && k*16 + c_bs < D) {
+                 *((uint4*)&my_sq_buf[r_ld*16 + c_bs]) = *((uint4*)&Q[sqr*D + k*16 + c_bs]);
+             } else {
+                 *((uint4*)&my_sq_buf[r_ld*16 + c_bs]) = make_uint4(0,0,0,0);
+             }
+             __syncwarp();
+             wmma::load_matrix_sync(frag_Q[k], my_sq_buf, 16);
+             __syncwarp();
         }
     }
+    __syncthreads(); // Barrier 1: Q Loaded
 
-    int total_tiles = (K + KT - 1) / KT;
-
-    // PROLOGUE: Pre-load STAGES - 1 tiles
+    // Pipeline Setup
+    int total_tiles = (S + KT - 1) / KT;
+    
+    // PROLOGUE
     if (is_producer) {
         for (int s = 0; s < STAGES - 1; ++s) {
             if (s < total_tiles) {
-                int stage = s; // Simple direct mapping for prologue
-                half* sA = (half*)(smem + a_smem_offset + stage * 18432);
-                half* sB = (half*)(smem + b_smem_offset + stage * 17408);
+                int stage = s; 
+                half* sK = smem_K_base + stage * KT * STRIDE;
+                half* sV = smem_V_base + stage * KT * STRIDE;
+                int k_tile_idx = s;
+                int k_start = k_tile_idx * KT;
                 
-                int k_tile = s;
-                #pragma unroll
-                for (int i = tid; i < (MT * KT) / 8; i += 32) {
-                    int m = (i * 8) / KT;
-                    int k = (i * 8) % KT;
-                    if (a_tile_row + m < M && k_tile * KT + k < K)
-                        cp_async_ampere(sA + m * A_STRIDE + k, A + (a_tile_row + m) * K + (k_tile * KT + k), 16);
-                }
-                #pragma unroll
-                for (int i = tid; i < (KT * NT) / 8; i += 32) {
-                    int k = (i * 8) / NT;
-                    int n = (i * 8) % NT;
-                    if (k_tile * KT + k < K && b_tile_col + n < N)
-                        cp_async_ampere(sB + k * B_STRIDE + n, B + (k_tile * KT + k) * N + (b_tile_col + n), 16);
+                // Load K and V
+                for (int idx = tid * 8; idx < KT * D_VAL; idx += 32 * 8) {
+                     int r = idx / D_VAL; int c = idx % D_VAL;
+                     half* k_ptr_dst = &sK[r*STRIDE + c];
+                     half* v_ptr_dst = &sV[r*STRIDE + c];
+                     long long safe_r = (k_start + r < S) ? (k_start + r) : (S - 1);
+                     if (safe_r < 0) safe_r = 0;
+                     // Predicated Load
+                     cp_async_ampere(k_ptr_dst, &K[safe_r * D + c], (k_start + r < S) ? 16 : 0);
+                     cp_async_ampere(v_ptr_dst, &V[safe_r * D + c], (k_start + r < S) ? 16 : 0);
+                     // Zero padding handled implicitly by cp_async 0? No, need explicit zeroing if OOB
+                     if (k_start + r >= S) {
+                          *((uint4*)k_ptr_dst) = make_uint4(0,0,0,0);
+                          *((uint4*)v_ptr_dst) = make_uint4(0,0,0,0);
+                     }
                 }
                 cp_async_commit_group();
             }
         }
-        // Ensure Tile 0 is ready. (STAGES-1 committed. Keep STAGES-2 in flight).
-        cp_async_wait_group<STAGES - 2>();
+        cp_async_wait_group<STAGES - 1>();
     }
     __syncthreads();
 
     // MAIN LOOP
     for (int k_tile = 0; k_tile < total_tiles; ++k_tile) {
-        if (!is_producer) {
+        // CONSUMER
+        if (!is_producer && cons_warp < (MT / 16)) {
             int stage = k_tile % STAGES;
-            half* sA = (half*)(smem + a_smem_offset + stage * 18432);
-            half* sB = (half*)(smem + b_smem_offset + stage * 17408);
-            for (int k_inner = 0; k_inner < KT; k_inner += 16) {
+            half* sK_base = smem_K_base + stage * KT * STRIDE;
+            half* sV_base = smem_V_base + stage * KT * STRIDE;
+            
+            // 1. Compute S = Q * K^T
+            // We iterate over the K tile in 16-step chunks? No, KT is usually 16 or 32 or 64.
+            // Assuming KT is multiple of 16.
+            
+            float* my_sS = smem_S_ptr + cons_warp * 16 * KT; 
+            half* my_sP = smem_P_ptr + cons_warp * 16 * KT;
+
+            for (int step = 0; step < KT / 16; ++step) {
+                wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc_S;
+                wmma::fill_fragment(acc_S, 0.0f);
                 #pragma unroll
-                for (int mi = 0; mi < M_FRAGS; ++mi) {
-                    wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::row_major> frag_a;
-                    wmma::load_matrix_sync(frag_a, sA + (cons_warp * mt_per_warp + mi * 16) * A_STRIDE + k_inner, A_STRIDE);
-                    #pragma unroll
-                    for (int ni = 0; ni < N_FRAGS; ++ni) {
-                        wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::row_major> frag_b;
-                        wmma::load_matrix_sync(frag_b, sB + k_inner * B_STRIDE + ni * 16, B_STRIDE);
-                        wmma::mma_sync(frag_acc[mi][ni], frag_a, frag_b, frag_acc[mi][ni]);
+                for(int k=0; k<D_OVER_16; ++k) {
+                    wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::col_major> frag_K;
+                    wmma::load_matrix_sync(frag_K, sK_base + step * 16 * STRIDE + k * 16, STRIDE);
+                    wmma::mma_sync(acc_S, frag_Q[k], frag_K, acc_S);
+                }
+                // Store S to Smem for Softmax
+                wmma::store_matrix_sync(my_sS + step * 16, acc_S, STRIDE_S, wmma::mem_row_major);
+                __syncwarp(); 
+
+                // 2. Softmax (Inter-warp sync not needed here, intra-warp is enough as we own the row)
+                float row_m_curr = -50000.0f;
+                // ... (Softmax Logic Copied verbatim mostly) ...
+                if (lane_id < 16) { 
+                    #pragma unroll 
+                    for(int c=0; c<16; ++c) { 
+                        int col_glob = k_tile * KT + step * 16 + c;
+                        float sv = my_sS[lane_id * STRIDE_S + step * 16 + c] * scale; 
+                        if (col_glob >= S || q_row_glob + lane_id >= S) sv = -50000.0f;
+                        if (true && col_glob > q_row_glob + lane_id) sv = -50000.0f;
+                        if(sv > row_m_curr) row_m_curr = sv; 
+                    } 
+                }
+                
+                float m_new_vals[16]; float row_p_sum = 0.0f;
+                #pragma unroll
+                for(int i=0; i<16; ++i) {
+                     float cur_m = __shfl_sync(0xffffffff, (lane_id < 16) ? row_m_curr : -50000.0f, i);
+                     m_new_vals[i] = fmaxf(m_prev[i], cur_m);
+                }
+
+                if (lane_id < 16) { 
+                    #pragma unroll 
+                    for(int c=0; c<16; ++c) { 
+                        int col_glob = k_tile * KT + step * 16 + c;
+                        float sv = my_sS[lane_id * STRIDE_S + step * 16 + c] * scale;
+                        if (col_glob >= S || q_row_glob + lane_id >= S) sv = -50000.0f; 
+                        if (true && col_glob > q_row_glob + lane_id) sv = -50000.0f;
+                        float s = expf(sv - m_new_vals[lane_id]); 
+                        my_sP[lane_id * KT + step * 16 + c] = __float2half(s); 
+                        row_p_sum += s; 
+                    } 
+                }
+                __syncwarp();
+
+                // Correction of O accumulator using new Max
+                #pragma unroll
+                for(int k=0; k<D_VAL/16; ++k) {
+                    float m_p = __shfl_sync(0xffffffff, (lane_id < 16) ? m_prev[lane_id] : -50000.0f, lane_id/4);
+                    float m_n = __shfl_sync(0xffffffff, (lane_id < 16) ? m_new_vals[lane_id] : -50000.0f, lane_id/4);
+                    float m_p2 = __shfl_sync(0xffffffff, (lane_id < 16) ? m_prev[lane_id] : -50000.0f, lane_id/4+8);
+                    float m_n2 = __shfl_sync(0xffffffff, (lane_id < 16) ? m_new_vals[lane_id] : -50000.0f, lane_id/4+8);
+                    float exp_a = expf(m_p - m_n); float exp_b = expf(m_p2 - m_n2);
+                    for(int i=0; i<acc_O[k].num_elements; ++i) {
+                        float r_exp = (i < 4) ? exp_a : exp_b;
+                        acc_O[k].x[i] *= r_exp;
                     }
+                }
+
+                // Update L/M
+                #pragma unroll
+                for(int i=0; i<16; ++i) {
+                     float cur_ps = __shfl_sync(0xffffffff, (lane_id < 16) ? row_p_sum : 0.0f, i);
+                     float ep = expf(m_prev[i] - m_new_vals[i]);
+                     l_prev[i] = l_prev[i] * ep + cur_ps;
+                     m_prev[i] = m_new_vals[i];
+                }
+                
+                // 3. Compute O += P * V
+                wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::row_major> frag_P;
+                wmma::load_matrix_sync(frag_P, my_sP + step * 16, KT);
+                #pragma unroll
+                for(int k_v=0; k_v<D_VAL/16; ++k_v) { 
+                    wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::row_major> frag_V;
+                    wmma::load_matrix_sync(frag_V, sV_base + step * 16 * STRIDE + k_v * 16, STRIDE);
+                    wmma::mma_sync(acc_O[k_v], frag_P, frag_V, acc_O[k_v]);
                 }
             }
         }
-        
+
+        // PRODUCER (Prefetch Next)
         if (is_producer) {
             int next_k = k_tile + STAGES - 1;
             if (next_k < total_tiles) {
                 int stage = next_k % STAGES;
-                half* sA = (half*)(smem + a_smem_offset + stage * 18432);
-                half* sB = (half*)(smem + b_smem_offset + stage * 17408);
+                half* sK = smem_K_base + stage * KT * STRIDE;
+                half* sV = smem_V_base + stage * KT * STRIDE;
+                int k_next_idx = next_k;
+                int k_start = k_next_idx * KT;
                 
-                int k_next_tile_idx = next_k; // rename to handle capture
-                #pragma unroll
-                for (int i = tid; i < (MT * KT) / 8; i += 32) {
-                    int m = (i * 8) / KT;
-                    int k = (i * 8) % KT;
-                    if (a_tile_row + m < M && k_next_tile_idx * KT + k < K)
-                        cp_async_ampere(sA + m * A_STRIDE + k, A + (a_tile_row + m) * K + (k_next_tile_idx * KT + k), 16);
-                }
-                #pragma unroll
-                for (int i = tid; i < (KT * NT) / 8; i += 32) {
-                    int k = (i * 8) / NT;
-                    int n = (i * 8) % NT;
-                    if (k_next_tile_idx * KT + k < K && b_tile_col + n < N)
-                        cp_async_ampere(sB + k * B_STRIDE + n, B + (k_next_tile_idx * KT + k) * N + (b_tile_col + n), 16);
+                for (int idx = tid * 8; idx < KT * D_VAL; idx += 32 * 8) {
+                     int r = idx / D_VAL; int c = idx % D_VAL;
+                     half* k_ptr_dst = &sK[r*STRIDE + c];
+                     half* v_ptr_dst = &sV[r*STRIDE + c];
+                     long long safe_r = (k_start + r < S) ? (k_start + r) : (S - 1);
+                     if (safe_r < 0) safe_r = 0;
+                     cp_async_ampere(k_ptr_dst, &K[safe_r * D + c], (k_start + r < S) ? 16 : 0);
+                     cp_async_ampere(v_ptr_dst, &V[safe_r * D + c], (k_start + r < S) ? 16 : 0);
+                     if (k_start + r >= S) {
+                          *((uint4*)k_ptr_dst) = make_uint4(0,0,0,0);
+                          *((uint4*)v_ptr_dst) = make_uint4(0,0,0,0);
+                     }
                 }
                 cp_async_commit_group();
-                // Ensure k_tile + 1 is ready for next iter
-                cp_async_wait_group<STAGES - 2>();
+                cp_async_wait_group<STAGES - 1>();
             } else {
-                // Epilogue drain: Ensure remaining tiles ready. Safe fallback.
-                cp_async_wait_group<0>();
+                cp_async_wait_group<0>(); // Drain for safety at end
             }
         }
         __syncthreads();
     }
 
-    if (!is_producer) {
-        #pragma unroll
-        for (int mi = 0; mi < M_FRAGS; ++mi) {
+    // EPILOGUE: Store O
+    if (!is_producer && cons_warp < (MT / 16)) {
+         if (q_row_glob < S) {
+             float* my_sO = smem_O_ptr + cons_warp * 16 * D_VAL;
+             // Store un-normalized O to smem for final division
              #pragma unroll
-             for (int ni = 0; ni < N_FRAGS; ++ni) {
-                 int row = a_tile_row + cons_warp * mt_per_warp + mi * 16;
-                 int col = b_tile_col + ni * 16;
-                 if (row < M && col < N)
-                     wmma::store_matrix_sync((half*)C_global + row * N + col, frag_acc[mi][ni], N, wmma::mem_row_major);
+             for(int k=0; k<D_VAL/16; ++k) wmma::store_matrix_sync(my_sO + k * 16, acc_O[k], D_VAL, wmma::mem_row_major);
+             __syncwarp();
+             
+             // Final Division by L and Store to Global
+             if (lane_id < 16) {
+                 if (q_row_glob + lane_id < S) {
+                     float lp = l_prev[lane_id];
+                     #pragma unroll
+                     for (int k=0; k<D_VAL/16; ++k) {
+                         float* s_row = my_sO + lane_id * D_VAL + k * 16;
+                         half* g_row = O + (q_row_glob + lane_id) * D + k * 16;
+                         #pragma unroll 
+                         for(int c=0; c<16; ++c) g_row[c] = __float2half(s_row[c] / (lp + 1e-6f));
+                     }
+                 }
              }
-        }
+         }
     }
 }

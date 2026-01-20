@@ -25,6 +25,7 @@ pub struct UnifiedOpIR {
     pub op_type: UnifiedOpType,
     pub precison: String,
     pub tiling: crate::PipelineConfig,
+    pub conv_magic_strategy: Option<crate::core::config::MagicNumberStrategy>,
 }
 
 #[derive(Debug, Clone)]
@@ -56,6 +57,7 @@ pub enum UnifiedOpType {
         s: usize,
         stride: usize,
         pad: usize,
+        dilation: usize,
         layout: crate::core::config::LayoutPolicy,
     },
 }

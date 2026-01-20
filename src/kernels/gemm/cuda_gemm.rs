@@ -112,6 +112,7 @@ impl TunableKernel for CudaGemmAdapter {
             },
             precison: "f16".to_string(),
             tiling: cfg.clone(),
+            conv_magic_strategy: None,
         };
 
         let emitter = UniversalEmitter::new(DeviceBackend::Cuda);
