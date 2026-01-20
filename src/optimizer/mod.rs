@@ -349,6 +349,7 @@ impl AutoTuner {
                 instruction: crate::core::config::SpecializedInstruction::None,
                 swizzle_mode: crate::core::config::SwizzleMode::None,
                 quantization: crate::core::config::QuantizationMode::None,
+                layout_policy: Some(crate::core::config::LayoutPolicy::RowMajor),
                 epilogue: epilogue.clone(),
                 force_num_warps: None,
             }

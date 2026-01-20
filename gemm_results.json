@@ -1,0 +1,828 @@
+{
+  "best_performance": 31.511131286621094,
+  "kernel": "gemm",
+  "problem": {
+    "k": 2048,
+    "m": 2048,
+    "n": 2048
+  },
+  "results": [
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": null,
+        "instruction": "CudaMMA",
+        "k_tile": 32,
+        "layout_policy": "RowMajor",
+        "m_tile": 128,
+        "n_tile": 128,
+        "num_stages": 2,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 11.305521011352539
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 16,
+        "layout_policy": "RowMajor",
+        "m_tile": 64,
+        "n_tile": 64,
+        "num_stages": 2,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 11.211817741394043
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 32,
+        "layout_policy": "RowMajor",
+        "m_tile": 64,
+        "n_tile": 64,
+        "num_stages": 2,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 10.155266761779785
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 64,
+        "layout_policy": "RowMajor",
+        "m_tile": 64,
+        "n_tile": 64,
+        "num_stages": 2,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 11.040620803833008
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 16,
+        "layout_policy": "RowMajor",
+        "m_tile": 64,
+        "n_tile": 128,
+        "num_stages": 2,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 10.223434448242188
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 32,
+        "layout_policy": "RowMajor",
+        "m_tile": 64,
+        "n_tile": 128,
+        "num_stages": 2,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 10.764464378356934
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 64,
+        "layout_policy": "RowMajor",
+        "m_tile": 64,
+        "n_tile": 128,
+        "num_stages": 2,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 10.183920860290527
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 16,
+        "layout_policy": "RowMajor",
+        "m_tile": 64,
+        "n_tile": 256,
+        "num_stages": 2,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 10.647974967956543
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 32,
+        "layout_policy": "RowMajor",
+        "m_tile": 64,
+        "n_tile": 256,
+        "num_stages": 2,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 11.578448295593262
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 64,
+        "layout_policy": "RowMajor",
+        "m_tile": 64,
+        "n_tile": 256,
+        "num_stages": 2,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 12.305967330932617
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 16,
+        "layout_policy": "RowMajor",
+        "m_tile": 128,
+        "n_tile": 64,
+        "num_stages": 2,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 11.46471118927002
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 32,
+        "layout_policy": "RowMajor",
+        "m_tile": 128,
+        "n_tile": 64,
+        "num_stages": 2,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 12.276421546936035
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 64,
+        "layout_policy": "RowMajor",
+        "m_tile": 128,
+        "n_tile": 64,
+        "num_stages": 2,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 8.953631401062012
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 16,
+        "layout_policy": "RowMajor",
+        "m_tile": 128,
+        "n_tile": 128,
+        "num_stages": 2,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 13.049654006958008
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 64,
+        "layout_policy": "RowMajor",
+        "m_tile": 128,
+        "n_tile": 128,
+        "num_stages": 2,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 12.502269744873047
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 16,
+        "layout_policy": "RowMajor",
+        "m_tile": 256,
+        "n_tile": 64,
+        "num_stages": 2,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 11.990585327148438
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 32,
+        "layout_policy": "RowMajor",
+        "m_tile": 256,
+        "n_tile": 64,
+        "num_stages": 2,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 10.7721586227417
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 64,
+        "layout_policy": "RowMajor",
+        "m_tile": 256,
+        "n_tile": 64,
+        "num_stages": 2,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 12.118127822875977
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 16,
+        "layout_policy": "RowMajor",
+        "m_tile": 128,
+        "n_tile": 128,
+        "num_stages": 4,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 6.121762275695801
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 32,
+        "layout_policy": "RowMajor",
+        "m_tile": 128,
+        "n_tile": 64,
+        "num_stages": 4,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 11.274803161621094
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 16,
+        "layout_policy": "RowMajor",
+        "m_tile": 256,
+        "n_tile": 64,
+        "num_stages": 4,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 10.150228500366211
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 32,
+        "layout_policy": "RowMajor",
+        "m_tile": 64,
+        "n_tile": 256,
+        "num_stages": 4,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 10.239155769348145
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 16,
+        "layout_policy": "RowMajor",
+        "m_tile": 128,
+        "n_tile": 64,
+        "num_stages": 4,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 12.733941078186035
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 32,
+        "layout_policy": "RowMajor",
+        "m_tile": 128,
+        "n_tile": 128,
+        "num_stages": 4,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 9.498462677001953
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 16,
+        "layout_policy": "RowMajor",
+        "m_tile": 64,
+        "n_tile": 64,
+        "num_stages": 4,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 12.506275177001953
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 64,
+        "layout_policy": "RowMajor",
+        "m_tile": 64,
+        "n_tile": 64,
+        "num_stages": 4,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 9.461531639099121
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 32,
+        "layout_policy": "RowMajor",
+        "m_tile": 256,
+        "n_tile": 64,
+        "num_stages": 4,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 10.512710571289062
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 32,
+        "layout_policy": "RowMajor",
+        "m_tile": 64,
+        "n_tile": 128,
+        "num_stages": 4,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 10.397547721862793
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 16,
+        "layout_policy": "RowMajor",
+        "m_tile": 64,
+        "n_tile": 256,
+        "num_stages": 4,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 10.776077270507812
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 16,
+        "layout_policy": "RowMajor",
+        "m_tile": 64,
+        "n_tile": 128,
+        "num_stages": 4,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 13.192754745483398
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 64,
+        "layout_policy": "RowMajor",
+        "m_tile": 64,
+        "n_tile": 128,
+        "num_stages": 4,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": -1.0
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 32,
+        "layout_policy": "RowMajor",
+        "m_tile": 64,
+        "n_tile": 64,
+        "num_stages": 4,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 11.571117401123047
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 64,
+        "layout_policy": "RowMajor",
+        "m_tile": 128,
+        "n_tile": 64,
+        "num_stages": 4,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": -1.0
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 64,
+        "layout_policy": "RowMajor",
+        "m_tile": 128,
+        "n_tile": 128,
+        "num_stages": 3,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": -1.0
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 64,
+        "layout_policy": "RowMajor",
+        "m_tile": 64,
+        "n_tile": 256,
+        "num_stages": 2,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 8.972710609436035
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 64,
+        "layout_policy": "RowMajor",
+        "m_tile": 256,
+        "n_tile": 64,
+        "num_stages": 2,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 9.269579887390137
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 16,
+        "layout_policy": "RowMajor",
+        "m_tile": 64,
+        "n_tile": 128,
+        "num_stages": 4,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 9.010735511779785
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 16,
+        "layout_policy": "RowMajor",
+        "m_tile": 128,
+        "n_tile": 64,
+        "num_stages": 4,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 9.17091178894043
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 16,
+        "layout_policy": "RowMajor",
+        "m_tile": 64,
+        "n_tile": 64,
+        "num_stages": 4,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 9.552651405334473
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 16,
+        "layout_policy": "RowMajor",
+        "m_tile": 128,
+        "n_tile": 128,
+        "num_stages": 2,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 11.153441429138184
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 32,
+        "layout_policy": "RowMajor",
+        "m_tile": 128,
+        "n_tile": 64,
+        "num_stages": 2,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 11.447903633117676
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 16,
+        "layout_policy": "RowMajor",
+        "m_tile": 256,
+        "n_tile": 64,
+        "num_stages": 2,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 7.517029285430908
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 32,
+        "layout_policy": "RowMajor",
+        "m_tile": 64,
+        "n_tile": 256,
+        "num_stages": 2,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 10.747493743896484
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 32,
+        "layout_policy": "RowMajor",
+        "m_tile": 64,
+        "n_tile": 64,
+        "num_stages": 4,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 31.27479362487793
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 32,
+        "layout_policy": "RowMajor",
+        "m_tile": 64,
+        "n_tile": 64,
+        "num_stages": 4,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 31.4384765625
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 32,
+        "layout_policy": "RowMajor",
+        "m_tile": 64,
+        "n_tile": 64,
+        "num_stages": 4,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 28.465171813964844
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 32,
+        "layout_policy": "RowMajor",
+        "m_tile": 64,
+        "n_tile": 64,
+        "num_stages": 4,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 28.31224250793457
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 32,
+        "layout_policy": "RowMajor",
+        "m_tile": 64,
+        "n_tile": 64,
+        "num_stages": 4,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 31.343263626098633
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 32,
+        "layout_policy": "RowMajor",
+        "m_tile": 64,
+        "n_tile": 64,
+        "num_stages": 4,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 31.511131286621094
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 32,
+        "layout_policy": "RowMajor",
+        "m_tile": 64,
+        "n_tile": 64,
+        "num_stages": 4,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 28.461397171020508
+    },
+    {
+      "config": {
+        "epilogue": [],
+        "force_num_warps": 4,
+        "instruction": "CudaMMA",
+        "k_tile": 32,
+        "layout_policy": "RowMajor",
+        "m_tile": 64,
+        "n_tile": 64,
+        "num_stages": 4,
+        "quantization": "None",
+        "swizzle_mode": "None"
+      },
+      "latency_ms": 0.0,
+      "tflops": 28.329986572265625
+    }
+  ],
+  "timestamp": "2026-01-20T14:43:36.808392900+09:00"
+}

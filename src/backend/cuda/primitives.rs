@@ -137,8 +137,9 @@ __device__ __forceinline__ void cp_async_commit_group() {
     asm volatile("cp.async.commit_group;");
 }
 
-__device__ __forceinline__ void cp_async_wait_group_0() {
-    asm volatile("cp.async.wait_group 0;");
+template <int N>
+__device__ __forceinline__ void cp_async_wait_group() {
+    asm volatile("cp.async.wait_group %0;" :: "n"(N));
 }
 
 // Helper for XOR Swizzling (128B aligned safe)

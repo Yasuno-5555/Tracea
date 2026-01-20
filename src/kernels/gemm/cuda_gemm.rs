@@ -1,5 +1,5 @@
 use crate::core::tuning::{TunableKernel, SearchSpace};
-use crate::core::config::{PipelineConfig, SpecializedInstruction};
+use crate::core::config::{PipelineConfig, SpecializedInstruction, LayoutPolicy};
 use crate::runtime::manager::{RuntimeManager, DeviceBackend, KernelArg};
 use crate::emitter::universal::UniversalEmitter;
 use crate::emitter::traits::{UnifiedOpIR, UnifiedOpType};
@@ -54,9 +54,9 @@ impl TunableKernel for CudaGemmAdapter {
         
         // "Hero" configurations for the final 30 TFLOPS push
         let heroes = vec![
-            (256, 128, 32, 17, 2), // The 28.56 TFLOPS leader
-            (128, 256, 32, 17, 2), // Fat tile version
+            (256, 128, 32, 17, 2), // The leader
             (128, 128, 64, 17, 2), // High density with max warps
+            (128, 256, 32, 17, 2), // Fat tile version
             (128, 128, 32, 9, 3),  // 3-stage pipelining
         ];
 
@@ -64,6 +64,9 @@ impl TunableKernel for CudaGemmAdapter {
             let mut cfg = PipelineConfig::new(s, m, n, k);
             cfg.instruction = SpecializedInstruction::CudaMMA;
             cfg.force_num_warps = Some(w);
+            // Revert: Manual LayoutPolicy::XorSwizzled was unstable.
+            // Using implicit RowMajor with Bank Padding (+8) in emitter.
+            cfg.layout_policy = Some(LayoutPolicy::RowMajor); 
             candidates.push(cfg);
         }
         

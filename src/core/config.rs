@@ -79,6 +79,40 @@ impl SpecializedInstruction {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub enum LayoutPolicy {
+    RowMajor,
+    ColumnMajor,
+    XorSwizzled,
+}
+
+impl LayoutPolicy {
+    /// Generates the C++ expression for calculating the shared memory offset
+    pub fn get_offset_expr(&self, row: &str, col: &str, stride: &str) -> String {
+        match self {
+            LayoutPolicy::RowMajor => format!("(({}) * ({}) + ({}))", row, stride, col),
+            LayoutPolicy::ColumnMajor => format!("(({}) * ({}) + ({}))", col, stride, row),
+            LayoutPolicy::XorSwizzled => {
+                // Canonical XOR swizzling: (row * stride + col) ^ (row % 8) logic is usually embedded in specific access patterns
+                // But for basic linear offset, we keep it linear and swizzle the PTR.
+                format!("(({}) * ({}) + ({}))", row, stride, col)
+            }
+        }
+    }
+
+    /// Generates the C++ expression for a pointer that is swizzled at the PTX level.
+    pub fn get_swizzled_ptr_expr(&self, base_ptr: &str, _row: &str, _col: &str) -> String {
+        match self {
+            LayoutPolicy::XorSwizzled => {
+                // Use the smem_swizzle primitive.
+                // It expects a shared memory address (32-bit).
+                format!("(void*)(uint64_t)smem_swizzle((uint32_t)__cvta_generic_to_shared({}))", base_ptr)
+            }
+            _ => format!("(void*){}", base_ptr),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PipelineConfig {
     pub num_stages: u32,
@@ -88,6 +122,7 @@ pub struct PipelineConfig {
     pub instruction: SpecializedInstruction,
     pub swizzle_mode: SwizzleMode,
     pub quantization: QuantizationMode,
+    pub layout_policy: Option<LayoutPolicy>,
     pub epilogue: Vec<EpilogueOp>,
     pub force_num_warps: Option<u32>, // ROCm: Wavefront Count, Metal: Simdgroup Count
 }
@@ -102,6 +137,7 @@ impl PipelineConfig {
             instruction: SpecializedInstruction::None,
             swizzle_mode: SwizzleMode::None,
             quantization: QuantizationMode::None,
+            layout_policy: Some(LayoutPolicy::RowMajor),
             epilogue: Vec::new(),
             force_num_warps: None,
         }
@@ -132,6 +168,7 @@ impl PipelineConfig {
             instruction: vec.get(4).map(|&v| SpecializedInstruction::from_f32(v)).unwrap_or(SpecializedInstruction::None),
             swizzle_mode: vec.get(5).map(|&v| SwizzleMode::from_f32(v)).unwrap_or(SwizzleMode::None),
             quantization: vec.get(6).map(|&v| QuantizationMode::from_f32(v)).unwrap_or(QuantizationMode::None),
+            layout_policy: Some(LayoutPolicy::RowMajor),
             epilogue: Vec::new(),
             force_num_warps: None,
         }

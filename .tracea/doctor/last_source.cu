@@ -7,11 +7,11 @@ using namespace nvcuda;
 
 #define MT 128
 #define NT 128
-#define KT 32
+#define KT 64
 #define STAGES 3
-#define NUM_WARPS 9
+#define NUM_WARPS 4
 #define PRODUCER_WARPS 1
-#define A_STRIDE 40
+#define A_STRIDE 72
 #define B_STRIDE 136
 
 
@@ -101,8 +101,9 @@ __device__ __forceinline__ void cp_async_commit_group() {
     asm volatile("cp.async.commit_group;");
 }
 
-__device__ __forceinline__ void cp_async_wait_group_0() {
-    asm volatile("cp.async.wait_group 0;");
+template <int N>
+__device__ __forceinline__ void cp_async_wait_group() {
+    asm volatile("cp.async.wait_group %0;" :: "n"(N));
 }
 
 // Helper for XOR Swizzling (128B aligned safe)
@@ -124,7 +125,7 @@ extern "C" __global__ void __launch_bounds__(NUM_WARPS * 32, 1) gemm_mma_kernel(
 
     extern __shared__ char smem[];
     int a_smem_offset = 128;
-    int b_smem_offset = a_smem_offset + 10240 * STAGES;
+    int b_smem_offset = a_smem_offset + 18432 * STAGES;
 
     int a_tile_row = blockIdx.y * MT;
     int b_tile_col = blockIdx.x * NT;
@@ -141,34 +142,45 @@ extern "C" __global__ void __launch_bounds__(NUM_WARPS * 32, 1) gemm_mma_kernel(
         }
     }
 
-    for (int k_tile = 0; k_tile < (K + KT - 1) / KT; ++k_tile) {
-        if (is_producer) {
-            int stage = k_tile % STAGES;
-            half* sA = (half*)(smem + a_smem_offset + stage * 10240);
-            half* sB = (half*)(smem + b_smem_offset + stage * 8704);
-            #pragma unroll
-            for (int i = tid; i < (MT * KT) / 8; i += 32) {
-                int m = (i * 8) / KT;
-                int k = (i * 8) % KT;
-                if (a_tile_row + m < M && k_tile * KT + k < K)
-                    cp_async_ampere(sA + m * A_STRIDE + k, A + (a_tile_row + m) * K + (k_tile * KT + k), 16);
-            }
-            #pragma unroll
-            for (int i = tid; i < (KT * NT) / 8; i += 32) {
-                int k = (i * 8) / NT;
-                int n = (i * 8) % NT;
-                if (k_tile * KT + k < K && b_tile_col + n < N)
-                    cp_async_ampere(sB + k * B_STRIDE + n, B + (k_tile * KT + k) * N + (b_tile_col + n), 16);
-            }
-            cp_async_commit_group();
-            cp_async_wait_group_0();
-        }
-        __syncthreads();
+    int total_tiles = (K + KT - 1) / KT;
 
+    // PROLOGUE: Pre-load STAGES - 1 tiles
+    if (is_producer) {
+        for (int s = 0; s < STAGES - 1; ++s) {
+            if (s < total_tiles) {
+                int stage = s; // Simple direct mapping for prologue
+                half* sA = (half*)(smem + a_smem_offset + stage * 18432);
+                half* sB = (half*)(smem + b_smem_offset + stage * 17408);
+                
+                int k_tile = s;
+                #pragma unroll
+                for (int i = tid; i < (MT * KT) / 8; i += 32) {
+                    int m = (i * 8) / KT;
+                    int k = (i * 8) % KT;
+                    if (a_tile_row + m < M && k_tile * KT + k < K)
+                        cp_async_ampere(sA + m * A_STRIDE + k, A + (a_tile_row + m) * K + (k_tile * KT + k), 16);
+                }
+                #pragma unroll
+                for (int i = tid; i < (KT * NT) / 8; i += 32) {
+                    int k = (i * 8) / NT;
+                    int n = (i * 8) % NT;
+                    if (k_tile * KT + k < K && b_tile_col + n < N)
+                        cp_async_ampere(sB + k * B_STRIDE + n, B + (k_tile * KT + k) * N + (b_tile_col + n), 16);
+                }
+                cp_async_commit_group();
+            }
+        }
+        // Ensure Tile 0 is ready. (STAGES-1 committed. Keep STAGES-2 in flight).
+        cp_async_wait_group<STAGES - 2>();
+    }
+    __syncthreads();
+
+    // MAIN LOOP
+    for (int k_tile = 0; k_tile < total_tiles; ++k_tile) {
         if (!is_producer) {
             int stage = k_tile % STAGES;
-            half* sA = (half*)(smem + a_smem_offset + stage * 10240);
-            half* sB = (half*)(smem + b_smem_offset + stage * 8704);
+            half* sA = (half*)(smem + a_smem_offset + stage * 18432);
+            half* sB = (half*)(smem + b_smem_offset + stage * 17408);
             for (int k_inner = 0; k_inner < KT; k_inner += 16) {
                 #pragma unroll
                 for (int mi = 0; mi < M_FRAGS; ++mi) {
@@ -181,6 +193,37 @@ extern "C" __global__ void __launch_bounds__(NUM_WARPS * 32, 1) gemm_mma_kernel(
                         wmma::mma_sync(frag_acc[mi][ni], frag_a, frag_b, frag_acc[mi][ni]);
                     }
                 }
+            }
+        }
+        
+        if (is_producer) {
+            int next_k = k_tile + STAGES - 1;
+            if (next_k < total_tiles) {
+                int stage = next_k % STAGES;
+                half* sA = (half*)(smem + a_smem_offset + stage * 18432);
+                half* sB = (half*)(smem + b_smem_offset + stage * 17408);
+                
+                int k_next_tile_idx = next_k; // rename to handle capture
+                #pragma unroll
+                for (int i = tid; i < (MT * KT) / 8; i += 32) {
+                    int m = (i * 8) / KT;
+                    int k = (i * 8) % KT;
+                    if (a_tile_row + m < M && k_next_tile_idx * KT + k < K)
+                        cp_async_ampere(sA + m * A_STRIDE + k, A + (a_tile_row + m) * K + (k_next_tile_idx * KT + k), 16);
+                }
+                #pragma unroll
+                for (int i = tid; i < (KT * NT) / 8; i += 32) {
+                    int k = (i * 8) / NT;
+                    int n = (i * 8) % NT;
+                    if (k_next_tile_idx * KT + k < K && b_tile_col + n < N)
+                        cp_async_ampere(sB + k * B_STRIDE + n, B + (k_next_tile_idx * KT + k) * N + (b_tile_col + n), 16);
+                }
+                cp_async_commit_group();
+                // Ensure k_tile + 1 is ready for next iter
+                cp_async_wait_group<STAGES - 2>();
+            } else {
+                // Epilogue drain: Ensure remaining tiles ready. Safe fallback.
+                cp_async_wait_group<0>();
             }
         }
         __syncthreads();

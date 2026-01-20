@@ -14,7 +14,7 @@ impl FlashAttentionEmitter {
         let mt = config.m_tile;
         let nt = config.n_tile;
         let stages = config.num_stages; 
-        let stride = d; 
+        let stride = d + 8; // BANK PADDING
 
         // 1. Barriers
         let barrier_bytes = (stages * 16) as usize;
@@ -43,7 +43,7 @@ impl FlashAttentionEmitter {
         let nt = self.config.n_tile;
         let num_warps = self.config.force_num_warps.unwrap_or(1 + mt / 16); 
         let stages = self.config.num_stages;
-        let stride = d; 
+        let stride = d + 8; // BANK PADDING
         let d_over_16 = d / 16;
 
         let (_total_bytes, s_offset, p_offset, k_offset, v_offset) = Self::calculate_smem_layout(&self.config, d);
@@ -147,15 +147,18 @@ extern "C" __global__ void __launch_bounds__(NUM_WARPS * 32, 1) flash_attention_
             half* sV = smem_V_ptr + stage * TC * STRIDE;
             for (int idx = tid * 8; idx < TC * D_VAL; idx += 32 * 8) {{
                   int r = idx / D_VAL; int c = idx % D_VAL;
-                  void* k_ptr_sw = (void*)(uint64_t)smem_swizzle((uint32_t)__cvta_generic_to_shared(&sK[r*STRIDE + c]));
-                  void* v_ptr_sw = (void*)(uint64_t)smem_swizzle((uint32_t)__cvta_generic_to_shared(&sV[r*STRIDE + c]));
+                  half* k_ptr_dst = &sK[r*STRIDE + c];
+                  half* v_ptr_dst = &sV[r*STRIDE + c];
+                  
                   long long safe_r = (j_start + r < S) ? (j_start + r) : (S - 1);
                   if (safe_r < 0) safe_r = 0; 
-                  cp_async_ampere(k_ptr_sw, &K[safe_r * D + c], (j_start + r < S) ? 16 : 0);
-                  cp_async_ampere(v_ptr_sw, &V[safe_r * D + c], (j_start + r < S) ? 16 : 0);
+                  
+                  cp_async_ampere(k_ptr_dst, &K[safe_r * D + c], (j_start + r < S) ? 16 : 0);
+                  cp_async_ampere(v_ptr_dst, &V[safe_r * D + c], (j_start + r < S) ? 16 : 0);
+                  
                   if (j_start + r >= S) {{
-                      *((uint4*)k_ptr_sw) = make_uint4(0,0,0,0);
-                      *((uint4*)v_ptr_sw) = make_uint4(0,0,0,0);
+                      *((uint4*)k_ptr_dst) = make_uint4(0,0,0,0);
+                      *((uint4*)v_ptr_dst) = make_uint4(0,0,0,0);
                   }}
              }}
             cp_async_commit_group();
@@ -178,8 +181,7 @@ extern "C" __global__ void __launch_bounds__(NUM_WARPS * 32, 1) flash_attention_
                 #pragma unroll
                 for(int k=0; k<D_OVER_16; ++k) {{
                     wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::col_major> frag_K;
-                    void* k_ptr = (void*)(uint64_t)smem_swizzle((uint32_t)__cvta_generic_to_shared(sK_base + step * 16 * STRIDE + k * 16));
-                    ldmatrix_m8n8_x4((uint32_t*)&frag_K, k_ptr);
+                    wmma::load_matrix_sync(frag_K, sK_base + step * 16 * STRIDE + k * 16, STRIDE);
                     wmma::mma_sync(acc_S, frag_Q[k], frag_K, acc_S);
                 }}
                 wmma::store_matrix_sync(my_sS + step * 16, acc_S, TC, wmma::mem_row_major);
@@ -244,8 +246,7 @@ extern "C" __global__ void __launch_bounds__(NUM_WARPS * 32, 1) flash_attention_
                 #pragma unroll
                 for(int k_v=0; k_v<D_VAL/16; ++k_v) {{ 
                     wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::row_major> frag_V;
-                    void* v_ptr = (void*)(uint64_t)smem_swizzle((uint32_t)__cvta_generic_to_shared(sV_base + step * 16 * STRIDE + k_v * 16));
-                    ldmatrix_m8n8_x4((uint32_t*)&frag_V, v_ptr);
+                    wmma::load_matrix_sync(frag_V, sV_base + step * 16 * STRIDE + k_v * 16, STRIDE);
                     wmma::mma_sync(acc_O[k_v], frag_P, frag_V, acc_O[k_v]);
                 }}
             }}

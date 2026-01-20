@@ -8,5 +8,4 @@ pub mod macros;
 pub mod rocm_driver;
 pub mod rocm_jit;
 pub mod driver;
-pub mod layout;
 pub mod cpu;

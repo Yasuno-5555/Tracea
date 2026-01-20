@@ -1,7 +1,6 @@
 use crate::core::tuning::{TunableKernel, SearchSpace};
 use crate::backend::cpu::CpuBackend;
 use crate::backend::Backend;
-use crate::core::op::GemmOp;
 use serde::{Serialize, Deserialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

@@ -63,7 +63,7 @@ pub struct Observation {
     pub score: f32,
 }
 
-pub(crate) struct NVRTCBenchmark {
+pub struct NVRTCBenchmark {
     pub runtime: Arc<RuntimeManager>,
     pub backend: crate::runtime::DeviceBackend,
     pub m: u32,
@@ -105,9 +105,10 @@ impl NVRTCBenchmark {
         let (block_dim, smem_size) = match self.backend {
             crate::runtime::DeviceBackend::Cuda => {
                 let block = (128, 1, 1);
-                let element_size = if config.use_tensor_cores() { 2 } else { 4 };
-                let s_a = if config.use_tensor_cores() { kt } else { kt + 4 };
-                let s_b = if config.use_tensor_cores() { nt } else { nt + 4 };
+                // CUDA kernel hardcoded to f16 (2 bytes) and padding + 8
+                let element_size = 2; 
+                let s_a = kt + 8;
+                let s_b = nt + 8;
                 let smem = (config.num_stages * mt * s_a + config.num_stages * kt * s_b) * element_size;
                 (block, smem)
             }
@@ -136,7 +137,7 @@ impl MicroBenchmark for NVRTCBenchmark {
              tiling: config.clone(),
          });
          
-         let kernel_id = match self.runtime.compile(&source, "gemm_kernel", self.backend) {
+         let kernel_id = match self.runtime.compile(&source, "gemm_mma_kernel", self.backend) {
              Ok(k) => k,
              Err(_) => return false,
          };
@@ -168,7 +169,7 @@ impl MicroBenchmark for NVRTCBenchmark {
             tiling: config.clone(),
         });
 
-        let kernel_id = match self.runtime.compile(&source, "gemm_kernel", self.backend) {
+        let kernel_id = match self.runtime.compile(&source, "gemm_mma_kernel", self.backend) {
             Ok(k) => k,
             Err(_) => return BenchmarkResult { tflops: 0.0, latency_ms: 1e9 },
         };

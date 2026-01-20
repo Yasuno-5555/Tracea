@@ -1,8 +1,7 @@
 use crate::emitter::traits::{Emitter, UnifiedOpIR, UnifiedOpType};
 pub use crate::kernels::attention::cuda_emitter::FlashAttentionEmitter;
-use crate::core::config::PipelineConfig;
+use crate::core::config::{PipelineConfig, LayoutPolicy};
 use crate::backend::cuda::CudaBackend;
-use crate::emitter::layout::LayoutPolicy;
 
 pub struct CUDAEmitter {}
 
@@ -18,7 +17,6 @@ impl CUDAEmitter {
         let stages = config.num_stages;
         let num_warps = config.force_num_warps.unwrap_or(8);
         
-        // Padded strides to avoid bank conflicts (add 8 elements)
         let a_stride = kt + 8;
         let b_stride = nt + 8;
         let smem_a_bytes = mt * a_stride * 2;
@@ -71,30 +69,41 @@ extern "C" __global__ void __launch_bounds__(NUM_WARPS * 32, 1) gemm_mma_kernel(
         }}
     }}
 
-    for (int k_tile = 0; k_tile < (K + KT - 1) / KT; ++k_tile) {{
-        if (is_producer) {{
-            int stage = k_tile % STAGES;
-            half* sA = (half*)(smem + a_smem_offset + stage * {smem_a_bytes});
-            half* sB = (half*)(smem + b_smem_offset + stage * {smem_b_bytes});
-            #pragma unroll
-            for (int i = tid; i < (MT * KT) / 8; i += 32) {{
-                int m = (i * 8) / KT;
-                int k = (i * 8) % KT;
-                if (a_tile_row + m < M && k_tile * KT + k < K)
-                    cp_async_ampere(sA + m * A_STRIDE + k, A + (a_tile_row + m) * K + (k_tile * KT + k), 16);
-            }}
-            #pragma unroll
-            for (int i = tid; i < (KT * NT) / 8; i += 32) {{
-                int k = (i * 8) / NT;
-                int n = (i * 8) % NT;
-                if (k_tile * KT + k < K && b_tile_col + n < N)
-                    cp_async_ampere(sB + k * B_STRIDE + n, B + (k_tile * KT + k) * N + (b_tile_col + n), 16);
-            }}
-            cp_async_commit_group();
-            cp_async_wait_group_0();
-        }}
-        __syncthreads();
+    int total_tiles = (K + KT - 1) / KT;
 
+    // PROLOGUE: Pre-load STAGES - 1 tiles
+    if (is_producer) {{
+        for (int s = 0; s < STAGES - 1; ++s) {{
+            if (s < total_tiles) {{
+                int stage = s; // Simple direct mapping for prologue
+                half* sA = (half*)(smem + a_smem_offset + stage * {smem_a_bytes});
+                half* sB = (half*)(smem + b_smem_offset + stage * {smem_b_bytes});
+                
+                int k_tile = s;
+                #pragma unroll
+                for (int i = tid; i < (MT * KT) / 8; i += 32) {{
+                    int m = (i * 8) / KT;
+                    int k = (i * 8) % KT;
+                    if (a_tile_row + m < M && k_tile * KT + k < K)
+                        cp_async_ampere(sA + m * A_STRIDE + k, A + (a_tile_row + m) * K + (k_tile * KT + k), 16);
+                }}
+                #pragma unroll
+                for (int i = tid; i < (KT * NT) / 8; i += 32) {{
+                    int k = (i * 8) / NT;
+                    int n = (i * 8) % NT;
+                    if (k_tile * KT + k < K && b_tile_col + n < N)
+                        cp_async_ampere(sB + k * B_STRIDE + n, B + (k_tile * KT + k) * N + (b_tile_col + n), 16);
+                }}
+                cp_async_commit_group();
+            }}
+        }}
+        // Ensure Tile 0 is ready. (STAGES-1 committed. Keep STAGES-2 in flight).
+        cp_async_wait_group<STAGES - 2>();
+    }}
+    __syncthreads();
+
+    // MAIN LOOP
+    for (int k_tile = 0; k_tile < total_tiles; ++k_tile) {{
         if (!is_producer) {{
             int stage = k_tile % STAGES;
             half* sA = (half*)(smem + a_smem_offset + stage * {smem_a_bytes});
@@ -111,6 +120,37 @@ extern "C" __global__ void __launch_bounds__(NUM_WARPS * 32, 1) gemm_mma_kernel(
                         wmma::mma_sync(frag_acc[mi][ni], frag_a, frag_b, frag_acc[mi][ni]);
                     }}
                 }}
+            }}
+        }}
+        
+        if (is_producer) {{
+            int next_k = k_tile + STAGES - 1;
+            if (next_k < total_tiles) {{
+                int stage = next_k % STAGES;
+                half* sA = (half*)(smem + a_smem_offset + stage * {smem_a_bytes});
+                half* sB = (half*)(smem + b_smem_offset + stage * {smem_b_bytes});
+                
+                int k_next_tile_idx = next_k; // rename to handle capture
+                #pragma unroll
+                for (int i = tid; i < (MT * KT) / 8; i += 32) {{
+                    int m = (i * 8) / KT;
+                    int k = (i * 8) % KT;
+                    if (a_tile_row + m < M && k_next_tile_idx * KT + k < K)
+                        cp_async_ampere(sA + m * A_STRIDE + k, A + (a_tile_row + m) * K + (k_next_tile_idx * KT + k), 16);
+                }}
+                #pragma unroll
+                for (int i = tid; i < (KT * NT) / 8; i += 32) {{
+                    int k = (i * 8) / NT;
+                    int n = (i * 8) % NT;
+                    if (k_next_tile_idx * KT + k < K && b_tile_col + n < N)
+                        cp_async_ampere(sB + k * B_STRIDE + n, B + (k_next_tile_idx * KT + k) * N + (b_tile_col + n), 16);
+                }}
+                cp_async_commit_group();
+                // Ensure k_tile + 1 is ready for next iter
+                cp_async_wait_group<STAGES - 2>();
+            }} else {{
+                // Epilogue drain: Ensure remaining tiles ready. Safe fallback.
+                cp_async_wait_group<0>();
             }}
         }}
         __syncthreads();
@@ -132,6 +172,7 @@ extern "C" __global__ void __launch_bounds__(NUM_WARPS * 32, 1) gemm_mma_kernel(
 "# , mt=mt, nt=nt, kt=kt, stages=stages, num_warps=num_warps, smem_a_bytes=smem_a_bytes, smem_b_bytes=smem_b_bytes, primitives=CudaBackend::get_primitive_defs())
     }
 }
+
 
 impl Emitter for CUDAEmitter {
     fn emit_sync(&mut self, _req: crate::semantic::transition::SyncRequirement) -> String {

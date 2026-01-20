@@ -1,46 +1,14 @@
 {
-  "NVIDIA GeForce RTX 3070:128:128:128:f16::13.1:13.0:86": {
-    "num_stages": 2,
-    "m_tile": 128,
-    "n_tile": 128,
+  "Cuda:NVIDIA GeForce RTX 3070:2048:2048:2048:f16::13.1:sm_86": {
+    "num_stages": 4,
+    "m_tile": 64,
+    "n_tile": 64,
     "k_tile": 32,
-    "use_tensor_cores": true,
+    "instruction": "CudaMMA",
     "swizzle_mode": "None",
     "quantization": "None",
+    "layout_policy": "RowMajor",
     "epilogue": [],
-    "force_num_warps": null
-  },
-  "NVIDIA GeForce RTX 3070:16:16:16:f16::13.1:13.0:86": {
-    "num_stages": 2,
-    "m_tile": 64,
-    "n_tile": 64,
-    "k_tile": 16,
-    "use_tensor_cores": true,
-    "swizzle_mode": "None",
-    "quantization": "None",
-    "epilogue": [],
-    "force_num_warps": null
-  },
-  "NVIDIA GeForce RTX 3070:4096:4096:4096:f16::12.4:13.0:86": {
-    "num_stages": 2,
-    "m_tile": 64,
-    "n_tile": 64,
-    "k_tile": 16,
-    "use_tensor_cores": true,
-    "swizzle_mode": "None",
-    "quantization": "None",
-    "epilogue": [],
-    "force_num_warps": null
-  },
-  "NVIDIA GeForce RTX 3070:32:16:16:f16::13.1:13.0:86": {
-    "num_stages": 2,
-    "m_tile": 64,
-    "n_tile": 64,
-    "k_tile": 16,
-    "use_tensor_cores": true,
-    "swizzle_mode": "None",
-    "quantization": "None",
-    "epilogue": [],
-    "force_num_warps": null
+    "force_num_warps": 4
   }
 }
