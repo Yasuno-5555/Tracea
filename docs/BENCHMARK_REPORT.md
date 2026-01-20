@@ -20,26 +20,6 @@ These results represent the first precise measurements using the **Meta Tuner v2
 3. **Bayesian Restoration**: Resolved the "Hero Performance Gap" by ensuring 100% flag consistency between Search Space and Pipeline configs.
 
 ---
-
-## ⚡ Legacy Benchmarks (Phase A: simulated A100)
-*Recorded during initial architectural verification.*
-
-| Size | Vendor (TFLOPS) | Tracea (TFLOPS) | Speedup |
-| :--- | :--- | :--- | :--- |
-| 4096² | 140.38 (cuBLAS) | 146.69 | **+4.5%** |
-| 8192² | 147.50 (cuBLAS) | 154.14 | **+4.5%** |
-| 16384² | 155.00 (cuBLAS) | 162.00 | **+4.5%** |
-
----
-
-## 🌍 Multi-Backend Capability (Doctor Engine)
-| Backend | Arch | Peak TFLOPS (est.) | Feature |
-| :--- | :--- | :--- | :--- |
-| CUDA | Ampere/Hopper | 150+ | Tensor Core (Native) |
-| ROCm | CDNA2/3 | 140+ | Matrix Core (HIP) |
-| Metal | M2 Ultra | 30+ | Simdgroup (MSL) |
-| CPU | Zen4/Sapphire | 2-4 | AVX512 (SIMD) |
-
 ---
 
 ## 🏛️ Conclusion: The Revolution is Universal
