@@ -6,6 +6,8 @@ use serde::{Serialize, Deserialize};
 // --- Core Enums ---
 
 use super::registry::BackendKind;
+use crate::doctor::strategies::{get_strategy, DiagnosticStrategy};
+use std::io::Write;
 
 // --- Configuration ---
 
@@ -203,6 +205,11 @@ impl Doctor {
                 suggestion.push_str("Syntax error in generated code.\n");
             }
 
+            let strategy = get_strategy(&info.kernel_name);
+            if let Some(specific_msg) = strategy.analyze_jit(&info) {
+                suggestion.push_str(&format!("Strategy Tip: {}\n", specific_msg));
+            }
+
             let report = DoctorErrorReport {
                 kind: DoctorErrorKind::JitFailure,
                 backend: info.backend,
@@ -213,6 +220,7 @@ impl Doctor {
             };
 
             eprintln!("[Doctor] 🔴 JIT Failure: {}", report.message);
+            self.log_persistent("JIT_FAIL", &format!("Kernel: {}, Msg: {}", info.kernel_name, report.suggestion));
             self.state.lock().unwrap().last_error = Some(report);
         }
     }
@@ -298,15 +306,21 @@ impl Doctor {
                  }
              }
 
+             let strategy = get_strategy(&info.kernel_name);
+             if let Some(specific_msg) = strategy.analyze_launch(&info) {
+                 suggest.push_str(&format!("Strategy Tip: {}\n", specific_msg));
+             }
+
              let report = DoctorErrorReport {
                 kind: DoctorErrorKind::KernelLaunchFailure,
                 backend: info.backend,
-                kernel_name: Some(info.kernel_name),
+                kernel_name: Some(info.kernel_name.clone()),
                 message: info.last_runtime_error.unwrap_or_else(|| "Launch Failed".to_string()),
                 suggestion: if suggest.is_empty() { "Check kernel resource usage".to_string() } else { suggest },
                 artifacts: DoctorArtifacts::default(),
              };
              eprintln!("[Doctor] 🔴 Kernel Launch Failure: {}", report.message);
+             self.log_persistent("LAUNCH_FAIL", &format!("Kernel: {}, Msg: {}", info.kernel_name, report.message));
              self.state.lock().unwrap().last_error = Some(report);
         }
     }
@@ -377,5 +391,21 @@ impl Doctor {
                     None
                 }
             })
+    }
+
+    fn log_persistent(&self, category: &str, msg: &str) {
+        if !self.config.enable_logging { return; }
+        
+        let path = self.config.log_dir.join("tracea.log");
+        let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        
+        let entry = format!("[{}] [{}] {}\n", timestamp, category, msg);
+        
+        // Ensure dir exists
+        if !self.config.log_dir.exists() { let _ = fs::create_dir_all(&self.config.log_dir); }
+
+        if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(path) {
+            let _ = file.write_all(entry.as_bytes());
+        }
     }
 }

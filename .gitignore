@@ -9,3 +9,11 @@ __pycache__/
 /build_artifacts/
 *.log
 *.txt
+
+# Tracea Cache and Artifacts
+.tracea/
+cache/
+*.cubin
+*.ptx
+compile_log.json
+bench_err*.json

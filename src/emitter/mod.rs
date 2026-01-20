@@ -9,3 +9,5 @@ pub mod rocm_driver;
 pub mod rocm_jit;
 pub mod driver;
 pub mod cpu;
+pub mod elementwise;
+pub mod conv;

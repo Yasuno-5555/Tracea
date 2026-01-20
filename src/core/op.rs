@@ -93,3 +93,19 @@ pub struct FusedAttentionOp {
     pub causal: bool,
     pub scale_inv_sqrt_d: bool,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub enum ElementwiseType {
+    Add,
+    Mul,
+    Relu,
+    Gelu,
+    Sigmoid,
+    Tanh,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct ElementwiseOp {
+    pub op_type: ElementwiseType,
+    pub n: usize,
+}

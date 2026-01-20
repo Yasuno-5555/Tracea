@@ -108,6 +108,12 @@ impl Emitter for MetalEmitter {
             UnifiedOpType::FusedAttention { .. } => {
                 "// Metal FA2 not yet implemented in Unified Emitter\n".to_string()
             }
+            UnifiedOpType::Elementwise { .. } => {
+                 panic!("Elementwise Ops should be handled by UniversalEmitter for now.");
+            }
+            UnifiedOpType::Conv2d { .. } => {
+                panic!("Conv2d Ops should be handled by UniversalEmitter.");
+            }
         }
     }
 }

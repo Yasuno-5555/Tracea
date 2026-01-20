@@ -84,6 +84,8 @@ pub enum LayoutPolicy {
     RowMajor,
     ColumnMajor,
     XorSwizzled,
+    NHWC,
+    NCHW,
 }
 
 impl LayoutPolicy {
@@ -96,6 +98,10 @@ impl LayoutPolicy {
                 // Canonical XOR swizzling: (row * stride + col) ^ (row % 8) logic is usually embedded in specific access patterns
                 // But for basic linear offset, we keep it linear and swizzle the PTR.
                 format!("(({}) * ({}) + ({}))", row, stride, col)
+            }
+            LayoutPolicy::NHWC | LayoutPolicy::NCHW => {
+                 // For now, treat as RowMajor linear addressing with appropriate stride passed in
+                 format!("(({}) * ({}) + ({}))", row, stride, col)
             }
         }
     }

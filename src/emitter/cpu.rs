@@ -49,6 +49,7 @@ impl Emitter for CPUEmitter {
     fn generate_from_ir(&self, ir: &UnifiedOpIR) -> String {
         match ir.op_type {
             UnifiedOpType::Gemm { .. } => self.generate_gemm(ir.tiling.clone()),
+            UnifiedOpType::Conv2d { .. } => panic!("Conv2d should be handled by UniversalEmitter"),
             _ => "// CPU FA2 not yet implemented\n".to_string(),
         }
     }

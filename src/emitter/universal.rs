@@ -14,6 +14,13 @@ impl UniversalEmitter {
     }
 
     pub fn generate(&self, ir: UnifiedOpIR) -> String {
+        if let crate::emitter::traits::UnifiedOpType::Elementwise { .. } = ir.op_type {
+            return crate::emitter::elementwise::generate_elementwise(&ir);
+        }
+        if let crate::emitter::traits::UnifiedOpType::Conv2d { .. } = ir.op_type {
+            return crate::emitter::conv::generate_conv(&ir);
+        }
+
         match self.backend {
             DeviceBackend::Cuda => {
                 let emitter = CUDAEmitter::new();

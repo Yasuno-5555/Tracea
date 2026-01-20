@@ -162,7 +162,7 @@ extern "C" __global__ void __launch_bounds__(NUM_WARPS * 32, 1) flash_attention_
                   }}
              }}
             cp_async_commit_group();
-            cp_async_wait_group_0();
+            cp_async_wait_group<0>();
             mbarrier_arrive(&bar_full[stage]);
         }}
     }} else if (cons_warp < (TR / 16)) {{
@@ -272,8 +272,6 @@ extern "C" __global__ void __launch_bounds__(NUM_WARPS * 32, 1) flash_attention_
              }}
         }}
         }}
-    }}
-    if (tid==0 && blockIdx.x==0) printf("Kernel End\n");
 }}
 "#, mt=mt, nt=nt, num_warps=num_warps, stages=stages, d=d, stride=stride, d_over_16=d_over_16, s_offset=s_offset, p_offset=p_offset, k_offset=k_offset, v_offset=v_offset, is_causal=is_causal, primitives=CudaBackend::get_primitive_defs())
     }

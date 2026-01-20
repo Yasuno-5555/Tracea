@@ -8,6 +8,7 @@ pub mod capabilities;
 pub mod diagnosis;
 pub mod profiler;
 pub mod telemetry;
+pub mod strategies;
 
 // Re-exports for Diagnostics
 pub use diagnosis::{

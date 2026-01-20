@@ -187,6 +187,12 @@ impl Emitter for CUDAEmitter {
             UnifiedOpType::Gemm { m, n, k } => {
                 self.generate_gemm(*m, *n, *k, &ir.tiling)
             }
+            UnifiedOpType::Elementwise { .. } => {
+                panic!("Elementwise Ops should be handled by UniversalEmitter.");
+            }
+            UnifiedOpType::Conv2d { .. } => {
+                panic!("Conv2d Ops should be handled by UniversalEmitter.");
+            }
         }
     }
 }

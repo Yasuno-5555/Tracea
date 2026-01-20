@@ -184,6 +184,12 @@ impl Emitter for ROCMEmitter {
             UnifiedOpType::FusedAttention { .. } => {
                 "// ROCm FA2 not yet implemented in Unified Emitter\n".to_string()
             }
+            UnifiedOpType::Elementwise { .. } => {
+                panic!("Elementwise Ops should be handled by UniversalEmitter.");
+            }
+            UnifiedOpType::Conv2d { .. } => {
+                panic!("Conv2d Ops should be handled by UniversalEmitter.");
+            }
         }
     }
 }

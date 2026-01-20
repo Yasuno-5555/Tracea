@@ -42,4 +42,20 @@ pub enum UnifiedOpType {
         dh: u32,
         causal: bool,
     },
+    Elementwise {
+        op_type: crate::core::op::ElementwiseType,
+        n: usize,
+    },
+    Conv2d {
+        n: usize,
+        h: usize,
+        w: usize,
+        c: usize,
+        k: usize,
+        r: usize,
+        s: usize,
+        stride: usize,
+        pad: usize,
+        layout: crate::core::config::LayoutPolicy,
+    },
 }
