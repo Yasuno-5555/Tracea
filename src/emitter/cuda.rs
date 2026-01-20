@@ -17,8 +17,12 @@ impl CUDAEmitter {
         let kt = config.k_tile;
         let stages = config.num_stages;
         let num_warps = config.force_num_warps.unwrap_or(8);
-        let smem_a_bytes = mt * kt * 2;
-        let smem_b_bytes = kt * nt * 2;
+        
+        // Padded strides to avoid bank conflicts (add 8 elements)
+        let a_stride = kt + 8;
+        let b_stride = nt + 8;
+        let smem_a_bytes = mt * a_stride * 2;
+        let smem_b_bytes = kt * b_stride * 2;
 
         format!(r#"
 #include <cuda_fp16.h>
@@ -33,6 +37,8 @@ using namespace nvcuda;
 #define STAGES {stages}
 #define NUM_WARPS {num_warps}
 #define PRODUCER_WARPS 1
+#define A_STRIDE {a_stride}
+#define B_STRIDE {b_stride}
 
 {primitives}
 
@@ -53,8 +59,8 @@ extern "C" __global__ void __launch_bounds__(NUM_WARPS * 32, 1) gemm_mma_kernel(
     int a_tile_row = blockIdx.y * MT;
     int b_tile_col = blockIdx.x * NT;
     int cons_warp = warp_id - PRODUCER_WARPS;
-    int mt_per_warp = MT / 8;
-    const int M_FRAGS = MT / 8 / 16;
+    int mt_per_warp = MT / (NUM_WARPS - PRODUCER_WARPS);
+    const int M_FRAGS = MT / (NUM_WARPS - PRODUCER_WARPS) / 16;
     const int N_FRAGS = NT / 16;
 
     wmma::fragment<wmma::accumulator, 16, 16, 16, half> frag_acc[M_FRAGS][N_FRAGS];
@@ -75,14 +81,14 @@ extern "C" __global__ void __launch_bounds__(NUM_WARPS * 32, 1) gemm_mma_kernel(
                 int m = (i * 8) / KT;
                 int k = (i * 8) % KT;
                 if (a_tile_row + m < M && k_tile * KT + k < K)
-                    cp_async_ampere(sA + m * KT + k, A + (a_tile_row + m) * K + (k_tile * KT + k), 16);
+                    cp_async_ampere(sA + m * A_STRIDE + k, A + (a_tile_row + m) * K + (k_tile * KT + k), 16);
             }}
             #pragma unroll
             for (int i = tid; i < (KT * NT) / 8; i += 32) {{
                 int k = (i * 8) / NT;
                 int n = (i * 8) % NT;
                 if (k_tile * KT + k < K && b_tile_col + n < N)
-                    cp_async_ampere(sB + k * NT + n, B + (k_tile * KT + k) * N + (b_tile_col + n), 16);
+                    cp_async_ampere(sB + k * B_STRIDE + n, B + (k_tile * KT + k) * N + (b_tile_col + n), 16);
             }}
             cp_async_commit_group();
             cp_async_wait_group_0();
@@ -97,11 +103,11 @@ extern "C" __global__ void __launch_bounds__(NUM_WARPS * 32, 1) gemm_mma_kernel(
                 #pragma unroll
                 for (int mi = 0; mi < M_FRAGS; ++mi) {{
                     wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::row_major> frag_a;
-                    wmma::load_matrix_sync(frag_a, sA + (cons_warp * mt_per_warp + mi * 16) * KT + k_inner, KT);
+                    wmma::load_matrix_sync(frag_a, sA + (cons_warp * mt_per_warp + mi * 16) * A_STRIDE + k_inner, A_STRIDE);
                     #pragma unroll
                     for (int ni = 0; ni < N_FRAGS; ++ni) {{
                         wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::row_major> frag_b;
-                        wmma::load_matrix_sync(frag_b, sB + k_inner * NT + ni * 16, NT);
+                        wmma::load_matrix_sync(frag_b, sB + k_inner * B_STRIDE + ni * 16, B_STRIDE);
                         wmma::mma_sync(frag_acc[mi][ni], frag_a, frag_b, frag_acc[mi][ni]);
                     }}
                 }}

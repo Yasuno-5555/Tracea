@@ -1,1 +1,1 @@
-{"block":[416,1,1],"grid":[8,8,1],"kernel":"gemm_mma_kernel","smem":66048,"timestamp":1768882693}
+{"block":[288,1,1],"grid":[16,16,1],"kernel":"gemm_mma_kernel","smem":57344,"timestamp":1768884287}

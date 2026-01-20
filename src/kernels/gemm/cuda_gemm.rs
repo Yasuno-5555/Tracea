@@ -51,37 +51,49 @@ impl TunableKernel for CudaGemmAdapter {
 
     fn search_space(&self) -> SearchSpace<Self::Config> {
         let mut candidates = Vec::new();
-        // Tile Sizes
-        for mt in [128, 256] {
-            for nt in [128, 256] {
-                for kt in [32, 64] {
-                    for stages in [2] {
-                        for num_warps in [9, 13] {
-                            let mut cfg = PipelineConfig::new(stages, mt, nt, kt);
-                            cfg.instruction = SpecializedInstruction::CudaMMA;
-                            cfg.force_num_warps = Some(num_warps);
-                            candidates.push(cfg);
-                        }
-                    }
-                }
-            }
+        
+        // "Hero" configurations for the final 30 TFLOPS push
+        let heroes = vec![
+            (256, 128, 32, 17, 2), // The 28.56 TFLOPS leader
+            (128, 256, 32, 17, 2), // Fat tile version
+            (128, 128, 64, 17, 2), // High density with max warps
+            (128, 128, 32, 9, 3),  // 3-stage pipelining
+        ];
+
+        for (m, n, k, w, s) in heroes {
+            let mut cfg = PipelineConfig::new(s, m, n, k);
+            cfg.instruction = SpecializedInstruction::CudaMMA;
+            cfg.force_num_warps = Some(w);
+            candidates.push(cfg);
         }
+        
         SearchSpace::new(candidates)
     }
 
     fn is_feasible(&self, cfg: &Self::Config) -> bool {
-        // MMA/PTX requirements
-        if cfg.m_tile % 16 != 0 || cfg.n_tile % 8 != 0 || cfg.k_tile % 16 != 0 {
+        // Tile size requirements
+        if cfg.m_tile % 16 != 0 || cfg.n_tile % 16 != 0 || cfg.k_tile % 16 != 0 {
             return false;
         }
 
-        // Shared Memory Limit check
-        let smem_a_bytes = (cfg.m_tile * cfg.k_tile * 2) as usize;
-        let smem_b_bytes = (cfg.k_tile * cfg.n_tile * 2) as usize;
-        let required_smem = (smem_a_bytes + smem_b_bytes) * cfg.num_stages as usize + 512;
+        // Warp tiling requirements
+        let num_warps = cfg.force_num_warps.unwrap_or(9);
+        let cons_warps = num_warps - 1;
+        if cons_warps == 0 || cfg.m_tile % cons_warps != 0 {
+            return false;
+        }
+        let mt_per_warp = cfg.m_tile / cons_warps;
+        if mt_per_warp % 16 != 0 {
+            return false;
+        }
+
+        // Shared Memory Limit
+        let smem_a_bytes = cfg.m_tile * (cfg.k_tile + 8) * 2;
+        let smem_b_bytes = cfg.k_tile * (cfg.n_tile + 8) * 2;
+        let required_smem = (smem_a_bytes + smem_b_bytes) as usize * cfg.num_stages as usize + 512;
         
         let limit = self.runtime.get_max_shared_memory(DeviceBackend::Cuda);
-        if required_smem > limit {
+        if required_smem > limit || required_smem > 96000 {
             return false;
         }
 
@@ -121,10 +133,10 @@ impl TunableKernel for CudaGemmAdapter {
             1
         );
         
-        // Smem calculation: (mt*kt + kt*nt) * 2 bytes * stages + padding + barrier space
-        let smem_a_bytes = cfg.m_tile * cfg.k_tile * 2;
-        let smem_b_bytes = cfg.k_tile * cfg.n_tile * 2;
-        let smem_bytes = (smem_a_bytes + smem_b_bytes) * cfg.num_stages + 512; // Extra for barriers/alignment
+        // Smem calculation: (mt*(kt+8) + kt*(nt+8)) * 2 bytes * stages + padding + barrier space
+        let a_stride = cfg.m_tile * (cfg.k_tile + 8) * 2;
+        let b_stride = cfg.k_tile * (cfg.n_tile + 8) * 2;
+        let smem_bytes = ((a_stride + b_stride) as usize * cfg.num_stages as usize + 512) as u32;
 
         let args = vec![
             KernelArg::Buffer(self.a_buf),

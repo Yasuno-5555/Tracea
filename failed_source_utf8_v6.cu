@@ -1,4 +1,4 @@
-
+﻿
 #include <cuda_fp16.h>
 #include <mma.h>
 #include <cuda_pipeline.h>
@@ -8,11 +8,9 @@ using namespace nvcuda;
 #define MT 128
 #define NT 128
 #define KT 32
-#define STAGES 3
+#define STAGES 2
 #define NUM_WARPS 9
 #define PRODUCER_WARPS 1
-#define A_STRIDE 40
-#define B_STRIDE 136
 
 
 __device__ __forceinline__ void ldmatrix_m8n8_x4(uint32_t* regs, void* smem_ptr) {
@@ -120,45 +118,43 @@ extern "C" __global__ void __launch_bounds__(NUM_WARPS * 32, 1) gemm_mma_kernel(
 ) {
     int tid = threadIdx.x;
     int warp_id = tid / 32;
+    int lane_id = tid % 32;
     bool is_producer = (warp_id < PRODUCER_WARPS);
 
     extern __shared__ char smem[];
-    int a_smem_offset = 128;
-    int b_smem_offset = a_smem_offset + 10240 * STAGES;
+    int a_smem_offset = 128; // Small offset for safety
+    int b_smem_offset = a_smem_offset + 8192;
 
     int a_tile_row = blockIdx.y * MT;
     int b_tile_col = blockIdx.x * NT;
     int cons_warp = warp_id - PRODUCER_WARPS;
-    int mt_per_warp = MT / (NUM_WARPS - PRODUCER_WARPS);
-    const int M_FRAGS = MT / (NUM_WARPS - PRODUCER_WARPS) / 16;
+    int mt_per_warp = MT / 8;
+    const int M_FRAGS = MT / 8 / 16;
     const int N_FRAGS = NT / 16;
 
     wmma::fragment<wmma::accumulator, 16, 16, 16, half> frag_acc[M_FRAGS][N_FRAGS];
     #pragma unroll
-    for(int mi=0; mi<M_FRAGS; mi++) {
-        for(int ni=0; ni<N_FRAGS; ni++) {
+    for(int mi=0; mi<M_FRAGS; mi++)
+        for(int ni=0; ni<N_FRAGS; ni++)
             wmma::fill_fragment(frag_acc[mi][ni], (half)0.0f);
-        }
-    }
 
     for (int k_tile = 0; k_tile < (K + KT - 1) / KT; ++k_tile) {
         if (is_producer) {
-            int stage = k_tile % STAGES;
-            half* sA = (half*)(smem + a_smem_offset + stage * 10240);
-            half* sB = (half*)(smem + b_smem_offset + stage * 8704);
+            half* sA = (half*)(smem + a_smem_offset);
+            half* sB = (half*)(smem + b_smem_offset);
             #pragma unroll
             for (int i = tid; i < (MT * KT) / 8; i += 32) {
                 int m = (i * 8) / KT;
                 int k = (i * 8) % KT;
                 if (a_tile_row + m < M && k_tile * KT + k < K)
-                    cp_async_ampere(sA + m * A_STRIDE + k, A + (a_tile_row + m) * K + (k_tile * KT + k), 16);
+                    cp_async_ampere(sA + m * KT + k, A + (a_tile_row + m) * K + (k_tile * KT + k), 16);
             }
             #pragma unroll
             for (int i = tid; i < (KT * NT) / 8; i += 32) {
                 int k = (i * 8) / NT;
                 int n = (i * 8) % NT;
                 if (k_tile * KT + k < K && b_tile_col + n < N)
-                    cp_async_ampere(sB + k * B_STRIDE + n, B + (k_tile * KT + k) * N + (b_tile_col + n), 16);
+                    cp_async_ampere(sB + k * NT + n, B + (k_tile * KT + k) * N + (b_tile_col + n), 16);
             }
             cp_async_commit_group();
             cp_async_wait_group_0();
@@ -166,18 +162,17 @@ extern "C" __global__ void __launch_bounds__(NUM_WARPS * 32, 1) gemm_mma_kernel(
         __syncthreads();
 
         if (!is_producer) {
-            int stage = k_tile % STAGES;
-            half* sA = (half*)(smem + a_smem_offset + stage * 10240);
-            half* sB = (half*)(smem + b_smem_offset + stage * 8704);
+            half* sA = (half*)(smem + a_smem_offset);
+            half* sB = (half*)(smem + b_smem_offset);
             for (int k_inner = 0; k_inner < KT; k_inner += 16) {
                 #pragma unroll
                 for (int mi = 0; mi < M_FRAGS; ++mi) {
                     wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::row_major> frag_a;
-                    wmma::load_matrix_sync(frag_a, sA + (cons_warp * mt_per_warp + mi * 16) * A_STRIDE + k_inner, A_STRIDE);
+                    wmma::load_matrix_sync(frag_a, sA + (cons_warp * mt_per_warp + mi * 16) * KT + k_inner, KT);
                     #pragma unroll
                     for (int ni = 0; ni < N_FRAGS; ++ni) {
                         wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::row_major> frag_b;
-                        wmma::load_matrix_sync(frag_b, sB + k_inner * B_STRIDE + ni * 16, B_STRIDE);
+                        wmma::load_matrix_sync(frag_b, sB + k_inner * NT + ni * 16, NT);
                         wmma::mma_sync(frag_acc[mi][ni], frag_a, frag_b, frag_acc[mi][ni]);
                     }
                 }
@@ -198,4 +193,5 @@ extern "C" __global__ void __launch_bounds__(NUM_WARPS * 32, 1) gemm_mma_kernel(
              }
         }
     }
+        }
 }
