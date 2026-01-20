@@ -1,74 +1,14 @@
 {
-  "Cuda:NVIDIA GeForce RTX 3070:3136:64:576:f16::13.1:sm_86:conv:r=3,s=3,stride=1,pad=1": {
+  "Cuda:NVIDIA GeForce RTX 3070:100352:64:64:f16::v2:Ampere:Conv2d_B32_NHWC": {
     "num_stages": 2,
-    "m_tile": 256,
+    "m_tile": 64,
     "n_tile": 64,
-    "k_tile": 64,
+    "k_tile": 32,
     "instruction": "CudaMMA",
-    "swizzle_mode": "None",
+    "swizzle_mode": "Xor4",
     "quantization": "None",
     "layout_policy": "RowMajor",
     "epilogue": [],
     "force_num_warps": 5
-  },
-  "Cuda:NVIDIA GeForce RTX 3070:200704:64:576:f16::13.1:sm_86:conv:r=3,s=3,stride=1,pad=1": {
-    "num_stages": 3,
-    "m_tile": 32,
-    "n_tile": 64,
-    "k_tile": 16,
-    "instruction": "CudaMMA",
-    "swizzle_mode": "None",
-    "quantization": "None",
-    "layout_policy": "RowMajor",
-    "epilogue": [],
-    "force_num_warps": 3
-  },
-  "Cuda:NVIDIA GeForce RTX 3070:12544:64:147:f16::13.1:sm_86:conv:r=7,s=7,stride=2,pad=3": {
-    "num_stages": 3,
-    "m_tile": 64,
-    "n_tile": 32,
-    "k_tile": 32,
-    "instruction": "CudaMMA",
-    "swizzle_mode": "None",
-    "quantization": "None",
-    "layout_policy": "RowMajor",
-    "epilogue": [],
-    "force_num_warps": 3
-  },
-  "Cuda:NVIDIA GeForce RTX 3070:3136:256:64:f16::13.1:sm_86:conv:r=1,s=1,stride=1,pad=0": {
-    "num_stages": 2,
-    "m_tile": 64,
-    "n_tile": 256,
-    "k_tile": 64,
-    "instruction": "None",
-    "swizzle_mode": "None",
-    "quantization": "None",
-    "layout_policy": "RowMajor",
-    "epilogue": [],
-    "force_num_warps": 3
-  },
-  "Cuda:NVIDIA GeForce RTX 3070:100352:64:576:f16::13.1:sm_86:conv:r=3,s=3,stride=1,pad=1": {
-    "num_stages": 2,
-    "m_tile": 128,
-    "n_tile": 128,
-    "k_tile": 32,
-    "instruction": "CudaMMA",
-    "swizzle_mode": "None",
-    "quantization": "None",
-    "layout_policy": "RowMajor",
-    "epilogue": [],
-    "force_num_warps": 5
-  },
-  "Cuda:NVIDIA GeForce RTX 3070:2048:2048:2048:f16::13.1:sm_86:gemm": {
-    "num_stages": 2,
-    "m_tile": 32,
-    "n_tile": 128,
-    "k_tile": 32,
-    "instruction": "CudaMMA",
-    "swizzle_mode": "None",
-    "quantization": "None",
-    "layout_policy": "RowMajor",
-    "epilogue": [],
-    "force_num_warps": 3
   }
 }

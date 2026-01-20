@@ -18,11 +18,22 @@ fn main() {
     println!("=== 1. Small 8x8 Debug Case ===");
     run_bench(&runtime, 1, 8, 8, 3, 4, 3, 3, 1, 1, 1, true);
 
-    println!("\n=== 2. ResNet-50 Layer 1 (224x224x3 -> 64, k=7, s=2) ===");
-    // run_bench(&runtime, 1, 224, 224, 3, 64, 7, 7, 2, 3, 1, false);
-    // Let's start with a simpler one first: VGG style 3x3
-    // 224x224x64 -> 64, k=3, s=1, p=1
-    run_bench(&runtime, 1, 224, 224, 64, 64, 3, 3, 1, 1, 1, false);
+    println!("\n=== 3. Auto-Tuner V2 Test (ResNet-50 B=32) ===");
+    run_autotuner_test(&runtime, 32, 56, 56, 64, 64, 3, 3, 1, 1, 1);
+}
+
+fn run_autotuner_test(runtime: &std::sync::Arc<tracea::runtime::manager::RuntimeManager>, n: usize, h: usize, w: usize, c: usize, k: usize, r: usize, s: usize, stride: usize, pad: usize, dilation: usize) {
+    use tracea::optimizer::{AutoTuner, GPUInfo, OptimizationGoal};
+    use tracea::optimizer::benchmark::NVRTCConvBenchmark;
+    use tracea::optimizer::benchmark::Conv2dProblem;
+
+    let problem = Conv2dProblem::new("Hero-Test-B32", n, h, w, c, k, r, s, stride, pad, dilation);
+    let benchmark = NVRTCConvBenchmark::new(std::sync::Arc::clone(runtime), problem);
+    
+    let mut tuner = AutoTuner::new(GPUInfo::rtx3070());
+    let config = tuner.optimize_conv(&benchmark, 5, OptimizationGoal::MaximizeTFLOPS);
+    
+    println!("[Result] Best Config: {:?}", config.base);
 }
 
 fn run_bench(runtime: &RuntimeManager, n: usize, h: usize, w: usize, c: usize, k: usize, r: usize, s: usize, stride: usize, pad: usize, dilation: usize, verify: bool) {
@@ -40,6 +51,7 @@ fn run_bench(runtime: &RuntimeManager, n: usize, h: usize, w: usize, c: usize, k
         },
         precison: "f16".to_string(),
         tiling: conv_config(),
+        conv_magic_strategy: None,
     };
 
     let emitter = UniversalEmitter::new(DeviceBackend::Cuda);

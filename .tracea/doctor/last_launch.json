@@ -1,1 +1,1 @@
-{"block":[160,1,1],"grid":[16,8,64],"kernel":"flash_attention_v2_kernel","smem":39168,"timestamp":1768915547}
+{"block":[160,1,1],"grid":[1568,1,1],"kernel":"conv2d_implicit_gemm","smem":19712,"timestamp":1768919616}

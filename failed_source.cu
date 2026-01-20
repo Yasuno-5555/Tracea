@@ -5,16 +5,16 @@
 
 using namespace nvcuda;
 
-#define MT 128
+#define MT 64
 #define NT 64
 #define KT 16
-#define N_WARPS 17
+#define N_WARPS 9
 #define STAGES 2
 #define PRODUCER_WARPS 1
 #define USE_CP_ASYNC 1
 
 // Conv Constants
-#define BATCH 64
+#define BATCH 32
 #define H_IN 56
 #define W_IN 56
 #define C_IN 64
@@ -154,11 +154,13 @@ extern "C" __global__ void __launch_bounds__(N_WARPS * 32, 1) conv2d_implicit_ge
 
 #if USE_CP_ASYNC
     bool is_producer = (warp_id < PRODUCER_WARPS);
-    int m_block_start = blockIdx.x * MT;
+    // Grid Swizzling
+    int swizzled_bid = (int)(((long long)blockIdx.x * 101) % gridDim.x);
+    int m_block_start = swizzled_bid * MT;
     int n_block_start = blockIdx.y * NT;
     extern __shared__ char smem[];
     int a_smem_offset = 128; // Header for barriers if needed
-    int b_smem_offset = a_smem_offset + 6144 * STAGES;
+    int b_smem_offset = a_smem_offset + 3072 * STAGES;
 
     // Fragments
     int cons_warp = warp_id - PRODUCER_WARPS;
@@ -179,7 +181,7 @@ extern "C" __global__ void __launch_bounds__(N_WARPS * 32, 1) conv2d_implicit_ge
     if (is_producer) {
         for (int s_idx = 0; s_idx < STAGES - 1; ++s_idx) {
             if (s_idx < total_k_tiles) {
-                half* sA = (half*)(smem + a_smem_offset + s_idx * 6144);
+                half* sA = (half*)(smem + a_smem_offset + s_idx * 3072);
                 half* sB = (half*)(smem + b_smem_offset + s_idx * 2304);
                 int k_step = s_idx * KT;
 
@@ -191,7 +193,7 @@ extern "C" __global__ void __launch_bounds__(N_WARPS * 32, 1) conv2d_implicit_ge
                     int m_glob = m_block_start + r_tile;
                     int k_glob = k_step + k_tile;
                     
-                    if (m_glob < 200704 && k_glob < 576) {
+                    if (m_glob < 100352 && k_glob < 576) {
                         int b, ho, wo, r, s, c;
                         int rem_m, rem_k;
                         fast_divmod(m_glob, HW_MAGIC, HW_SHIFT, H_OUT * W_OUT, b, rem_m);
@@ -227,7 +229,7 @@ extern "C" __global__ void __launch_bounds__(N_WARPS * 32, 1) conv2d_implicit_ge
     for (int k_tile = 0; k_tile < total_k_tiles; ++k_tile) {
         if (!is_producer) {
             int stage = k_tile % STAGES;
-            half* sA = (half*)(smem + a_smem_offset + stage * 6144);
+            half* sA = (half*)(smem + a_smem_offset + stage * 3072);
             half* sB = (half*)(smem + b_smem_offset + stage * 2304);
             
             for (int k_inner = 0; k_inner < KT; k_inner += 16) {
@@ -254,7 +256,7 @@ extern "C" __global__ void __launch_bounds__(N_WARPS * 32, 1) conv2d_implicit_ge
             int next_k = k_tile + STAGES - 1;
             if (next_k < total_k_tiles) {
                 int stage = next_k % STAGES;
-                half* sA = (half*)(smem + a_smem_offset + stage * 6144);
+                half* sA = (half*)(smem + a_smem_offset + stage * 3072);
                 half* sB = (half*)(smem + b_smem_offset + stage * 2304);
                 int k_step = next_k * KT;
 
@@ -264,7 +266,7 @@ extern "C" __global__ void __launch_bounds__(N_WARPS * 32, 1) conv2d_implicit_ge
                     int k_tile = (i * 8) % KT;
                     int m_glob = m_block_start + r_tile;
                     int k_glob = k_step + k_tile;
-                    if (m_glob < 200704 && k_glob < 576) {
+                    if (m_glob < 100352 && k_glob < 576) {
                         int b, ho, wo, r, s, c;
                         int rem_m, rem_k;
                         fast_divmod(m_glob, HW_MAGIC, HW_SHIFT, H_OUT * W_OUT, b, rem_m);
@@ -315,7 +317,7 @@ extern "C" __global__ void __launch_bounds__(N_WARPS * 32, 1) conv2d_implicit_ge
             int c = i % NT;
             int m_glob = m_block_start + r;
             int n_glob = n_block_start + c;
-            if (m_glob < 200704 && n_glob < 64) {
+            if (m_glob < 100352 && n_glob < 64) {
                 Output[(long long)m_glob * K_OUT + n_glob] = (half)sC[i];
             }
         }
@@ -339,7 +341,7 @@ extern "C" __global__ void __launch_bounds__(N_WARPS * 32, 1) conv2d_implicit_ge
              int row = i / KT; int col = i % KT;
              int m_glob = m_block_start + row; int k_glob = k_step + col;
              half val = 0.0;
-             if (m_glob < 200704 && k_glob < 576) {
+             if (m_glob < 100352 && k_glob < 576) {
                  int b, ho, wo, r, s, c;
                  int rem_m, rem_k;
                  fast_divmod(m_glob, HW_MAGIC, HW_SHIFT, H_OUT * W_OUT, b, rem_m);
@@ -382,7 +384,7 @@ extern "C" __global__ void __launch_bounds__(N_WARPS * 32, 1) conv2d_implicit_ge
     for (int i = tid; i < MT * NT; i += N_WARPS * 32) {
         int r = i / NT; int c = i % NT;
         int m_glob = m_block_start + r; int n_glob = n_block_start + c;
-        if (m_glob < 200704 && n_glob < 64) Output[(long long)m_glob * K_OUT + n_glob] = (half)sC[i];
+        if (m_glob < 100352 && n_glob < 64) Output[(long long)m_glob * K_OUT + n_glob] = (half)sC[i];
     }
 #endif
 }

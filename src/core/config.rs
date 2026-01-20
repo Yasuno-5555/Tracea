@@ -149,6 +149,11 @@ impl PipelineConfig {
         }
     }
 
+    pub fn with_warps(mut self, nw: u32) -> Self {
+        self.force_num_warps = Some(nw);
+        self
+    }
+
     pub fn use_tensor_cores(&self) -> bool {
         self.instruction == SpecializedInstruction::CudaMMA
     }
