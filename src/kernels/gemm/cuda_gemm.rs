@@ -23,9 +23,9 @@ pub struct CudaGemmAdapter {
     pub runtime: Arc<RuntimeManager>,
     pub problem: CudaGemmProblem,
     // Buffers
-    a_buf: crate::runtime::manager::BufferId,
-    b_buf: crate::runtime::manager::BufferId,
-    c_buf: crate::runtime::manager::BufferId,
+    pub a_buf: crate::runtime::manager::BufferId,
+    pub b_buf: crate::runtime::manager::BufferId,
+    pub c_buf: crate::runtime::manager::BufferId,
 }
 
 impl CudaGemmAdapter {
@@ -51,18 +51,19 @@ impl TunableKernel for CudaGemmAdapter {
 
     fn search_space(&self) -> SearchSpace<Self::Config> {
         let mut candidates = Vec::new();
-        let patterns = [
-            (128, 128, 32),
-            (128, 64, 32),
-            (64, 64, 32),
-            (32, 32, 16),
-        ];
-
-        for &(m, n, k) in &patterns {
-            for &stages in &[2, 3] {
-                let mut cfg = PipelineConfig::new(stages, m, n, k as u32);
-                cfg.instruction = SpecializedInstruction::CudaMMA;
-                candidates.push(cfg);
+        // Tile Sizes
+        for mt in [128, 256] {
+            for nt in [128, 256] {
+                for kt in [32, 64] {
+                    for stages in [2] {
+                        for num_warps in [9, 13] {
+                            let mut cfg = PipelineConfig::new(stages, mt, nt, kt);
+                            cfg.instruction = SpecializedInstruction::CudaMMA;
+                            cfg.force_num_warps = Some(num_warps);
+                            candidates.push(cfg);
+                        }
+                    }
+                }
             }
         }
         SearchSpace::new(candidates)
@@ -111,8 +112,8 @@ impl TunableKernel for CudaGemmAdapter {
         };
 
         // Grid/Block
-        let block = (128, 1, 1); // 4 warps usually for 128x64? Tunable. 
-        // For simplicity let's fix threads to 128 (4 warps) and rely on emitter to match.
+        let num_warps = cfg.force_num_warps.unwrap_or(8);
+        let block = (num_warps * 32, 1, 1); 
         
         let grid = (
             (self.problem.m as u32 + cfg.m_tile - 1) / cfg.m_tile,
@@ -120,9 +121,10 @@ impl TunableKernel for CudaGemmAdapter {
             1
         );
         
-        // Smem calculation: (mt*kt + kt*nt) * 2 bytes * stages
-        // double buffering?
-        let smem_bytes = (cfg.m_tile * cfg.k_tile + cfg.k_tile * cfg.n_tile) * 2 * cfg.num_stages;
+        // Smem calculation: (mt*kt + kt*nt) * 2 bytes * stages + padding + barrier space
+        let smem_a_bytes = cfg.m_tile * cfg.k_tile * 2;
+        let smem_b_bytes = cfg.k_tile * cfg.n_tile * 2;
+        let smem_bytes = (smem_a_bytes + smem_b_bytes) * cfg.num_stages + 512; // Extra for barriers/alignment
 
         let args = vec![
             KernelArg::Buffer(self.a_buf),
@@ -134,7 +136,8 @@ impl TunableKernel for CudaGemmAdapter {
         ];
 
         let start = std::time::Instant::now();
-        if let Err(_) = self.runtime.launch(kernel_id, grid, block, smem_bytes, args) {
+        if let Err(e) = self.runtime.launch(kernel_id, grid, block, smem_bytes, args) {
+             eprintln!("Launch Failed: {}", e);
              return None;
         }
         self.runtime.synchronize();

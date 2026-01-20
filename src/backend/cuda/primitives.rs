@@ -90,39 +90,44 @@ __device__ __forceinline__ void mbarrier_expect_tx(uint64_t* mbarrier_ptr, uint3
     asm volatile("mbarrier.expect_tx.shared.b64 [%0], %1;" : : "r"(smem_addr), "r"(tx_bytes));
 }
 
+// Hopper-only primitive (sm_90+). Commented for sm_80 compatibility.
+/*
 __device__ __forceinline__ uint64_t mbarrier_arrive_expect_tx(uint64_t* mbarrier_ptr, uint32_t tx_bytes) {
     uint64_t state;
     uint32_t smem_addr = (uint32_t)__cvta_generic_to_shared(mbarrier_ptr);
     asm volatile("mbarrier.arrive.expect_tx.shared.b64 %0, [%1], %2;" : "=l"(state) : "r"(smem_addr), "r"(tx_bytes));
     return state;
 }
+*/
 
-__device__ __forceinline__ void mbarrier_wait(uint64_t* mbarrier_ptr, uint64_t state) {
-    int ready = 0;
+__device__ __forceinline__ void mbarrier_wait(uint64_t* mbarrier_ptr, uint64_t phase) {
     uint32_t mbarrier_addr = (uint32_t)__cvta_generic_to_shared(mbarrier_ptr);
-    while (!ready) {
-        asm volatile(
-            "{\n\t"
-            ".reg .pred p;\n\t"
-            "mbarrier.test_wait.shared.b64 p, [%1], %2;\n\t"
-            "selp.u32 %0, 1, 0, p;\n\t"
-            "}"
-            : "=r"(ready)
-            : "r"(mbarrier_addr), "l"(state)
-        );
-    }
+    uint64_t state = (phase << 63);
+    asm volatile(
+        "{\n\t"
+        "  .reg .pred p;\n\t"
+        "  wait_loop:\n\t"
+        "  mbarrier.test_wait.shared.b64 p, [%0], %1;\n\t"
+        "  @!p bra wait_loop;\n\t"
+        "}\n\t"
+        : 
+        : "r"(mbarrier_addr), "l"(state)
+    );
 }
+// Note: PTX 'mbarrier.wait' is Hopper+. For Ampere we must use test_wait loop or similar.
+// I will use a tighter assembly loop.
 "#.to_string()
     }
 
     fn cp_async_def() -> String {
         r#"
 __device__ __forceinline__ void cp_async_ampere(void* smem_ptr, const void* global_ptr, uint32_t size) {
+    uint32_t smem_addr = (uint32_t)__cvta_generic_to_shared(smem_ptr);
     if (size == 16) {
         asm volatile(
             "cp.async.ca.shared.global [%0], [%1], 16;"
             : 
-            : "l"(smem_ptr), "l"(global_ptr)
+            : "r"(smem_addr), "l"(global_ptr)
         );
     }
 }
@@ -138,8 +143,8 @@ __device__ __forceinline__ void cp_async_wait_group_0() {
 
 // Helper for XOR Swizzling (128B aligned safe)
 __device__ __forceinline__ uint32_t smem_swizzle(uint32_t addr) {
-    // DEBUG: Identity Swizzle
-    return addr;
+    uint32_t sw = (addr >> 4) & 0x7;
+    return addr ^ (sw << 7);
 }
 "#.to_string()
     }

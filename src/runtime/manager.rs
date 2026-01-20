@@ -553,6 +553,25 @@ impl RuntimeManager {
         }
     }
 
+    pub fn copy_from_device<T: Copy>(&self, id: BufferId, data: &mut [T]) -> Result<(), String> {
+        let bufs = self.buffers.lock().map_err(|_| "Lock".to_string())?;
+        match bufs.get(&id).ok_or("No buffer".to_string())? {
+            DeviceBuffer::Cuda(slice) => {
+                let devs = self.devices.lock().map_err(|_| "Lock".to_string())?;
+                let _ = devs.get(&DeviceBackend::Cuda).ok_or("No CUDA".to_string())?;
+                let u8_slice = unsafe {
+                    std::slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u8, data.len() * std::mem::size_of::<T>())
+                };
+                unsafe {
+                    let res = cudarc::driver::sys::lib().cuMemcpyDtoH_v2(u8_slice.as_mut_ptr() as *mut _, *slice.device_ptr(), u8_slice.len());
+                    if res != cudarc::driver::sys::CUresult::CUDA_SUCCESS { return Err(format!("cuMemcpyDtoH failed: {:?}", res)); }
+                }
+                Ok(())
+            }
+            _ => Err("Not implemented for this backend".to_string()),
+        }
+    }
+
     pub fn alloc_f32(&self, size: usize, backend: DeviceBackend) -> Result<BufferId, String> {
         self.alloc(size * 4, backend)
     }
