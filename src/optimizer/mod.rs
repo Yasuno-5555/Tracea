@@ -3,7 +3,7 @@ use std::sync::Arc;
 use cudarc::driver::CudaDevice;
 
 use crate::runtime::manager::DeviceBackend;
-use crate::optimizer::problem::{ProblemDescriptor, LayerType, HeroConfig, ArchHint, HeroScope, Layout, Fa2Variant};
+pub use problem::{ProblemDescriptor, LayerType, HeroConfig, ArchHint, HeroScope, Layout, Fa2Variant};
 use crate::optimizer::policy::{TuningPolicy, PolicyFactory, SamplingPlan, TuningContext, SearchSpace};
 
 #[derive(Debug, Clone)]
@@ -331,9 +331,9 @@ impl AutoTuner {
     }
 }
 
-struct ConvBenchmarkAdapter<'a, B: Conv2dBenchmark> {
-    inner: &'a B,
-    magic_strategy: MagicNumberStrategy,
+pub struct ConvBenchmarkAdapter<'a, B: Conv2dBenchmark> {
+    pub inner: &'a B,
+    pub magic_strategy: MagicNumberStrategy,
 }
 
 impl<'a, B: Conv2dBenchmark> MicroBenchmark for ConvBenchmarkAdapter<'a, B> {

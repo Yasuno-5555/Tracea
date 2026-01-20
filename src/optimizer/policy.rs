@@ -100,32 +100,53 @@ impl TuningPolicy for Conv2dPolicy {
 
     fn hero_configs(&self) -> Vec<HeroConfig> {
         use crate::core::config::{SwizzleMode, SpecializedInstruction};
+        use crate::optimizer::problem::Layout;
         let mut configs = vec![];
+        let layout = match self.problem.layer_type {
+            LayerType::Conv2d(l) => l,
+            _ => Layout::NHWC,
+        };
+        let is_small_batch = self.problem.batch <= 32;
 
-        // Ampere B64 Hero (Optimal for B=64)
-        if self.problem.batch >= 64 {
-            let mut cfg = PipelineConfig::new(2, 128, 64, 32).with_warps(9);
-            cfg.instruction = SpecializedInstruction::CudaMMA;
-            cfg.swizzle_mode = SwizzleMode::Xor4;
-            configs.push(HeroConfig {
-                config: cfg,
-                note: "Ampere-3070 Conv2d-B64 hero (25 TFLOPS)",
-                arch_hint: ArchHint::NvidiaAmpere,
-                scope: HeroScope::Exact,
-            });
-        }
-
-        // Ampere B32 Hero (Optimal for B=32)
-        if self.problem.batch >= 32 && self.problem.batch < 64 {
-            let mut cfg = PipelineConfig::new(2, 64, 64, 32).with_warps(5);
-            cfg.instruction = SpecializedInstruction::CudaMMA;
-            cfg.swizzle_mode = SwizzleMode::Xor4;
-            configs.push(HeroConfig {
-                config: cfg,
-                note: "Ampere-3070 Conv2d-B32 hero",
-                arch_hint: ArchHint::NvidiaAmpere,
-                scope: HeroScope::Exact,
-            });
+        match layout {
+            Layout::NHWC => {
+                if is_small_batch {
+                    // 🏆 The "God Config" (29.33 TFLOPS Winner)
+                    let mut cfg = PipelineConfig::new(2, 64, 64, 32).with_warps(5);
+                    cfg.instruction = SpecializedInstruction::CudaMMA;
+                    cfg.swizzle_mode = SwizzleMode::Xor4;
+                    configs.push(HeroConfig {
+                        config: cfg,
+                        note: "Ampere-3070 Conv2d-B32 God Config",
+                        arch_hint: ArchHint::NvidiaAmpere,
+                        scope: HeroScope::Exact,
+                    });
+                } else {
+                    // 🏗️ B=64+ : "M=128 Standard" (25 TFLOPS)
+                    let mut cfg = PipelineConfig::new(2, 128, 64, 32).with_warps(9);
+                    cfg.instruction = SpecializedInstruction::CudaMMA;
+                    cfg.swizzle_mode = SwizzleMode::Xor4;
+                    configs.push(HeroConfig {
+                        config: cfg,
+                        note: "Ampere-3070 Conv2d-B64 Standard",
+                        arch_hint: ArchHint::NvidiaAmpere,
+                        scope: HeroScope::Exact,
+                    });
+                }
+            }
+            Layout::NCHW => {
+                // 🐢 NCHW: Safe Driving
+                let mut cfg = PipelineConfig::new(2, 64, 64, 16).with_warps(5);
+                cfg.instruction = SpecializedInstruction::CudaMMA;
+                cfg.swizzle_mode = SwizzleMode::Xor4;
+                configs.push(HeroConfig {
+                    config: cfg,
+                    note: "Ampere-3070 Conv2d NCHW Baseline",
+                    arch_hint: ArchHint::NvidiaAmpere,
+                    scope: HeroScope::Layer,
+                });
+            }
+            _ => {}
         }
 
         configs
@@ -189,14 +210,42 @@ impl TuningPolicy for GemmPolicy {
     }
 
     fn hero_configs(&self) -> Vec<HeroConfig> {
-        vec![
-            HeroConfig {
-                config: PipelineConfig::new(2, 128, 128, 32).with_warps(8),
-                note: "Ampere-3070 GEMM baseline hero (~12 TFLOPS)",
+        use crate::core::config::{SpecializedInstruction};
+        let mut configs = vec![];
+        let output_size = self._problem.m * self._problem.n;
+
+        if output_size < 1024 * 1024 {
+            // 🐣 Small GEMM: Occupancy Focus
+            let mut cfg = PipelineConfig::new(2, 64, 64, 32).with_warps(4);
+            cfg.instruction = SpecializedInstruction::CudaMMA;
+            configs.push(HeroConfig {
+                config: cfg,
+                note: "Small GEMM Hero (Occupancy Focus)",
                 arch_hint: ArchHint::NvidiaAmpere,
                 scope: HeroScope::Layer,
-            }
-        ]
+            });
+        } else {
+            // 🦖 Large GEMM: Throughput Focus (The 36 TFLOPS Legend)
+            let mut cfg_legend = PipelineConfig::new(3, 128, 128, 32).with_warps(8);
+            cfg_legend.instruction = SpecializedInstruction::CudaMMA;
+            configs.push(HeroConfig {
+                config: cfg_legend,
+                note: "Large GEMM Champion (36 TFLOPS Legend)",
+                arch_hint: ArchHint::NvidiaAmpere,
+                scope: HeroScope::Exact,
+            });
+
+            // Backup Hero
+            let mut cfg_backup = PipelineConfig::new(2, 128, 64, 32).with_warps(8);
+            cfg_backup.instruction = SpecializedInstruction::CudaMMA;
+            configs.push(HeroConfig {
+                config: cfg_backup,
+                note: "Large GEMM Backup (Smem Saver)",
+                arch_hint: ArchHint::NvidiaAmpere,
+                scope: HeroScope::Layer,
+            });
+        }
+        configs
     }
 
     fn is_feasible(&self, cfg: &PipelineConfig, dev: &GPUInfo) -> bool {
@@ -261,14 +310,35 @@ impl TuningPolicy for Fa2Policy {
     }
 
     fn hero_configs(&self) -> Vec<HeroConfig> {
-        vec![
-            HeroConfig {
-                config: PipelineConfig::new(2, 128, 64, 32).with_warps(9), // 1+8
-                note: "Ampere-3070 FA2-S1024 baseline hero (~7.6 TFLOPS)",
+        use crate::core::config::{SpecializedInstruction, SwizzleMode};
+        let s_len = self._problem.n; // KV Seq Len
+        let mut heroes = Vec::new();
+
+        // 🏆 Hero 1: The "Baseline Champion" (7.63 TFLOPS Proven)
+        let mut cfg1 = PipelineConfig::new(2, 128, 64, 32).with_warps(9);
+        cfg1.instruction = SpecializedInstruction::CudaMMA;
+        cfg1.swizzle_mode = SwizzleMode::Xor4;
+        heroes.push(HeroConfig {
+            config: cfg1,
+            note: "FA2 Baseline Champion (7.63 TFLOPS)",
+            arch_hint: ArchHint::NvidiaAmpere,
+            scope: HeroScope::Exact,
+        });
+
+        // 🛡️ Hero 2: The "Occupancy Saver" (For Large S)
+        if s_len >= 2048 {
+            let mut cfg2 = PipelineConfig::new(2, 64, 64, 32).with_warps(5);
+            cfg2.instruction = SpecializedInstruction::CudaMMA;
+            cfg2.swizzle_mode = SwizzleMode::Xor4;
+            heroes.push(HeroConfig {
+                config: cfg2,
+                note: "FA2 Large S Hero (Occupancy Saver)",
                 arch_hint: ArchHint::NvidiaAmpere,
                 scope: HeroScope::Exact,
-            }
-        ]
+            });
+        }
+
+        heroes
     }
 
     fn is_feasible(&self, cfg: &PipelineConfig, dev: &GPUInfo) -> bool {
