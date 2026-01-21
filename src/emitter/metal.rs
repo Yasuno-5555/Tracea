@@ -114,6 +114,9 @@ impl Emitter for MetalEmitter {
             UnifiedOpType::Conv2d { .. } => {
                 panic!("Conv2d Ops should be handled by UniversalEmitter.");
             }
+            UnifiedOpType::ConvTranspose2d { .. } => {
+                "// Metal ConvTranspose2d not yet implemented - fallback to CPU\n".to_string()
+            }
         }
     }
 }

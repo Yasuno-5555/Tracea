@@ -14,6 +14,12 @@ fn tracea(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let ops = PyModule::new_bound(m.py(), "ops")?;
     ops.add_function(wrap_pyfunction!(conv2d::conv2d, &ops)?)?;
     m.add_submodule(&ops)?;
+
+    // Expose Core Classes from tracea::interface::python
+    m.add_class::<tracea::interface::python::PyContext>()?;
+    m.add_class::<tracea::interface::python::PyTuner>()?;
+    m.add_class::<tracea::interface::python::PyDeviceBufferF32>()?;
+    m.add_class::<tracea::interface::python::PyDeviceBufferU16>()?;
     
     // Version info
     m.add("__version__", "0.1.0")?;

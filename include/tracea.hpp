@@ -9,7 +9,6 @@ extern "C" {
 #include <stddef.h>
 #include <stdint.h>
 
-
 // ============================================================================
 // Status Codes
 // ============================================================================
@@ -34,6 +33,24 @@ typedef enum {
   TRACEA_DTYPE_INT32 = 3,
   TRACEA_DTYPE_INT8 = 4,
 } TraceaDType;
+
+typedef enum {
+  TRACEA_EPILOGUE_IDENTITY = 0,
+  TRACEA_EPILOGUE_BIAS_ADD = 1,
+  TRACEA_EPILOGUE_RELU = 2,
+  TRACEA_EPILOGUE_GELU = 3,
+  TRACEA_EPILOGUE_SILU = 4,
+  TRACEA_EPILOGUE_BIAS_RELU = 5,
+  TRACEA_EPILOGUE_BIAS_SILU = 6,
+  TRACEA_EPILOGUE_RESIDUAL = 7,
+  TRACEA_EPILOGUE_RESIDUAL_RELU = 8,
+} TraceaEpilogueKind;
+
+typedef enum {
+  TRACEA_SOFTMAX_AUTO = 0,
+  TRACEA_SOFTMAX_PER_TILE = 1,
+  TRACEA_SOFTMAX_PER_TWO_TILES = 2,
+} TraceaSoftmaxGranularity;
 
 // ============================================================================
 // Tensor View (Borrowed pointer, no ownership transfer)
@@ -60,8 +77,21 @@ typedef struct {
   uint32_t dilation_h;
   uint32_t dilation_w;
   uint32_t groups;
+  TraceaEpilogueKind epilogue;
   void *stream; // cudaStream_t (pass-through)
 } TraceaConv2dParams;
+
+typedef struct {
+  TraceaEpilogueKind epilogue;
+  void *stream;
+} TraceaGemmParams;
+
+typedef struct {
+  uint8_t causal; // bool
+  TraceaSoftmaxGranularity softmax_mode;
+  float scale; // If 0, use 1/sqrt(d)
+  void *stream;
+} TraceaAttentionParams;
 
 // ============================================================================
 // API Functions
@@ -71,11 +101,52 @@ typedef struct {
 /// @param x Input tensor (NCHW)
 /// @param w Weight tensor (OIHW)
 /// @param b Bias tensor (can be NULL)
+/// @param residual Residual tensor (can be NULL)
 /// @param out Pre-allocated output tensor
 /// @param params Convolution parameters
 TraceaStatus tracea_conv2d(TraceaTensorView x, TraceaTensorView w,
-                           const TraceaTensorView *b, TraceaTensorView *out,
-                           TraceaConv2dParams params);
+                           const TraceaTensorView *b,
+                           const TraceaTensorView *residual,
+                           TraceaTensorView *out, TraceaConv2dParams params);
+
+/// 2D Transposed Convolution (Deconvolution)
+/// @param x Input tensor (NHWC)
+/// @param w Weight tensor (KRSC)
+/// @param b Bias tensor (can be NULL)
+/// @param residual Residual tensor (can be NULL)
+/// @param out Pre-allocated output tensor
+/// @param params ConvTranspose2d parameters
+typedef struct {
+  uint32_t stride_h;
+  uint32_t stride_w;
+  uint32_t padding_h;
+  uint32_t padding_w;
+  uint32_t output_padding_h;
+  uint32_t output_padding_w;
+  uint32_t dilation_h;
+  uint32_t dilation_w;
+  uint32_t groups;
+  TraceaEpilogueKind epilogue;
+  void *stream;
+} TraceaConvTranspose2dParams;
+
+TraceaStatus tracea_conv_transpose2d(TraceaTensorView x, TraceaTensorView w,
+                                     const TraceaTensorView *b,
+                                     const TraceaTensorView *residual,
+                                     TraceaTensorView *out,
+                                     TraceaConvTranspose2dParams params);
+
+/// GEMM (C = alpha * A * B + beta * C) -> Adjusted for Tracea: C =
+/// Epilogue(A*B)
+TraceaStatus tracea_gemm(TraceaTensorView a, TraceaTensorView b,
+                         const TraceaTensorView *bias,
+                         const TraceaTensorView *residual, TraceaTensorView *c,
+                         TraceaGemmParams params);
+
+/// FlashAttention-2
+TraceaStatus tracea_attention(TraceaTensorView q, TraceaTensorView k,
+                              TraceaTensorView v, TraceaTensorView *o,
+                              TraceaAttentionParams params);
 
 /// Get last error message
 /// @param buf Buffer to write error message
@@ -105,7 +176,6 @@ uint32_t tracea_version_patch(void);
 #include <string>
 #include <vector>
 
-
 namespace tracea {
 
 enum class DType {
@@ -114,6 +184,24 @@ enum class DType {
   BFloat16 = TRACEA_DTYPE_BFLOAT16,
   Int32 = TRACEA_DTYPE_INT32,
   Int8 = TRACEA_DTYPE_INT8,
+};
+
+enum class EpilogueKind {
+  Identity = TRACEA_EPILOGUE_IDENTITY,
+  BiasAdd = TRACEA_EPILOGUE_BIAS_ADD,
+  ReLU = TRACEA_EPILOGUE_RELU,
+  Gelu = TRACEA_EPILOGUE_GELU,
+  SiLU = TRACEA_EPILOGUE_SILU,
+  BiasReLU = TRACEA_EPILOGUE_BIAS_RELU,
+  BiasSiLU = TRACEA_EPILOGUE_BIAS_SILU,
+  Residual = TRACEA_EPILOGUE_RESIDUAL,
+  ResidualReLU = TRACEA_EPILOGUE_RESIDUAL_RELU,
+};
+
+enum class SoftmaxGranularity {
+  Auto = TRACEA_SOFTMAX_AUTO,
+  PerTile = TRACEA_SOFTMAX_PER_TILE,
+  PerTwoTiles = TRACEA_SOFTMAX_PER_TWO_TILES,
 };
 
 /// TensorView - STL-friendly wrapper
@@ -156,11 +244,38 @@ struct Conv2dParams {
   uint32_t dilation_h = 1;
   uint32_t dilation_w = 1;
   uint32_t groups = 1;
+  EpilogueKind epilogue = EpilogueKind::Identity;
   void *stream = nullptr; // cudaStream_t
 
   TraceaConv2dParams to_c() const {
-    return TraceaConv2dParams{stride_h,   stride_w,   padding_h, padding_w,
-                              dilation_h, dilation_w, groups,    stream};
+    return TraceaConv2dParams{
+        stride_h,   stride_w,
+        padding_h,  padding_w,
+        dilation_h, dilation_w,
+        groups,     static_cast<TraceaEpilogueKind>(epilogue),
+        stream};
+  }
+};
+
+struct GemmParams {
+  EpilogueKind epilogue = EpilogueKind::Identity;
+  void *stream = nullptr;
+
+  TraceaGemmParams to_c() const {
+    return TraceaGemmParams{static_cast<TraceaEpilogueKind>(epilogue), stream};
+  }
+};
+
+struct AttentionParams {
+  bool causal = true;
+  SoftmaxGranularity softmax_mode = SoftmaxGranularity::Auto;
+  float scale = 0.0f;
+  void *stream = nullptr;
+
+  TraceaAttentionParams to_c() const {
+    return TraceaAttentionParams{
+        (uint8_t)causal, static_cast<TraceaSoftmaxGranularity>(softmax_mode),
+        scale, stream};
   }
 };
 
@@ -175,22 +290,122 @@ inline std::string get_last_error() {
 /// 2D Convolution
 /// @throws std::runtime_error on failure
 inline void conv2d(const TensorView &x, const TensorView &w,
-                   const TensorView *b, TensorView &out,
-                   const Conv2dParams &params) {
+                   const TensorView *b, const TensorView *residual,
+                   TensorView &out, const Conv2dParams &params) {
   TraceaTensorView c_b_storage;
   const TraceaTensorView *c_b_ptr = nullptr;
-
   if (b != nullptr) {
     c_b_storage = b->to_c();
     c_b_ptr = &c_b_storage;
   }
 
+  TraceaTensorView c_res_storage;
+  const TraceaTensorView *c_res_ptr = nullptr;
+  if (residual != nullptr) {
+    c_res_storage = residual->to_c();
+    c_res_ptr = &c_res_storage;
+  }
+
   TraceaTensorView c_out = out.to_c();
-  TraceaStatus status =
-      tracea_conv2d(x.to_c(), w.to_c(), c_b_ptr, &c_out, params.to_c());
+  TraceaStatus status = tracea_conv2d(x.to_c(), w.to_c(), c_b_ptr, c_res_ptr,
+                                      &c_out, params.to_c());
 
   if (status != TRACEA_SUCCESS) {
     throw std::runtime_error("tracea::conv2d failed: " + get_last_error());
+  }
+}
+
+/// ConvTranspose2d parameters (Deconvolution)
+struct ConvTranspose2dParams {
+  uint32_t stride_h = 1;
+  uint32_t stride_w = 1;
+  uint32_t padding_h = 0;
+  uint32_t padding_w = 0;
+  uint32_t output_padding_h = 0;
+  uint32_t output_padding_w = 0;
+  uint32_t dilation_h = 1;
+  uint32_t dilation_w = 1;
+  uint32_t groups = 1;
+  EpilogueKind epilogue = EpilogueKind::Identity;
+  void *stream = nullptr;
+
+  TraceaConvTranspose2dParams to_c() const {
+    return TraceaConvTranspose2dParams{
+        stride_h,
+        stride_w,
+        padding_h,
+        padding_w,
+        output_padding_h,
+        output_padding_w,
+        dilation_h,
+        dilation_w,
+        groups,
+        static_cast<TraceaEpilogueKind>(epilogue),
+        stream};
+  }
+};
+
+/// ConvTranspose2d (Deconvolution)
+/// @throws std::runtime_error on failure
+inline void conv_transpose2d(const TensorView &x, const TensorView &w,
+                             const TensorView *b, const TensorView *residual,
+                             TensorView &out,
+                             const ConvTranspose2dParams &params) {
+  TraceaTensorView c_b_storage;
+  const TraceaTensorView *c_b_ptr = nullptr;
+  if (b != nullptr) {
+    c_b_storage = b->to_c();
+    c_b_ptr = &c_b_storage;
+  }
+
+  TraceaTensorView c_res_storage;
+  const TraceaTensorView *c_res_ptr = nullptr;
+  if (residual != nullptr) {
+    c_res_storage = residual->to_c();
+    c_res_ptr = &c_res_storage;
+  }
+
+  TraceaTensorView c_out = out.to_c();
+  TraceaStatus status = tracea_conv_transpose2d(
+      x.to_c(), w.to_c(), c_b_ptr, c_res_ptr, &c_out, params.to_c());
+
+  if (status != TRACEA_SUCCESS) {
+    throw std::runtime_error("tracea::conv_transpose2d failed: " +
+                             get_last_error());
+  }
+}
+
+/// GEMM wrapper
+inline void gemm(const TensorView &a, const TensorView &b,
+                 const TensorView *bias, const TensorView *residual,
+                 TensorView &c, const GemmParams &params) {
+  TraceaTensorView c_bias, c_res;
+  const TraceaTensorView *p_bias = nullptr, *p_res = nullptr;
+
+  if (bias) {
+    c_bias = bias->to_c();
+    p_bias = &c_bias;
+  }
+  if (residual) {
+    c_res = residual->to_c();
+    p_res = &c_res;
+  }
+  TraceaTensorView c_out = c.to_c();
+
+  if (tracea_gemm(a.to_c(), b.to_c(), p_bias, p_res, &c_out, params.to_c()) !=
+      TRACEA_SUCCESS) {
+    throw std::runtime_error("tracea::gemm failed: " + get_last_error());
+  }
+}
+
+/// Attention wrapper
+inline void attention(const TensorView &q, const TensorView &k,
+                      const TensorView &v, TensorView &o,
+                      const AttentionParams &params) {
+  TraceaTensorView c_out = o.to_c();
+  if (tracea_attention(q.to_c(), k.to_c(), v.to_c(), &c_out, params.to_c()) !=
+      TRACEA_SUCCESS) {
+    throw std::runtime_error("tracea::attention failed: " + get_last_error());
   }
 }
 

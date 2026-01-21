@@ -2,6 +2,7 @@
 use crate::optimizer::GPUInfo;
 use crate::optimizer::problem::{ProblemDescriptor, LayerType, HeroConfig, ArchHint, Fa2Variant};
 use crate::core::backend::Device;
+use crate::core::config::SoftmaxGranularity;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SamplingPlan {
@@ -25,6 +26,8 @@ pub struct SearchSpace {
     pub stages: Vec<u32>,
     pub swizzles: Vec<crate::core::config::SwizzleMode>,
     pub barrier_modes: Vec<crate::core::config::BarrierMode>,
+    /// Softmax update granularity for FA2 attention kernels
+    pub softmax_granularities: Vec<SoftmaxGranularity>,
 }
 
 impl SearchSpace {
@@ -42,6 +45,7 @@ impl SearchSpace {
             stages: vec![2], // Default
             swizzles: vec![crate::core::config::SwizzleMode::None],
             barrier_modes: vec![crate::core::config::BarrierMode::None],
+            softmax_granularities: vec![SoftmaxGranularity::PerTile],
         }
     }
 
@@ -57,6 +61,7 @@ impl SearchSpace {
     pub fn stages(mut self, vals: &[u32]) -> Self { self.stages = vals.to_vec(); self }
     pub fn swizzles(mut self, vals: &[crate::core::config::SwizzleMode]) -> Self { self.swizzles = vals.to_vec(); self }
     pub fn barrier_modes(mut self, vals: &[crate::core::config::BarrierMode]) -> Self { self.barrier_modes = vals.to_vec(); self }
+    pub fn softmax_granularities(mut self, vals: &[SoftmaxGranularity]) -> Self { self.softmax_granularities = vals.to_vec(); self }
 }
 
 #[derive(Debug, Clone)]
@@ -336,10 +341,11 @@ impl TuningPolicy for Fa2Policy {
             .stages(&[2])
             .swizzles(&[crate::core::config::SwizzleMode::None, crate::core::config::SwizzleMode::Xor4])
             .barrier_modes(&[crate::core::config::BarrierMode::None, crate::core::config::BarrierMode::ProducerConsumer])
+            .softmax_granularities(&[SoftmaxGranularity::PerTile, SoftmaxGranularity::PerTwoTiles])
     }
 
     fn hero_configs(&self) -> Vec<HeroConfig> {
-        use crate::core::config::{SpecializedInstruction, SwizzleMode};
+        use crate::core::config::{SpecializedInstruction, SwizzleMode, SoftmaxGranularity};
         let s_len = self._problem.shape.n; // KV Seq Len
         let mut heroes = Vec::new();
 
@@ -347,6 +353,7 @@ impl TuningPolicy for Fa2Policy {
         let mut cfg1 = PipelineConfig::new(2, 128, 64, 32).with_warps(9);
         cfg1.instruction = SpecializedInstruction::CudaMMA;
         cfg1.swizzle_mode = SwizzleMode::Xor4;
+        cfg1.softmax_granularity = SoftmaxGranularity::PerTile;
         heroes.push(HeroConfig {
             config: cfg1,
             note: "FA2 Baseline Champion (7.63 TFLOPS)",
@@ -354,13 +361,26 @@ impl TuningPolicy for Fa2Policy {
             scope: HeroScope::Exact,
         });
 
-        // 孱・・Hero 2: The "Occupancy Saver" (For Large S)
+        // Hero 2: The "Performance Speedster" (PerTwoTiles, Stage 3)
+        let mut cfg2 = PipelineConfig::new(3, 128, 64, 32).with_warps(9);
+        cfg2.instruction = SpecializedInstruction::CudaMMA;
+        cfg2.swizzle_mode = SwizzleMode::Xor4;
+        cfg2.softmax_granularity = SoftmaxGranularity::PerTwoTiles;
+        heroes.push(HeroConfig {
+            config: cfg2,
+            note: "FA2 Performance Speedster (PerTwoTiles, Stage 3)",
+            arch_hint: ArchHint::NvidiaAmpere,
+            scope: HeroScope::Exact,
+        });
+
+        // Hero 3: The "Occupancy Saver" (For Large S)
         if s_len >= 2048 {
-            let mut cfg2 = PipelineConfig::new(2, 64, 64, 32).with_warps(5);
-            cfg2.instruction = SpecializedInstruction::CudaMMA;
-            cfg2.swizzle_mode = SwizzleMode::Xor4;
+            let mut cfg3 = PipelineConfig::new(2, 64, 64, 32).with_warps(5);
+            cfg3.instruction = SpecializedInstruction::CudaMMA;
+            cfg3.swizzle_mode = SwizzleMode::Xor4;
+            cfg3.softmax_granularity = SoftmaxGranularity::PerTile;
             heroes.push(HeroConfig {
-                config: cfg2,
+                config: cfg3,
                 note: "FA2 Large S Hero (Occupancy Saver)",
                 arch_hint: ArchHint::NvidiaAmpere,
                 scope: HeroScope::Exact,

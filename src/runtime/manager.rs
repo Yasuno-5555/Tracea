@@ -162,27 +162,17 @@ impl RuntimeManager {
                     options: vec![
                         "-I".to_string(), 
                         "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.1/include".to_string(),
-                        "--use_fast_math".to_string(),
+                        // "--use_fast_math".to_string(),
                     ],
                     ..Default::default()
                 };
                 
-                let _ = std::fs::write("jit_trace.log", "DEBUG: Starting Compile\n"); 
-                
                 let ptx_res = cudarc::nvrtc::compile_ptx_with_opts(source, opts);
                 
-                let _ = std::fs::OpenOptions::new().append(true).open("jit_trace.log").unwrap().write_all(b"DEBUG: Finished Compile\n");
-
                 // Doctor Hook: NVRTC Result
                 let (jit_code, jit_log) = match &ptx_res {
-                    Ok(_) => {
-                         println!("[Runtime] NVRTC Success!");
-                         (0, String::new())
-                    },
-                    Err(e) => {
-                        println!("[Runtime] NVRTC Error: {:?}", e);
-                        (1, format!("{:?}", e))
-                    },
+                    Ok(_) => (0, String::new()),
+                    Err(e) => (1, format!("{:?}", e)),
                 };
                  self.doctor.on_jit_result(crate::doctor::JitResultInfo {
                     backend: crate::doctor::BackendKind::Cuda,

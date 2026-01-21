@@ -7,6 +7,9 @@ use crate::emitter::traits::UnifiedOpIR;
 use crate::emitter::traits::UnifiedOpType;
 use crate::kernels::attention::cuda_emitter::FlashAttentionEmitter; // Import specific emitter for calc logic
 use crate::core::config::PipelineConfig;
+use crate::core::config::LayoutPolicy;
+use crate::core::op::EpilogueOp;
+use crate::core::config::SoftmaxGranularity;
 use std::collections::HashMap;
 use crate::core::tuning::{tune_kernel, SearchMode, TunableKernel};
 use crate::kernels::gemm::cpu_adapter::{GemmAdapter, GemmProblem};
@@ -32,6 +35,54 @@ fn get_kernel_arg(obj: &Bound<'_, PyAny>) -> PyResult<KernelArg> {
     Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>("Expected Buffer or object with data_ptr()"))
 }
 
+fn parse_epilogue(
+    epilogue_str: Option<String>,
+    bias: Option<&Bound<'_, PyAny>>,
+    residual: Option<&Bound<'_, PyAny>>,
+) -> PyResult<(Vec<EpilogueOp>, Vec<KernelArg>)> {
+    let mut ops = Vec::new();
+    let mut args = Vec::new();
+    
+    if let Some(s) = epilogue_str {
+        let parts: Vec<&str> = s.split('+').collect();
+        for part in parts {
+            match part.trim().to_lowercase().as_str() {
+                "identity" => {},
+                "relu" => ops.push(EpilogueOp::ReLU),
+                "gelu" => ops.push(EpilogueOp::Gelu),
+                "silu" => ops.push(EpilogueOp::SiLU),
+                "bias" => {
+                    if let Some(b) = bias {
+                        let arg = get_kernel_arg(b)?;
+                        // We store a dummy ptr in Op, real one in args. 
+                        // The emitter uses the structure index, not the value here?
+                        // Actually Op definition has `bias_ptr: usize`.
+                        // But emitter generates `const float* bias_{i}`.
+                        // And we pass `arg` to launch. 
+                        // The value in EpilogueOp is mainly for ... hashing/equality?
+                        // Let's use 0 in Op and pass real arg.
+                        ops.push(EpilogueOp::BiasAdd { bias_ptr: 0 }); 
+                        args.push(arg);
+                    } else {
+                        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>("Epilogue contains 'bias' but no bias argument provided"));
+                    }
+                },
+                "residual" => {
+                     if let Some(r) = residual {
+                        let arg = get_kernel_arg(r)?;
+                        ops.push(EpilogueOp::ResidualAdd { residual_ptr: 0 });
+                        args.push(arg);
+                    } else {
+                        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>("Epilogue contains 'residual' but no reference provided"));
+                    }
+                }
+                _ => return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("Unknown epilogue op: {}", part))),
+            }
+        }
+    }
+    Ok((ops, args))
+}
+
 #[pymethods]
 impl PyContext {
     #[new]
@@ -46,7 +97,7 @@ impl PyContext {
         Ok(())
     }
 
-    #[pyo3(signature = (q, k, v, o, b_in, h_in, s_in, d_in, dh_in, causal=false, scale_sqrt=true, m_tile=None, n_tile=None, stages=None, warps=None))]
+    #[pyo3(signature = (q, k, v, o, b_in, h_in, s_in, d_in, dh_in, causal=false, scale_sqrt=true, m_tile=None, n_tile=None, stages=None, warps=None, softmax_mode=None))]
     pub fn attention(
         &self,
         q: &Bound<'_, PyAny>,
@@ -60,6 +111,7 @@ impl PyContext {
         n_tile: Option<u32>,
         stages: Option<u32>,
         warps: Option<u32>,
+        softmax_mode: Option<String>,
     ) -> PyResult<u64> {
         let ctx = self;
         let mut request_ctx = crate::doctor::KernelRequestContext {
@@ -82,6 +134,14 @@ impl PyContext {
         let user_config = if let (Some(m), Some(n), Some(s)) = (m_tile, n_tile, stages) {
             let mut c = PipelineConfig::new(s, m, n, dh_in);
             c.force_num_warps = warps;
+            if let Some(mode) = &softmax_mode {
+                c.softmax_granularity = match mode.as_str() {
+                    "per_tile" => SoftmaxGranularity::PerTile,
+                    "per_two_tiles" => SoftmaxGranularity::PerTwoTiles,
+                    "full" => SoftmaxGranularity::FullBr, // Experimental
+                    _ => SoftmaxGranularity::PerTile, // Fallback/Auto
+                };
+            }
             Some(c)
         } else {
             None
@@ -162,7 +222,7 @@ impl PyContext {
         Ok(kernel_id.0)
     }
 
-    #[pyo3(signature = (a, b, c, m, n, k, m_tile=None, n_tile=None, k_tile=None))]
+    #[pyo3(signature = (a, b, c, m, n, k, m_tile=None, n_tile=None, k_tile=None, epilogue=None, bias=None, residual=None))]
     pub fn gemm(
         &self,
         a: &Bound<'_, PyAny>,
@@ -172,6 +232,9 @@ impl PyContext {
         m_tile: Option<u32>,
         n_tile: Option<u32>,
         k_tile: Option<u32>,
+        epilogue: Option<String>,
+        bias: Option<&Bound<'_, PyAny>>,
+        residual: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<u64> {
         let ctx = self;
         
@@ -182,11 +245,14 @@ impl PyContext {
         // We know it's CUDA or CPU.
         // For now, assume CUDA for testing.
         
-        let mut config = PipelineConfig::new(2, m_tile.unwrap_or(16), n_tile.unwrap_or(16), k_tile.unwrap_or(16));
-        config.m_tile = m_tile.unwrap_or(16);
-        config.n_tile = n_tile.unwrap_or(16);
+        let mut config = PipelineConfig::new(2, m_tile.unwrap_or(64), n_tile.unwrap_or(64), k_tile.unwrap_or(16));
+        config.m_tile = m_tile.unwrap_or(64);
+        config.n_tile = n_tile.unwrap_or(64);
         config.k_tile = k_tile.unwrap_or(16);
         
+        let (epilogue_ops, epilogue_args) = parse_epilogue(epilogue, bias, residual)?;
+        config.epilogue = epilogue_ops;
+
         let backend = DeviceBackend::Cuda; // Force CUDA for now as requested
         let emitter = UniversalEmitter::new(backend);
         let ir = UnifiedOpIR {
@@ -210,20 +276,201 @@ impl PyContext {
         
         // Launch Config
         // Grid: M/MT, N/NT
+        // Fix for 64x64: Needs 5 warps (1 Prod, 4 Cons)
+        config.force_num_warps = Some(5);
         let mt = config.m_tile;
         let nt = config.n_tile;
         let grid = ((n + nt - 1) / nt, (m + mt - 1) / mt, 1);
-        let block = (32, 1, 1); // 1 Warp per Block for 16x16
-        let smem_bytes = 0; 
+        let block = (160, 1, 1); // 5 Warps
+        // Calculate smem size for async pipeline
+        let a_stride = config.k_tile + 8;
+        let b_stride = config.n_tile + 8;
+        let smem_a = config.m_tile * a_stride * 2;
+        let smem_b = config.k_tile * b_stride * 2;
+        let smem_bytes = 128 + (smem_a + smem_b) * config.num_stages;
         
         eprintln!("[Tracea Gemm] Launching M={} N={} K={} Grid={:?} Block={:?} Smem={}", m, n, k, grid, block, smem_bytes);
         eprintln!("[Tracea Gemm] Args: A={:?} B={:?} C={:?}", arg_a, arg_b, arg_c);
 
         ctx.runtime.launch(
             kernel_id, grid, block, smem_bytes,
-            vec![arg_a, arg_b, arg_c, KernelArg::Int(m as i32), KernelArg::Int(n as i32), KernelArg::Int(k as i32)]
+            {
+                let mut args = vec![arg_a, arg_b, arg_c, KernelArg::Int(m as i32), KernelArg::Int(n as i32), KernelArg::Int(k as i32)];
+                args.extend(epilogue_args);
+                args
+            }
         ).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("GEMM Launch Error: {}", e)))?;
 
+        Ok(kernel_id.0)
+    }
+
+    #[pyo3(signature = (x, w, o, n, c, h, w_in, k, r, s, stride=1, pad=0, dilation=1, epilogue=None, bias=None, residual=None))]
+    #[allow(clippy::too_many_arguments)]
+    pub fn conv2d(
+        &self,
+        x: &Bound<'_, PyAny>,
+        w: &Bound<'_, PyAny>,
+        o: &Bound<'_, PyAny>,
+        n: u32, c: u32, h: u32, w_in: u32, k: u32,
+        r: u32, s: u32,
+        stride: u32, pad: u32, dilation: u32,
+        epilogue: Option<String>,
+        bias: Option<&Bound<'_, PyAny>>,
+        residual: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<u64> {
+        let ctx = self;
+        
+        let config = PipelineConfig::new(2, 64, 64, 16); // Default config
+        let (epilogue_ops, epilogue_args) = parse_epilogue(epilogue, bias, residual)?;
+        
+        // Clone config and set epilogue
+        let mut final_config = config.clone();
+        final_config.epilogue = epilogue_ops;
+
+        let backend = DeviceBackend::Cuda; 
+        let emitter = UniversalEmitter::new(backend);
+        
+        let ir = UnifiedOpIR {
+            op_type: UnifiedOpType::Conv2d {
+                n: n as usize, c: c as usize, h: h as usize, w: w_in as usize, k: k as usize,
+                r: r as usize, s: s as usize,
+                stride: stride as usize, 
+                pad: pad as usize,
+                dilation: dilation as usize,
+                layout: crate::core::config::LayoutPolicy::NHWC,
+            },
+            precison: "f16".to_string(),
+            tiling: final_config.clone(),
+            conv_magic_strategy: None,
+        };
+        
+        // Use consistent naming logic
+        let source = emitter.generate(ir);
+        
+        let kernel_id = match ctx.runtime.compile(&source, "conv2d_implicit_gemm", backend) {
+            Ok(id) => id,
+            Err(e) => return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Conv2d Compile Error: {}", e))),
+        };
+
+        let arg_x = get_kernel_arg(x)?;
+        let arg_w = get_kernel_arg(w)?;
+        let arg_o = get_kernel_arg(o)?;
+        
+        // Conv2d simple logic: 
+        // Output H_out = (h + 2*pad - r) / stride + 1
+        // Output W_out = (w + 2*pad - s) / stride + 1
+        let h_out = (h + 2*pad - r) / stride + 1;
+        let w_out = (w_in + 2*pad - s) / stride + 1;
+        
+        // M = N * H_out * W_out
+        // N = K
+        // Tiles: M/m_tile, N/n_tile
+        let m_gemm = n * h_out * w_out;
+        let n_gemm = k;
+        
+        let mt = final_config.m_tile;
+        let nt = final_config.n_tile;
+        
+        let grid = ((m_gemm + mt - 1) / mt, (n_gemm + nt - 1) / nt, 1);
+        let block = (128, 1, 1); 
+        // Calculate smem size
+        let a_stride = final_config.k_tile + 8;
+        let b_stride = final_config.n_tile + 8;
+        let smem_a = final_config.m_tile * a_stride * 2;
+        let smem_b = final_config.k_tile * b_stride * 2;
+        let smem_bytes = 128 + (smem_a + smem_b) * final_config.num_stages;
+        
+        ctx.runtime.launch(
+            kernel_id, grid, block, smem_bytes,
+            {
+               // Conv Emitter Arguments: Input, Weight, Output ...
+               let mut args = vec![arg_x, arg_w, arg_o];
+               args.extend(epilogue_args);
+               args
+            }
+        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Conv2d Launch Error: {}", e)))?;
+        
+        Ok(kernel_id.0)
+    }
+
+
+
+    #[pyo3(signature = (x, w, o, n, c, h, w_in, k, r, s, stride=1, pad=0, output_padding=0, dilation=1, epilogue=None, bias=None, residual=None))]
+    #[allow(clippy::too_many_arguments)]
+    pub fn conv_transpose2d(
+        &self,
+        x: &Bound<'_, PyAny>,
+        w: &Bound<'_, PyAny>,
+        o: &Bound<'_, PyAny>,
+        n: u32, c: u32, h: u32, w_in: u32, k: u32,
+        r: u32, s: u32,
+        stride: u32, pad: u32, output_padding: u32, dilation: u32,
+        epilogue: Option<String>,
+        bias: Option<&Bound<'_, PyAny>>,
+        residual: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<u64> {
+        let ctx = self;
+        
+        let config = PipelineConfig::new(2, 64, 64, 16); 
+        let (epilogue_ops, epilogue_args) = parse_epilogue(epilogue, bias, residual)?;
+        
+        // Clone config and set epilogue
+        let mut final_config = config.clone();
+        final_config.epilogue = epilogue_ops;
+
+        let backend = DeviceBackend::Cuda; 
+        let emitter = UniversalEmitter::new(backend);
+        
+        let ir = UnifiedOpIR {
+            op_type: UnifiedOpType::ConvTranspose2d {
+                 n: n as usize, c: c as usize, h: h as usize, w: w_in as usize, k: k as usize,
+                 r: r as usize, s: s as usize, stride: stride as usize, pad: pad as usize, output_padding: output_padding as usize,
+                 layout: crate::core::config::LayoutPolicy::NHWC,
+            },
+            precison: "f32".to_string(), 
+            tiling: final_config.clone(),
+            conv_magic_strategy: None,
+        };
+        
+        let source = emitter.generate(ir);
+        
+        let kernel_id = match ctx.runtime.compile(&source, "conv_transpose2d_implicit_gemm", backend) {
+            Ok(id) => id,
+            Err(e) => return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("ConvTranspose2d Compile Error: {}", e))),
+        };
+
+        let arg_x = get_kernel_arg(x)?;
+        let arg_w = get_kernel_arg(w)?;
+        let arg_o = get_kernel_arg(o)?;
+        
+        // Output Shape Calc for Grid
+        let h_out = (h - 1) * stride - 2 * pad + r + output_padding;
+        let w_out = (w_in - 1) * stride - 2 * pad + s + output_padding;
+        
+        let m_gemm = n * h_out * w_out; 
+        let n_gemm = k;            
+        
+        let mt = final_config.m_tile;
+        let nt = final_config.n_tile;
+        
+        let grid = ((m_gemm + mt - 1) / mt, (n_gemm + nt - 1) / nt, 1);
+        let block = (128, 1, 1); 
+        // Calculate smem size
+        let a_stride = final_config.k_tile + 8;
+        let b_stride = final_config.n_tile + 8;
+        let smem_a = final_config.m_tile * a_stride * 2;
+        let smem_b = final_config.k_tile * b_stride * 2;
+        let smem_bytes = 128 + (smem_a + smem_b) * final_config.num_stages;
+        
+        ctx.runtime.launch(
+            kernel_id, grid, block, smem_bytes,
+            {
+               let mut args = vec![arg_x, arg_w, arg_o];
+               args.extend(epilogue_args);
+               args
+            }
+        ).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("ConvTranspose2d Launch Error: {}", e)))?;
+        
         Ok(kernel_id.0)
     }
 

@@ -60,4 +60,19 @@ pub enum UnifiedOpType {
         dilation: usize,
         layout: crate::core::config::LayoutPolicy,
     },
+    /// ConvTranspose2d (Deconvolution) for VAE Decoder
+    /// Constraints: groups=1, dilation=1, FP32 only (v3.1)
+    ConvTranspose2d {
+        n: usize,
+        h: usize,
+        w: usize,
+        c: usize,
+        k: usize,
+        r: usize,
+        s: usize,
+        stride: usize,
+        pad: usize,
+        output_padding: usize,
+        layout: crate::core::config::LayoutPolicy,
+    },
 }

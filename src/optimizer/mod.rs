@@ -305,7 +305,6 @@ impl AutoTuner {
                     gpu.name.clone()
                 }
             }
-            _ => gpu.name.clone(),
         };
 
         Self {

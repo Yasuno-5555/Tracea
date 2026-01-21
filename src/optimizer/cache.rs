@@ -68,6 +68,9 @@ impl TuningCache {
                 crate::core::op::EpilogueOp::BiasAdd { .. } => "bias".to_string(),
                 crate::core::op::EpilogueOp::ReLU => "relu".to_string(),
                 crate::core::op::EpilogueOp::Gelu => "gelu".to_string(),
+                crate::core::op::EpilogueOp::SiLU => "silu".to_string(),
+                crate::core::op::EpilogueOp::ResidualAdd { .. } => "residual".to_string(),
+                crate::core::op::EpilogueOp::BiasAddSiLU { .. } => "bias_silu".to_string(),
             }
         }).collect();
         let epi_str = normalized_epilogue.join(",");

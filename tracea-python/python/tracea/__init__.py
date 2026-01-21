@@ -4,7 +4,14 @@ Tracea Python Integration
 Zero-copy PyTorch backend for Stable Diffusion / diffusers
 """
 
-from .tracea import ops, __version__
+import os
+if hasattr(os, "add_dll_directory"):
+    try:
+        os.add_dll_directory(os.path.dirname(__file__))
+    except OSError: pass
+
+from . import ops
+from .tracea import __version__
 
 __all__ = ["ops", "__version__", "patch_conv2d", "TraceaConv2d"]
 

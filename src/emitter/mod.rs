@@ -11,3 +11,4 @@ pub mod driver;
 pub mod cpu;
 pub mod elementwise;
 pub mod conv;
+pub mod conv_transpose;

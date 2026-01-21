@@ -33,6 +33,12 @@ pub enum EpilogueOp {
     BiasAdd { bias_ptr: usize },
     ReLU,
     Gelu,
+    /// SiLU (Swish) activation: x * sigmoid(x) = x / (1 + exp(-x))
+    SiLU,
+    /// Residual connection: x + residual
+    ResidualAdd { residual_ptr: usize },
+    /// Combined Bias + SiLU: (x + bias) / (1 + exp(-(x + bias)))
+    BiasAddSiLU { bias_ptr: usize },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)] // Cannot derive PartialEq, Eq, Hash due to Scalar(f32) in GemmOp

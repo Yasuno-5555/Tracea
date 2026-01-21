@@ -1,6 +1,7 @@
 use crate::emitter::traits::{Emitter, UnifiedOpIR, UnifiedOpType};
 pub use crate::kernels::attention::cuda_emitter::FlashAttentionEmitter;
 use crate::core::config::{PipelineConfig, LayoutPolicy};
+use crate::core::op::EpilogueOp;
 use crate::backend::cuda::CudaBackend;
 
 pub struct CUDAEmitter {}
@@ -15,17 +16,59 @@ impl CUDAEmitter {
         let nt = config.n_tile;
         let kt = config.k_tile;
         let stages = config.num_stages;
-        let num_warps = config.force_num_warps.unwrap_or(8);
+        let consumers = if let Some(fw) = config.force_num_warps {
+            fw - 1
+        } else {
+            let max_consumers = mt / 16;
+            if max_consumers >= 8 { 8 }
+            else if max_consumers >= 4 { 4 }
+            else if max_consumers >= 2 { 2 }
+            else { 1 }
+        };
+        let num_warps = consumers + 1;
         
         let a_stride = kt + 8;
         let b_stride = nt + 8;
         let smem_a_bytes = mt * a_stride * 2;
         let smem_b_bytes = kt * b_stride * 2;
 
+        let mut epilogue_args = String::new();
+        let mut epilogue_apply = String::new();
+        
+        for (i, op) in config.epilogue.iter().enumerate() {
+            match op {
+                EpilogueOp::BiasAdd { .. } => {
+                    epilogue_args.push_str(&format!(", const float* __restrict__ bias_{}", i));
+                    epilogue_apply.push_str(&format!("tracea::epilogue::BiasAdd op_{}; op_{}.bias = bias_{}; val = op_{}(val, n_glob);\n", i, i, i, i));
+                }
+                EpilogueOp::ReLU => {
+                    epilogue_apply.push_str(&format!("tracea::epilogue::ReLU op_{}; val = op_{}(val);\n", i, i));
+                }
+                EpilogueOp::Gelu => {
+                    epilogue_apply.push_str(&format!("tracea::epilogue::Gelu op_{}; val = op_{}(val);\n", i, i));
+                }
+                EpilogueOp::SiLU => {
+                    epilogue_apply.push_str(&format!("tracea::epilogue::SiLU op_{}; val = op_{}(val);\n", i, i));
+                }
+                EpilogueOp::ResidualAdd { .. } => {
+                    epilogue_args.push_str(&format!(", const float* __restrict__ residual_{}", i));
+                    // Residual add usually adds element-wise from distinct tensor, assumed (M, N) layout
+                    epilogue_apply.push_str(&format!("tracea::epilogue::ResidualAdd op_{}; op_{}.residual = residual_{}; val = op_{}(val, (long long)m_glob * K_OUT + n_glob);\n", i, i, i, i));
+                }
+                EpilogueOp::BiasAddSiLU { .. } => {
+                     epilogue_args.push_str(&format!(", const float* __restrict__ bias_{}", i));
+                     epilogue_apply.push_str(&format!("tracea::epilogue::BiasAddSiLU op_{}; op_{}.bias = bias_{}; val = op_{}(val, n_glob);\n", i, i, i, i));
+                }
+                _ => {}
+            }
+        }
+
         format!(r#"
 #include <cuda_fp16.h>
 #include <mma.h>
 #include <cuda_pipeline.h>
+
+{epilogue_defs}
 
 using namespace nvcuda;
 
@@ -44,7 +87,7 @@ extern "C" __global__ void __launch_bounds__(NUM_WARPS * 32, 1) gemm_mma_kernel(
     const half* __restrict__ A,
     const half* __restrict__ B,
     half* __restrict__ C_global,
-    int M, int N, int K
+    int M, int N, int K{epilogue_args}
 ) {{
     int tid = threadIdx.x;
     int warp_id = tid / 32;
@@ -61,11 +104,11 @@ extern "C" __global__ void __launch_bounds__(NUM_WARPS * 32, 1) gemm_mma_kernel(
     const int M_FRAGS = MT / (NUM_WARPS - PRODUCER_WARPS) / 16;
     const int N_FRAGS = NT / 16;
 
-    wmma::fragment<wmma::accumulator, 16, 16, 16, half> frag_acc[M_FRAGS][N_FRAGS];
+    wmma::fragment<wmma::accumulator, 16, 16, 16, float> frag_acc[M_FRAGS][N_FRAGS];
     #pragma unroll
     for(int mi=0; mi<M_FRAGS; mi++) {{
         for(int ni=0; ni<N_FRAGS; ni++) {{
-            wmma::fill_fragment(frag_acc[mi][ni], (half)0.0f);
+            wmma::fill_fragment(frag_acc[mi][ni], 0.0f);
         }}
     }}
 
@@ -157,19 +200,46 @@ extern "C" __global__ void __launch_bounds__(NUM_WARPS * 32, 1) gemm_mma_kernel(
     }}
 
     if (!is_producer) {{
+        float* sC = (float*)smem;
         #pragma unroll
         for (int mi = 0; mi < M_FRAGS; ++mi) {{
              #pragma unroll
              for (int ni = 0; ni < N_FRAGS; ++ni) {{
-                 int row = a_tile_row + cons_warp * mt_per_warp + mi * 16;
-                 int col = b_tile_col + ni * 16;
-                 if (row < M && col < N)
-                     wmma::store_matrix_sync((half*)C_global + row * N + col, frag_acc[mi][ni], N, wmma::mem_row_major);
+                 int row_tile_offset = (cons_warp * mt_per_warp + mi * 16);
+                 int col_tile_offset = (ni * 16);
+                 // Store to padded smem to avoid bank conflicts if needed, but row major here.
+                 wmma::store_matrix_sync(sC + row_tile_offset * NT + col_tile_offset, frag_acc[mi][ni], NT, wmma::mem_row_major);
+             }}
+        }}
+        __syncthreads();
+
+        int epis_tid = tid - PRODUCER_WARPS * 32;
+        #pragma unroll
+        for (int i = epis_tid; i < MT * NT; i += (NUM_WARPS - PRODUCER_WARPS) * 32) {{
+             // Logic to distribute work among consumers
+             // Or can use strict mapping. 
+             // Simple grid stride over the tile:
+             int r = i / NT;
+             int c = i % NT;
+             
+             int row = a_tile_row + r;
+             int col = b_tile_col + c;
+
+             if (row < M && col < N) {{
+                 int n_glob = col;
+                 int m_glob = row;
+                 float val = sC[i];
+                 {epilogue_apply}
+                 C_global[(long long)row * N + col] = (half)val;
              }}
         }}
     }}
 }}
-"# , mt=mt, nt=nt, kt=kt, stages=stages, num_warps=num_warps, smem_a_bytes=smem_a_bytes, smem_b_bytes=smem_b_bytes, primitives=CudaBackend::get_primitive_defs())
+"# , mt=mt, nt=nt, kt=kt, stages=stages, num_warps=num_warps, smem_a_bytes=smem_a_bytes, smem_b_bytes=smem_b_bytes, 
+primitives=CudaBackend::get_primitive_defs(), 
+epilogue_defs=include_str!("../kernels/gpu/epilogue.cuh"),
+epilogue_args=epilogue_args,
+epilogue_apply=epilogue_apply)
     }
 }
 
@@ -191,8 +261,12 @@ impl Emitter for CUDAEmitter {
                 panic!("Elementwise Ops should be handled by UniversalEmitter.");
             }
             UnifiedOpType::Conv2d { .. } => {
-                panic!("Conv2d Ops should be handled by UniversalEmitter.");
+                crate::emitter::conv::generate_conv(ir)
+            }
+            UnifiedOpType::ConvTranspose2d { .. } => {
+                crate::emitter::conv_transpose::generate_conv_transpose(ir)
             }
         }
     }
 }
+

@@ -32,7 +32,7 @@ pub mod optimizer;
 pub mod doctor;
 
 pub use crate::core::op::GemmOp;
-pub use crate::core::config::{PipelineConfig, SwizzleMode};
+pub use crate::core::config::{PipelineConfig, SwizzleMode, SoftmaxGranularity, BarrierMode};
 pub use crate::semantic::transition::{Phase, PhaseTransition, SyncRequirement};
 pub use crate::semantic::mapping::{LaneMapping, MatrixLayout};
 pub use crate::semantic::fragment::{Fragment, FragmentType, FragmentOp, FragmentRole};

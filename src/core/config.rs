@@ -32,6 +32,36 @@ impl BarrierMode {
     }
 }
 
+/// Softmax update granularity for FlashAttention-2 kernels.
+/// Controls how often the online softmax statistics (max/sum) are updated.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+pub enum SoftmaxGranularity {
+    /// Update softmax stats after each K/V tile (most accurate, baseline)
+    #[default]
+    PerTile,
+    /// Update softmax stats after every 2 tiles (reduced sync overhead)
+    PerTwoTiles,
+    /// Update softmax stats for full Br rows at once (reserved for future optimization)
+    FullBr,
+}
+
+impl SoftmaxGranularity {
+    pub fn to_f32(self) -> f32 {
+        match self {
+            Self::PerTile => 0.0,
+            Self::PerTwoTiles => 1.0,
+            Self::FullBr => 2.0,
+        }
+    }
+    pub fn from_f32(val: f32) -> Self {
+        match val as u32 {
+            1 => Self::PerTwoTiles,
+            2 => Self::FullBr,
+            _ => Self::PerTile,
+        }
+    }
+}
+
 impl SwizzleMode {
     pub fn to_f32(self) -> f32 {
         match self {
@@ -172,6 +202,7 @@ pub struct PipelineConfig {
     pub prefetch_distance: u32,
     pub cp_async_distance: u32,
     pub barrier_mode: BarrierMode,
+    pub softmax_granularity: SoftmaxGranularity,
 }
 
 impl PipelineConfig {
@@ -193,6 +224,7 @@ impl PipelineConfig {
             prefetch_distance: 0,
             cp_async_distance: 0,
             barrier_mode: BarrierMode::None,
+            softmax_granularity: SoftmaxGranularity::PerTile,
         }
     }
 
@@ -220,6 +252,7 @@ impl PipelineConfig {
             self.prefetch_distance as f32,
             self.cp_async_distance as f32,
             self.barrier_mode.to_f32(),
+            self.softmax_granularity.to_f32(),
         ]
     }
 
@@ -241,6 +274,7 @@ impl PipelineConfig {
             prefetch_distance: vec.get(10).map(|&v| v as u32).unwrap_or(0),
             cp_async_distance: vec.get(11).map(|&v| v as u32).unwrap_or(0),
             barrier_mode: vec.get(12).map(|&v| BarrierMode::from_f32(v)).unwrap_or(BarrierMode::None),
+            softmax_granularity: vec.get(13).map(|&v| SoftmaxGranularity::from_f32(v)).unwrap_or(SoftmaxGranularity::PerTile),
         }
     }
 

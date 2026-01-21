@@ -190,6 +190,9 @@ impl Emitter for ROCMEmitter {
             UnifiedOpType::Conv2d { .. } => {
                 panic!("Conv2d Ops should be handled by UniversalEmitter.");
             }
+            UnifiedOpType::ConvTranspose2d { .. } => {
+                "// ROCm ConvTranspose2d not yet implemented - fallback to CPU\n".to_string()
+            }
         }
     }
 }

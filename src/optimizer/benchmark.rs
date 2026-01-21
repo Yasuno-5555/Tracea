@@ -365,6 +365,81 @@ impl Conv2dProblem {
     }
 }
 
+// ============================================================================
+// ConvTranspose2d Benchmark Infrastructure (Phase F)
+// ============================================================================
+
+/// ConvTranspose2d (Deconvolution) problem specification
+#[derive(Debug, Clone)]
+pub struct ConvTranspose2dProblem {
+    pub name: String,
+    pub batch: usize,
+    pub h_in: usize,
+    pub w_in: usize,
+    pub c_in: usize,
+    pub c_out: usize,
+    pub kernel_h: usize,
+    pub kernel_w: usize,
+    pub stride: usize,
+    pub pad: usize,
+    pub output_padding: usize,
+}
+
+impl ConvTranspose2dProblem {
+    pub fn new(name: &str, batch: usize, h: usize, w: usize, c_in: usize, c_out: usize,
+               r: usize, s: usize, stride: usize, pad: usize, output_padding: usize) -> Self {
+        Self {
+            name: name.to_string(),
+            batch, h_in: h, w_in: w, c_in, c_out,
+            kernel_h: r, kernel_w: s,
+            stride, pad, output_padding,
+        }
+    }
+
+    pub fn h_out(&self) -> usize {
+        (self.h_in - 1) * self.stride - 2 * self.pad + self.kernel_h + self.output_padding
+    }
+
+    pub fn w_out(&self) -> usize {
+        (self.w_in - 1) * self.stride - 2 * self.pad + self.kernel_w + self.output_padding
+    }
+
+    /// GEMM dimensions for implicit GEMM (transposed)
+    pub fn gemm_dims(&self) -> (usize, usize, usize) {
+        let m = self.batch * self.h_out() * self.w_out();
+        let n = self.c_out;
+        let k = self.c_in * self.kernel_h * self.kernel_w;
+        (m, n, k)
+    }
+
+    /// Total FLOPs for this transposed convolution
+    pub fn flops(&self) -> f64 {
+        let (m, n, k) = self.gemm_dims();
+        2.0 * m as f64 * n as f64 * k as f64
+    }
+
+    // ========== VAE Decoder Standard Layers ==========
+    
+    /// 4x4 conv_transpose in VAE decoder (upsampling by 2x)
+    pub fn vae_conv_transpose_4x4() -> Self {
+        Self::new("VAE-ConvT-4x4-B1", 1, 32, 32, 512, 256, 4, 4, 2, 1, 0)
+    }
+
+    /// 4x4 conv_transpose with batch=8 (training)
+    pub fn vae_conv_transpose_4x4_batch8() -> Self {
+        Self::new("VAE-ConvT-4x4-B8", 8, 32, 32, 512, 256, 4, 4, 2, 1, 0)
+    }
+
+    /// Full benchmark suite
+    pub fn vae_suite() -> Vec<Self> {
+        vec![
+            Self::vae_conv_transpose_4x4(),
+            Self::vae_conv_transpose_4x4_batch8(),
+        ]
+    }
+}
+
+
 // MagicNumberStrategy moved to src/core/config.rs
 
 /// Conv2d-specific configuration (extends PipelineConfig)
