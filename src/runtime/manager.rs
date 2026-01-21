@@ -27,6 +27,7 @@ pub enum DeviceBackend {
     Cuda,
     Rocm,
     Metal,
+    Cpu,
 }
 
 #[derive(Debug)]

@@ -1,4 +1,0 @@
-layer,m,n,k,tflops,latency_ms,cudnn_ref_tflops
-ResNet50-Conv3x3-64-B32-Warmup,100352,64,576,0.91,8.135,10.00
-ResNet50-Conv3x3-64-B32,100352,64,576,9.66,0.766,35.00
-ResNet50-Conv3x3-64-B64,200704,64,576,2.47,5.994,35.00

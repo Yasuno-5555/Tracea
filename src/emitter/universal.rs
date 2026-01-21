@@ -34,6 +34,9 @@ impl UniversalEmitter {
                 let emitter = MetalEmitter::detect();
                 emitter.generate_from_ir(&ir)
             }
+            DeviceBackend::Cpu => {
+                "/* CPU implementation is static */".to_string()
+            }
         }
     }
 }

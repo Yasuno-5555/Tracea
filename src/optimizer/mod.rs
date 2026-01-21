@@ -3,8 +3,12 @@ use std::sync::Arc;
 use cudarc::driver::CudaDevice;
 
 use crate::runtime::manager::DeviceBackend;
-pub use problem::{ProblemDescriptor, LayerType, HeroConfig, ArchHint, HeroScope, Layout, Fa2Variant};
+use crate::core::backend::{Device, CudaArch, CpuArch};
+pub use problem::{ProblemDescriptor, LayerType, HeroConfig, ArchHint, HeroScope, Layout, Fa2Variant, AsmParams, GpuAsmParams, Shape};
 use crate::optimizer::policy::{TuningPolicy, PolicyFactory, SamplingPlan, TuningContext, SearchSpace};
+
+pub mod heroscope;
+use heroscope::{HeroScopeV3, get_cpu_id};
 
 #[derive(Debug, Clone)]
 pub struct GPUInfo {
@@ -17,6 +21,7 @@ pub struct GPUInfo {
     pub max_blocks_per_sm: u32,
     pub shared_memory_per_sm: usize,
     pub has_specialized_units: bool,
+    pub compute_capability: Option<(u32, u32)>,
 }
 
 impl GPUInfo {
@@ -31,6 +36,7 @@ impl GPUInfo {
             max_blocks_per_sm: 16,
             shared_memory_per_sm: 100 * 1024,
             has_specialized_units: true,
+            compute_capability: Some((8, 6)),
         }
     }
     // ... (Other GPU implementations omitted for brevity but should typically be here) ...
@@ -45,6 +51,7 @@ impl GPUInfo {
             max_blocks_per_sm: 16,
             shared_memory_per_sm: 64 * 1024,
             has_specialized_units: true,
+            compute_capability: None,
         }
     }
 
@@ -59,6 +66,7 @@ impl GPUInfo {
             max_blocks_per_sm: 32,
             shared_memory_per_sm: 164 * 1024,
             has_specialized_units: true,
+            compute_capability: Some((8, 0)),
         }
     }
 }
@@ -101,10 +109,10 @@ impl GaussianProcess {
     pub fn new() -> Self {
         Self { 
              observations: Vec::new(),
-             length_scales: vec![1.0; 10], 
+             length_scales: vec![1.0; 15], 
              noise_sigma: 0.1,
              exploration_beta: 2.0,
-             num_features: 10,
+             num_features: 15,
         }
     }
 
@@ -274,16 +282,40 @@ pub struct AutoTuner {
     pub gpu: GPUInfo,
     pub gp: GaussianProcess,
     pub best_config: Option<PipelineConfig>,
-    pub runtime: Option<Arc<crate::runtime::RuntimeManager>>, // Doctor access via Runtime
+    pub device: Device,
+    pub runtime: Option<Arc<crate::runtime::RuntimeManager>>, 
+    pub heroscope: HeroScopeV3,
+    pub hardware_id: String,
 }
 
 impl AutoTuner {
     pub fn new(gpu: GPUInfo) -> Self {
+        let device = match gpu.backend {
+            DeviceBackend::Cuda => Device::Cuda(CudaArch::Ampere), // Assume Ampere for auto-detection if unknown
+            DeviceBackend::Rocm => Device::Cuda(CudaArch::Unknown), // Temporary
+            _ => Device::Cpu(CpuArch::Avx2),
+        };
+
+        let hardware_id = match device {
+            Device::Cpu(_) => get_cpu_id(),
+            Device::Cuda(_) => {
+                if let Some((major, minor)) = gpu.compute_capability {
+                    format!("sm_{}{}", major, minor)
+                } else {
+                    gpu.name.clone()
+                }
+            }
+            _ => gpu.name.clone(),
+        };
+
         Self {
             gpu,
             gp: GaussianProcess::new(),
             best_config: None,
+            device,
             runtime: None,
+            heroscope: HeroScopeV3::new(),
+            hardware_id,
         }
     }
     
@@ -294,11 +326,11 @@ impl AutoTuner {
     
     // --- Legacy Adapters ---
     
-    // OLD: optimize_legacy (replaces original optimize)
     pub fn optimize<B: MicroBenchmark>(&mut self, benchmark: &B, iterations: usize, goal: OptimizationGoal, epilogue: Vec<crate::core::op::EpilogueOp>) -> PipelineConfig {
         // Adapt to ProblemDescriptor
-        let problem = ProblemDescriptor::new_gemm(benchmark.m() as usize, benchmark.n() as usize, benchmark.k() as usize);
-        eprintln!("[Adapter] optimize -> optimize_v2 for GEMM {}x{}x{}", problem.m, problem.n, problem.k);
+        let problem = ProblemDescriptor::new_gemm(benchmark.m() as usize, benchmark.n() as usize, benchmark.k() as usize)
+            .with_device(self.device);
+        eprintln!("[Adapter] optimize -> optimize_v2 for GEMM {}x{}x{}", problem.shape.m, problem.shape.n, problem.shape.k);
         let config = self.optimize_v2(benchmark, &problem, iterations, goal);
         // Epilogue injection currently manual in legacy path, v2 should handle it better or we inject here
         let mut final_config = config;
@@ -311,7 +343,8 @@ impl AutoTuner {
         let p = benchmark.problem();
         let layout = Layout::NHWC; // Assume NHWC
         
-        let problem = ProblemDescriptor::new_conv2d(p.batch, p.h_in, p.w_in, p.c_in, p.c_out, layout);
+        let problem = ProblemDescriptor::new_conv2d(p.batch, p.h_in, p.w_in, p.c_in, p.c_out, layout)
+            .with_device(self.device);
         eprintln!("[Adapter] optimize_conv -> optimize_v2 for Conv2d {}", problem.name);
         
         let magic_strategy = MagicNumberStrategy::select_for(p.h_out() * p.w_out());
@@ -370,9 +403,9 @@ impl AutoTuner {
         let key = CacheKey {
             backend: self.gpu.backend,
             gpu: self.gpu.name.clone(),
-            m: problem.m as u32,
-            n: problem.n as u32,
-            k: problem.k as u32,
+            m: problem.shape.m as u32,
+            n: problem.shape.n as u32,
+            k: problem.shape.k as u32,
             dtype: "f16".to_string(), 
             epilogue: vec![], // To be refined
             env_version: "v2".to_string(),
@@ -411,13 +444,33 @@ impl AutoTuner {
             eprintln!("[Tracea] 🦸 Hero Result [hero=true]: {:.2} TFLOPS (Score: {:.2})", res.tflops, score);
             
             self.gp.observe(Observation { 
-                m: problem.m as u32, n: problem.n as u32, k: problem.k as u32, 
+                m: problem.shape.m as u32, n: problem.shape.n as u32, k: problem.shape.k as u32, 
                 config: hero.config.clone(), score 
             }, &self.gpu);
             
             if score > current_best_score {
                 current_best_score = score;
                 best_config = Some(hero.config.clone());
+            }
+        }
+        
+        // 1.1 Structural Hero Injection (v3)
+        if let Some(v3_hero) = self.heroscope.get_hero(&self.hardware_id, problem.layer_type) {
+            eprintln!("[Tracea] 🏛️ Injecting Structural Hero (v3) for {}", self.hardware_id);
+            if benchmark.validate_config(&v3_hero) {
+                let res = benchmark.measure(&v3_hero);
+                let score = self.calculate_score(&res, goal);
+                eprintln!("[Tracea] 🏛️ Structural Hero Result: {:.2} TFLOPS", res.tflops);
+                
+                self.gp.observe(Observation { 
+                    m: problem.shape.m as u32, n: problem.shape.n as u32, k: problem.shape.k as u32, 
+                    config: v3_hero.clone(), score 
+                }, &self.gpu);
+                
+                if score > current_best_score {
+                    current_best_score = score;
+                    best_config = Some(v3_hero);
+                }
             }
         }
         
@@ -460,7 +513,7 @@ impl AutoTuner {
                 candidate.m_tile, candidate.n_tile, candidate.k_tile, res.tflops, score);
 
             self.gp.observe(Observation { 
-                m: problem.m as u32, n: problem.n as u32, k: problem.k as u32, 
+                m: problem.shape.m as u32, n: problem.shape.n as u32, k: problem.shape.k as u32, 
                 config: candidate.clone(), score 
             }, &self.gpu);
 
@@ -491,27 +544,48 @@ impl AutoTuner {
         let mut best_acq = -1e9;
         let mut best_cfg = PipelineConfig::new(2, 64, 64, 32);
         
-        // Exhaustive search over specified space (in real impl, use random sampling if space is huge)
+        // Exhaustive search over specified space
         for &mt in &space.tile_m {
             for &nt in &space.tile_n {
                 for &kt in &space.tile_k {
                     for &w in &space.warps {
-                         let mut cfg = PipelineConfig::new(2, mt, nt, kt).with_warps(w);
-                         cfg.instruction = if space.use_tensor_core { crate::core::config::SpecializedInstruction::CudaMMA } else { crate::core::config::SpecializedInstruction::None };
-                         cfg.swizzle_mode = if space.enable_swizzle { crate::core::config::SwizzleMode::Xor4 } else { crate::core::config::SwizzleMode::None };
-                         
-                         if !policy.is_feasible(&cfg, &self.gpu) { continue; }
-                         
-                         let score = match acq {
-                             AcquisitionFunction::UCB => self.gp.ucb(problem.m as u32, problem.n as u32, problem.k as u32, &cfg, &self.gpu),
-                             AcquisitionFunction::EI => self.gp.expected_improvement(problem.m as u32, problem.n as u32, problem.k as u32, &cfg, current_best, &self.gpu),
-                             AcquisitionFunction::Thompson => self.gp.thompson_sample(problem.m as u32, problem.n as u32, problem.k as u32, &cfg, &self.gpu),
-                         };
-                         
-                         if score > best_acq {
-                             best_acq = score;
-                             best_cfg = cfg;
-                         }
+                        for &stages in &space.stages {
+                            for &swizzle in &space.swizzles {
+                                for &barrier in &space.barrier_modes {
+                                    for &unroll in &space.k_unroll {
+                                        for &pf in &space.prefetch_distance {
+                                            for &mm in &space.micro_m {
+                                                let mut cfg = PipelineConfig::new(stages, mt, nt, kt).with_warps(w);
+                                                cfg.instruction = if space.use_tensor_core { crate::core::config::SpecializedInstruction::CudaMMA } else { crate::core::config::SpecializedInstruction::None };
+                                                cfg.swizzle_mode = swizzle;
+                                                cfg.barrier_mode = barrier;
+                                                cfg.k_unroll = unroll;
+                                                cfg.prefetch_distance = pf;
+                                                cfg.micro_m = mm;
+                                                
+                                                // Handle cp_async_distance derived from stages if not explicitly set
+                                                if stages > 2 {
+                                                    cfg.cp_async_distance = stages - 1;
+                                                }
+
+                                                if !policy.is_feasible(&cfg, &self.gpu) { continue; }
+                                                
+                                                let score = match acq {
+                                                    AcquisitionFunction::UCB => self.gp.ucb(problem.shape.m as u32, problem.shape.n as u32, problem.shape.k as u32, &cfg, &self.gpu),
+                                                    AcquisitionFunction::EI => self.gp.expected_improvement(problem.shape.m as u32, problem.shape.n as u32, problem.shape.k as u32, &cfg, current_best, &self.gpu),
+                                                    AcquisitionFunction::Thompson => self.gp.thompson_sample(problem.shape.m as u32, problem.shape.n as u32, problem.shape.k as u32, &cfg, &self.gpu),
+                                                };
+                                                
+                                                if score > best_acq {
+                                                    best_acq = score;
+                                                    best_cfg = cfg;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }

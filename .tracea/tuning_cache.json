@@ -1,4 +1,22 @@
 {
+  "Cuda:NVIDIA GeForce RTX 3070:1024:1024:1024:f16::v2:Ampere:GEMM_V3_1_Verify": {
+    "num_stages": 3,
+    "m_tile": 128,
+    "n_tile": 128,
+    "k_tile": 32,
+    "instruction": "None",
+    "swizzle_mode": "Xor4",
+    "quantization": "None",
+    "layout_policy": "RowMajor",
+    "epilogue": [],
+    "force_num_warps": null,
+    "micro_m": 1,
+    "micro_n": 1,
+    "k_unroll": 1,
+    "prefetch_distance": 0,
+    "cp_async_distance": 2,
+    "barrier_mode": "None"
+  },
   "Cuda:NVIDIA GeForce RTX 3070:2048:2048:2048:f16::v2:Ampere:GEMM_M2048_N2048_K2048": {
     "num_stages": 2,
     "m_tile": 64,
@@ -9,54 +27,30 @@
     "quantization": "None",
     "layout_policy": "RowMajor",
     "epilogue": [],
-    "force_num_warps": 4
+    "force_num_warps": 4,
+    "micro_m": 32,
+    "micro_n": 1,
+    "k_unroll": 1,
+    "prefetch_distance": 0,
+    "cp_async_distance": 0,
+    "barrier_mode": "None"
   },
-  "Cuda:NVIDIA GeForce RTX 3070:100352:64:64:f16::v2:Ampere:Conv2d_B32_NHWC": {
-    "num_stages": 2,
-    "m_tile": 64,
+  "Cpu:Intel/AMD AVX2 Processor:1024:1024:1024:f16::v2:Unknown:GEMM_M1024_N1024_K1024": {
+    "num_stages": 1,
+    "m_tile": 128,
     "n_tile": 128,
-    "k_tile": 16,
-    "instruction": "CudaMMA",
-    "swizzle_mode": "Xor4",
+    "k_tile": 256,
+    "instruction": "Avx2",
+    "swizzle_mode": "None",
     "quantization": "None",
     "layout_policy": "RowMajor",
     "epilogue": [],
-    "force_num_warps": 5
-  },
-  "Cuda:NVIDIA GeForce RTX 3070:1024:64:64:f16::v2:Ampere:FA2_B1_S1024_D64_Causal": {
-    "num_stages": 2,
-    "m_tile": 128,
-    "n_tile": 64,
-    "k_tile": 32,
-    "instruction": "CudaMMA",
-    "swizzle_mode": "Xor4",
-    "quantization": "None",
-    "layout_policy": "RowMajor",
-    "epilogue": [],
-    "force_num_warps": 4
-  },
-  "Cuda:NVIDIA GeForce RTX 3070:2048:64:64:f16::v2:Ampere:FA2_B1_S2048_D64_Causal": {
-    "num_stages": 2,
-    "m_tile": 128,
-    "n_tile": 64,
-    "k_tile": 32,
-    "instruction": "CudaMMA",
-    "swizzle_mode": "Xor4",
-    "quantization": "None",
-    "layout_policy": "RowMajor",
-    "epilogue": [],
-    "force_num_warps": 4
-  },
-  "Cuda:NVIDIA GeForce RTX 3070:200704:64:64:f16::v2:Ampere:Conv2d_B64_NHWC": {
-    "num_stages": 2,
-    "m_tile": 64,
-    "n_tile": 64,
-    "k_tile": 16,
-    "instruction": "CudaMMA",
-    "swizzle_mode": "Xor4",
-    "quantization": "None",
-    "layout_policy": "RowMajor",
-    "epilogue": [],
-    "force_num_warps": 5
+    "force_num_warps": 8,
+    "micro_m": 6,
+    "micro_n": 16,
+    "k_unroll": 1,
+    "prefetch_distance": 0,
+    "cp_async_distance": 0,
+    "barrier_mode": "None"
   }
 }

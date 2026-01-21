@@ -5,44 +5,54 @@ Tracea is built on a strictly layered architecture that separates "Meaning" (Sem
 ## Layer Overview
 
 ### L1: User Interface
-- **Python**: PyO3 bindings + TorchDynamo backend. Captures FX Graphs and translates them to L2.
-- **C++**: RAII header (`tracea.hpp`) wrapping a stable C-FFI.
-- **Core API**: Rust entry points for manual kernel dispatch and hardware diagnostics.
+- **Python**: PyO3 bindings via `tracea-python` crate. Zero-copy PyTorch integration.
+- **C++**: RAII header (`tracea.hpp`) wrapping stable C-FFI from `tracea-ffi` crate.
+- **Rust**: Native entry points for kernel dispatch and hardware diagnostics.
 
 ### L2: Core IR
-- Defines the logical operation: `GemmOp(m, n, k)`, `FusedGemmOp`, `SoftmaxOp`.
-- Represents the goal without specifying the implementation details.
+- Defines logical operations: `GemmOp`, `Conv2dOp`, `AttentionOp`.
+- **Shape-based Problem Descriptors** (v3.1): Unified dimension handling via `Shape` struct.
 
 ### L3: Tracea Doctor (The Brain)
-- **Capability Profiler**: Queries hardware specifics (Shared Mem, Warp size, SIMD width, Tensor Core availability).
-- **Variant Registry**: Maintains a multi-backend catalog of kernel implementations.
-- **Decision Engine**: Performs requirement-matching and scoring to select the optimal variant for the current environment.
+- **Capability Profiler**: Queries hardware specifics (Shared Mem, Warp size, Tensor Core availability).
+- **Variant Registry**: Multi-backend catalog of kernel implementations.
+- **Decision Engine**: Requirement-matching and scoring for optimal variant selection.
 
 ### L4: Semantic IR (The Heart)
-- **Phase Transition**: Models $Z/NZ$ cyclicity in asynchronous pipes.
-- **Lane Mapping**: Matrix Core / Tensor Core / XMX register layout abstractions.
-- **Swizzle Mode**: Algebraic bank conflict resolution (e.g., XOR swizzle).
-
-### L4: Optimized IR
-- A specific configuration of tiles, stages, and swizzles that has been validated for a specific hardware target.
+- **Phase Transition**: Models Z/NZ cyclicity in asynchronous pipes.
+- **Lane Mapping**: Matrix Core / Tensor Core register layout abstractions.
+- **Swizzle Mode**: Algebraic bank conflict resolution (XOR swizzle).
+- **BarrierMode** (v3.1): `mbarrier` integration for producer-consumer patterns.
 
 ### L5: Universal Emitters
-- **CUDA Emitter**: PTX-level pipelining, Register Double Buffering.
-- **HIP Emitter**: AMD GCN/CDNA intrinsics ($v\_mfma$).
-- **Metal Emitter**: Apple Silicon `simdgroup` support.
-- **CPU Emitter**: Host-side SIMD (AVX512, NEON) via specialized intrinsics.
+- **CUDA**: PTX pipelining, Register Double Buffering, Tensor Core MMA.
+- **HIP**: AMD GCN/CDNA intrinsics (v_mfma).
+- **Metal**: Apple Silicon simdgroup support.
+- **CPU**: SIMD (AVX512, AVX2, NEON) with packed data layouts.
 
 ### L6: Optimizer
-- **Bayesian Auto-tuner**: Uses Gaussian Processes to explore the L4 space.
-- **Micro-benchmarks**: Hardware-aware data collection.
+- **Bayesian Auto-tuner**: Gaussian Processes + UCB exploration.
+- **HeroScope v3**: Architecture-aware pre-computed hero configurations.
+- **Persistent Cache**: Hardware-fingerprinted tuning results.
 
 ---
 
-## Data Flow: From Python to Kernel
+## v3.1 Module Additions
 
-1.  **Capture**: `torch.compile` or manual API call defines a logical intent.
-2.  **Diagnostics**: **Tracea Doctor** profiles the environment and available backends.
-3.  **Planning**: The Doctor selects the most performant **Kernel Variant** (e.g., CUDA Tensor Core vs. CPU SIMD).
-4.  **Optimization**: `AutoTuner` (if active) searches for the best `PipelineConfig` for the chosen variant.
-5.  **Emission**: The corresponding `Emitter` generates the kernel source or selects a precompiled binary.
-6.  **Launch**: The `RuntimeManager` executes the kernel with zero-copy buffer management.
+| Module | Purpose |
+|--------|---------|
+| `tracea-python/` | PyO3 extension with zero-copy TensorView |
+| `tracea-ffi/` | C ABI with panic containment |
+| `src/optimizer/problem.rs` | Shape-based ProblemDescriptor |
+| `src/core/config.rs` | BarrierMode enum |
+
+---
+
+## Data Flow: From User to Kernel
+
+1. **Capture**: Python call or C++ invocation defines logical intent.
+2. **Diagnostics**: Doctor profiles environment and backends.
+3. **Planning**: Selects optimal Kernel Variant.
+4. **Optimization**: AutoTuner searches for best PipelineConfig.
+5. **Emission**: Emitter generates kernel (PTX/HIP/MSL/SIMD).
+6. **Launch**: RuntimeManager executes with zero-copy buffers.

@@ -1,19 +1,34 @@
+# Build artifacts
 /target
+tracea-ffi/target/
+tracea-python/target/
+
+# Python
 __pycache__/
-*.o
-*.so
 *.pyd
+*.so
 .ipynb_checkpoints/
+
+# Generated files
+*.o
+*.cubin
+*.ptx
+*.dll
+
+# Logs and debug
 /logs/
 /debug/
 /build_artifacts/
 *.log
-*.txt
+jit_trace.log
 
-# Tracea Cache and Artifacts
+# Tracea Cache
 .tracea/
 cache/
-*.cubin
-*.ptx
-compile_log.json
-bench_err*.json
+
+# Error/temp files
+*.json
+errors.txt
+check_output.txt
+failed_source.cu
+resnet_bench_results.csv

@@ -50,18 +50,30 @@ impl TunableKernel for GemmAdapter {
     fn search_space(&self) -> SearchSpace<Self::Config> {
         let mut candidates = Vec::new();
         
-        let block_sizes = [32, 64, 128, 256];
+        // Rule C: Alignment Priority
+        // Prioritize block sizes that divide the problem dimensions evenly.
+        let block_candidates = [32, 64, 128, 256];
         let threads = [1, 2, 4, 8, 16]; 
         
-        for &bs in &block_sizes {
+        for &bs in &block_candidates {
+            // Check alignment (Rule C)
+            let is_aligned = (self.problem.m % bs == 0) && (self.problem.n % bs == 0) && (self.problem.k % bs == 0);
+            
             for &t in &threads {
-                candidates.push(CpuGemmConfig {
+                let mut cfg = CpuGemmConfig {
                     m_block: bs,
                     n_block: bs,
                     k_block: bs,
                     num_threads: t,
-                    vector_width: 8, // Fixed for basic AVX2 assumption
-                });
+                    vector_width: 8,
+                };
+                
+                if is_aligned {
+                    // Place at front or prioritize in real tuner
+                    candidates.insert(0, cfg);
+                } else {
+                    candidates.push(cfg);
+                }
             }
         }
 

@@ -1,6 +1,7 @@
-use crate::PipelineConfig;
+﻿use crate::PipelineConfig;
 use crate::optimizer::GPUInfo;
 use crate::optimizer::problem::{ProblemDescriptor, LayerType, HeroConfig, ArchHint, Fa2Variant};
+use crate::core::backend::Device;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SamplingPlan {
@@ -18,6 +19,12 @@ pub struct SearchSpace {
     pub warps: Vec<u32>,
     pub use_tensor_core: bool,
     pub enable_swizzle: bool,
+    pub k_unroll: Vec<u32>,
+    pub prefetch_distance: Vec<u32>,
+    pub micro_m: Vec<u32>,
+    pub stages: Vec<u32>,
+    pub swizzles: Vec<crate::core::config::SwizzleMode>,
+    pub barrier_modes: Vec<crate::core::config::BarrierMode>,
 }
 
 impl SearchSpace {
@@ -29,6 +36,12 @@ impl SearchSpace {
             warps: vec![],
             use_tensor_core: true,
             enable_swizzle: false,
+            k_unroll: vec![],
+            prefetch_distance: vec![],
+            micro_m: vec![],
+            stages: vec![2], // Default
+            swizzles: vec![crate::core::config::SwizzleMode::None],
+            barrier_modes: vec![crate::core::config::BarrierMode::None],
         }
     }
 
@@ -38,6 +51,12 @@ impl SearchSpace {
     pub fn warps(mut self, vals: &[u32]) -> Self { self.warps = vals.to_vec(); self }
     pub fn use_tensor_core(mut self, val: bool) -> Self { self.use_tensor_core = val; self }
     pub fn enable_swizzle(mut self, val: bool) -> Self { self.enable_swizzle = val; self }
+    pub fn k_unroll(mut self, vals: &[u32]) -> Self { self.k_unroll = vals.to_vec(); self }
+    pub fn prefetch_distance(mut self, vals: &[u32]) -> Self { self.prefetch_distance = vals.to_vec(); self }
+    pub fn micro_m(mut self, vals: &[u32]) -> Self { self.micro_m = vals.to_vec(); self }
+    pub fn stages(mut self, vals: &[u32]) -> Self { self.stages = vals.to_vec(); self }
+    pub fn swizzles(mut self, vals: &[crate::core::config::SwizzleMode]) -> Self { self.swizzles = vals.to_vec(); self }
+    pub fn barrier_modes(mut self, vals: &[crate::core::config::BarrierMode]) -> Self { self.barrier_modes = vals.to_vec(); self }
 }
 
 #[derive(Debug, Clone)]
@@ -82,12 +101,14 @@ impl TuningPolicy for Conv2dPolicy {
             .tile_k(&[16, 32])
             .warps(&[5, 9, 17])
             .use_tensor_core(true)
-            .enable_swizzle(true);
+            .stages(&[2, 3])
+            .swizzles(&[crate::core::config::SwizzleMode::None, crate::core::config::SwizzleMode::Xor4])
+            .barrier_modes(&[crate::core::config::BarrierMode::None, crate::core::config::BarrierMode::ProducerConsumer]);
 
         // Batch dependent M-tile selection
         // M in Conv2d usually maps to Batch * H * W or similar
         // For small batch, we might want smaller tiles if M is small
-        if self.problem.batch <= 32 {
+        if self.problem.shape.batch <= 32 {
             space = space.tile_m(&[64]);
         } else {
             space = space.tile_m(&[64, 128]);
@@ -106,12 +127,12 @@ impl TuningPolicy for Conv2dPolicy {
             LayerType::Conv2d(l) => l,
             _ => Layout::NHWC,
         };
-        let is_small_batch = self.problem.batch <= 32;
+        let is_small_batch = self.problem.shape.batch <= 32;
 
         match layout {
             Layout::NHWC => {
                 if is_small_batch {
-                    // 🏆 The "God Config" (29.33 TFLOPS Winner)
+                    // 醇 The "God Config" (29.33 TFLOPS Winner)
                     let mut cfg = PipelineConfig::new(2, 64, 64, 32).with_warps(5);
                     cfg.instruction = SpecializedInstruction::CudaMMA;
                     cfg.swizzle_mode = SwizzleMode::Xor4;
@@ -122,7 +143,7 @@ impl TuningPolicy for Conv2dPolicy {
                         scope: HeroScope::Exact,
                     });
                 } else {
-                    // 🏗️ B=64+ : "M=128 Standard" (25 TFLOPS)
+                    // 女・・B=64+ : "M=128 Standard" (25 TFLOPS)
                     let mut cfg = PipelineConfig::new(2, 128, 64, 32).with_warps(9);
                     cfg.instruction = SpecializedInstruction::CudaMMA;
                     cfg.swizzle_mode = SwizzleMode::Xor4;
@@ -135,7 +156,7 @@ impl TuningPolicy for Conv2dPolicy {
                 }
             }
             Layout::NCHW => {
-                // 🐢 NCHW: Safe Driving
+                // 世 NCHW: Safe Driving
                 let mut cfg = PipelineConfig::new(2, 64, 64, 16).with_warps(5);
                 cfg.instruction = SpecializedInstruction::CudaMMA;
                 cfg.swizzle_mode = SwizzleMode::Xor4;
@@ -179,7 +200,7 @@ impl TuningPolicy for Conv2dPolicy {
     }
 
     fn sampling_plan(&self, ctx: &TuningContext) -> SamplingPlan {
-         if self.problem.batch <= 32 {
+         if self.problem.shape.batch <= 32 {
             SamplingPlan::Scout
         } else {
             SamplingPlan::Sniper
@@ -206,16 +227,22 @@ impl TuningPolicy for GemmPolicy {
             .tile_k(&[32])
             .warps(&[4, 8, 16])
             .use_tensor_core(true)
-            .enable_swizzle(false) // GEMM: Off by default
+            .enable_swizzle(false)
+            .k_unroll(&[1, 2]) // GPU k-unrolling via pipeline depth generally
+            .prefetch_distance(&[0])
+            .micro_m(&[16, 32])
+            .stages(&[2, 3])
+            .swizzles(&[crate::core::config::SwizzleMode::None, crate::core::config::SwizzleMode::Xor4])
+            .barrier_modes(&[crate::core::config::BarrierMode::None, crate::core::config::BarrierMode::ProducerConsumer])
     }
 
     fn hero_configs(&self) -> Vec<HeroConfig> {
         use crate::core::config::{SpecializedInstruction};
         let mut configs = vec![];
-        let output_size = self._problem.m * self._problem.n;
+        let output_size = self._problem.shape.m * self._problem.shape.n;
 
         if output_size < 1024 * 1024 {
-            // 🐣 Small GEMM: Occupancy Focus
+            // 瀬 Small GEMM: Occupancy Focus
             let mut cfg = PipelineConfig::new(2, 64, 64, 32).with_warps(4);
             cfg.instruction = SpecializedInstruction::CudaMMA;
             configs.push(HeroConfig {
@@ -225,7 +252,7 @@ impl TuningPolicy for GemmPolicy {
                 scope: HeroScope::Layer,
             });
         } else {
-            // 🦖 Large GEMM: Throughput Focus (The 36 TFLOPS Legend)
+            // ｦ・Large GEMM: Throughput Focus (The 36 TFLOPS Legend)
             let mut cfg_legend = PipelineConfig::new(3, 128, 128, 32).with_warps(8);
             cfg_legend.instruction = SpecializedInstruction::CudaMMA;
             configs.push(HeroConfig {
@@ -259,7 +286,7 @@ impl TuningPolicy for GemmPolicy {
     }
 
     fn sampling_plan(&self, ctx: &TuningContext) -> SamplingPlan {
-        let size = self._problem.m * self._problem.n * self._problem.k;
+        let size = self._problem.shape.m * self._problem.shape.n * self._problem.shape.k;
         if size < 1_000_000 {
             SamplingPlan::Lightweight
         } else {
@@ -306,15 +333,17 @@ impl TuningPolicy for Fa2Policy {
             .tile_k(&[32])
             .warps(&[4, 8])
             .use_tensor_core(true)
-            .enable_swizzle(true)
+            .stages(&[2])
+            .swizzles(&[crate::core::config::SwizzleMode::None, crate::core::config::SwizzleMode::Xor4])
+            .barrier_modes(&[crate::core::config::BarrierMode::None, crate::core::config::BarrierMode::ProducerConsumer])
     }
 
     fn hero_configs(&self) -> Vec<HeroConfig> {
         use crate::core::config::{SpecializedInstruction, SwizzleMode};
-        let s_len = self._problem.n; // KV Seq Len
+        let s_len = self._problem.shape.n; // KV Seq Len
         let mut heroes = Vec::new();
 
-        // 🏆 Hero 1: The "Baseline Champion" (7.63 TFLOPS Proven)
+        // 醇 Hero 1: The "Baseline Champion" (7.63 TFLOPS Proven)
         let mut cfg1 = PipelineConfig::new(2, 128, 64, 32).with_warps(9);
         cfg1.instruction = SpecializedInstruction::CudaMMA;
         cfg1.swizzle_mode = SwizzleMode::Xor4;
@@ -325,7 +354,7 @@ impl TuningPolicy for Fa2Policy {
             scope: HeroScope::Exact,
         });
 
-        // 🛡️ Hero 2: The "Occupancy Saver" (For Large S)
+        // 孱・・Hero 2: The "Occupancy Saver" (For Large S)
         if s_len >= 2048 {
             let mut cfg2 = PipelineConfig::new(2, 64, 64, 32).with_warps(5);
             cfg2.instruction = SpecializedInstruction::CudaMMA;
@@ -355,7 +384,7 @@ impl TuningPolicy for Fa2Policy {
     }
 
     fn sampling_plan(&self, ctx: &TuningContext) -> SamplingPlan {
-         let size = self._problem.m * self._problem.n * self._problem.k;
+         let size = self._problem.shape.m * self._problem.shape.n * self._problem.shape.k;
          if size < 2_000_000 {
             SamplingPlan::Lightweight
         } else {
@@ -364,15 +393,71 @@ impl TuningPolicy for Fa2Policy {
     }
 }
 
+// --- CPU GEMM Policy ---
+use crate::core::backend::CpuArch;
+pub struct CpuGemmPolicy {
+    problem: ProblemDescriptor,
+    arch: CpuArch,
+}
+
+impl CpuGemmPolicy {
+    pub fn new(problem: &ProblemDescriptor, arch: CpuArch) -> Self {
+        Self {
+            problem: problem.clone(),
+            arch,
+        }
+    }
+}
+
+impl TuningPolicy for CpuGemmPolicy {
+    fn search_space(&self) -> SearchSpace {
+        SearchSpace::new()
+            .tile_m(&[64, 128])
+            .tile_n(&[64, 128])
+            .tile_k(&[128, 256])
+            .warps(&[1]) // Single thread per block (rayon handles multi-threading)
+            .k_unroll(&[2, 4])
+            .prefetch_distance(&[0, 64, 128])
+            .micro_m(&[4, 6])
+    }
+
+    fn hero_configs(&self) -> Vec<HeroConfig> {
+        use crate::core::config::SpecializedInstruction;
+        let mut configs = vec![];
+        let mut cfg = PipelineConfig::new(1, 128, 128, 256)
+            .with_warps(8) 
+            .with_micro_tile(6, 16); 
+            
+        cfg.instruction = match self.arch {
+            CpuArch::Avx2 => SpecializedInstruction::Avx2,
+            CpuArch::Avx512 => SpecializedInstruction::Avx512,
+            CpuArch::Neon => SpecializedInstruction::Neon,
+            CpuArch::Scalar => SpecializedInstruction::None,
+        };
+
+        configs.push(HeroConfig {
+            config: cfg,
+            note: "Standard CPU GEMM Hero (Mc=128, Nc=128, Kc=256, Mr=6, Nr=16)",
+            arch_hint: ArchHint::Any,
+            scope: HeroScope::Layer,
+        });
+        configs
+    }
+
+    fn is_feasible(&self, _cfg: &PipelineConfig, _dev: &GPUInfo) -> bool { true }
+    fn sampling_plan(&self, _ctx: &TuningContext) -> SamplingPlan { SamplingPlan::Balanced }
+}
+
 
 pub struct PolicyFactory;
 
 impl PolicyFactory {
     pub fn derive(problem: &ProblemDescriptor) -> Box<dyn TuningPolicy> {
-        match problem.layer_type {
-            LayerType::Gemm => Box::new(GemmPolicy::new(problem)),
-            LayerType::Conv2d(_) => Box::new(Conv2dPolicy::new(problem)),
-            LayerType::FlashAttention(v) => Box::new(Fa2Policy::new(problem, v)),
+        match (problem.device, problem.layer_type) {
+            (Device::Cpu(arch), LayerType::Gemm) => Box::new(CpuGemmPolicy::new(problem, arch)),
+            (_, LayerType::Gemm) => Box::new(GemmPolicy::new(problem)),
+            (_, LayerType::Conv2d(_)) => Box::new(Conv2dPolicy::new(problem)),
+            (_, LayerType::FlashAttention(v)) => Box::new(Fa2Policy::new(problem, v)),
         }
     }
 }

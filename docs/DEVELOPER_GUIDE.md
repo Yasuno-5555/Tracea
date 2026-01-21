@@ -1,51 +1,93 @@
-# Tracea Developer Guide: Extending the Framework 🛠️
+# Tracea Developer Guide
 
-Tracea is designed to be easily extensible. This guide covers how to add new fusion operations and hardware backends.
+## Quick Start
 
-## 1. Adding a New Epilogue Fusion (e.g., Sigmoid)
+### Prerequisites
+- Rust 1.70+
+- CUDA Toolkit 12.x (for GPU)
+- Python 3.8+ (for Python bindings)
+- maturin (for Python build)
 
-### Step A: Update Semantic IR
-In `src/semantic/fusion.rs`, add the new variant:
-```rust
-pub enum EpilogueOp {
-    // ...
-    Sigmoid,
-}
+### Build Commands
+
+```bash
+# Core library
+cargo build --lib --release
+
+# Python extension
+cd tracea-python && maturin develop
+
+# C++ FFI
+cd tracea-ffi && cargo build --release
+
+# Run tests
+cargo test
+
+# Run benchmarks
+cargo run --release --example gemm_bench
 ```
 
-### Step B: Update Emitters
-In `src/emitter/traits.rs`, the `emit_epilogue` method will now receive the new op. Implement it in the vendor emitters (e.g., `cuda.rs`):
-```rust
-EpilogueOp::Sigmoid => {
-    code.push_str(&format!("  {acc} = 1.0f / (1.0f + expf(-{acc}));\n", acc = acc_name));
-}
+---
+
+## Project Structure
+
+```
+Tracea/
+├── src/
+│   ├── core/          # IR, config, graph
+│   ├── kernels/       # CUDA/ROCm/Metal/CPU implementations
+│   ├── emitter/       # Code generators
+│   ├── optimizer/     # Bayesian tuner, policies
+│   ├── doctor/        # Multi-backend diagnostics
+│   └── interface/     # Python/C bindings
+├── tracea-python/     # PyO3 extension crate
+├── tracea-ffi/        # C ABI crate
+├── examples/          # Demo code
+├── docs/              # Documentation
+└── include/           # C++ headers
 ```
 
-### Step C: Update Python Bridge
-In `src/interface/python.rs`, add a static method to `PyEpilogueOp` to expose it to TorchDynamo.
+---
+
+## Key APIs
+
+### Rust
+```rust
+use tracea::{AutoTuner, GPUInfo, ProblemDescriptor};
+
+let gpu = GPUInfo::rtx3070();
+let tuner = AutoTuner::new(gpu);
+let config = tuner.optimize(&problem);
+```
+
+### Python
+```python
+import tracea
+ctx = tracea.Context()
+graph = tracea.Graph()
+graph.add_gemm(m=2048, n=2048, k=2048)
+```
+
+### C++
+```cpp
+#include "tracea.hpp"
+tracea::conv2d(x, w, nullptr, out, params);
+```
 
 ---
 
-## 2. Adding a New Backend (e.g., Metal or CPU)
+## Adding a New Kernel
 
-1.  **Trait Implementation**: Create a new file in `src/emitter/` and implement the `Emitter` trait for the target language (e.g., MSL for Metal).
-2.  **Capability Detection**: Add detection logic to `src/doctor/profiler.rs` using native APIs (e.g., `metal-rs`).
-3.  **Variant Registration**: Define a new `KernelVariant` in `src/doctor/registry.rs`. Specify constraints like `BackendIs(BackendKind::Metal)` and `WarpOrWavefrontIs(32)`.
-4.  **Runtime Support**: Update `src/runtime/` to handle device allocation and kernel launching for the new backend.
-
----
-
-## 3. Registering a New Kernel Variant
-
-To add a pre-optimized variant for an existing kernel:
-1. Open `src/doctor/registry.rs`.
-2. Add a new `KernelVariant` entry to the `REGISTRY` static.
-3. Define its architecture requirements (e.g., `SmAtLeast(80)` for CUDA or `SimdWidthAtLeast(256)` for CPU).
-4. Assign a `priority` to influence the Doctor's selection engine.
+1. Define operation in `src/core/op.rs`
+2. Implement emitter in `src/emitter/`
+3. Add policy in `src/optimizer/policy.rs`
+4. Create benchmark in `examples/`
+5. Update docs
 
 ---
 
-## 4. Coding Standards
-- **Mathematical Correctness**: Changes to L3 (Semantic) must be verified against the Phasic Transition model.
-- **Zero Overhead**: Avoid any runtime branching or allocations inside the kernel generation loop.
-- **FFI Stability**: Maintain C-FFI compatibility for C++ users.
+## Safety Rules
+
+1. **FFI Boundary**: All `extern "C"` use `catch_unwind`
+2. **Memory**: Never take ownership from Python/C++
+3. **Panics**: Contained within Rust boundary

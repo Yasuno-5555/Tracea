@@ -1,12 +1,35 @@
 use serde::{Serialize, Deserialize};
 use crate::core::op::EpilogueOp;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
 pub enum SwizzleMode {
+    #[default]
     None,
     Xor2,
     Xor4,
     Xor8,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
+pub enum BarrierMode {
+    #[default]
+    None,
+    ProducerConsumer,
+}
+
+impl BarrierMode {
+    pub fn to_f32(self) -> f32 {
+        match self {
+            Self::None => 0.0,
+            Self::ProducerConsumer => 1.0,
+        }
+    }
+    pub fn from_f32(val: f32) -> Self {
+        match val as u32 {
+            1 => Self::ProducerConsumer,
+            _ => Self::None,
+        }
+    }
 }
 
 impl SwizzleMode {
@@ -28,8 +51,9 @@ impl SwizzleMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
 pub enum QuantizationMode {
+    #[default]
     None,
     Int8,
     Int4,
@@ -52,12 +76,16 @@ impl QuantizationMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
 pub enum SpecializedInstruction {
+    #[default]
     None,
     CudaMMA,
     RocmMFMA,
     MetalSimdGroup,
+    Avx2,
+    Avx512,
+    Neon,
 }
 
 impl SpecializedInstruction {
@@ -67,6 +95,9 @@ impl SpecializedInstruction {
             Self::CudaMMA => 1.0,
             Self::RocmMFMA => 2.0,
             Self::MetalSimdGroup => 3.0,
+            Self::Avx2 => 4.0,
+            Self::Avx512 => 5.0,
+            Self::Neon => 6.0,
         }
     }
     pub fn from_f32(val: f32) -> Self {
@@ -74,13 +105,17 @@ impl SpecializedInstruction {
             1 => Self::CudaMMA,
             2 => Self::RocmMFMA,
             3 => Self::MetalSimdGroup,
+            4 => Self::Avx2,
+            5 => Self::Avx512,
+            6 => Self::Neon,
             _ => Self::None,
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
 pub enum LayoutPolicy {
+    #[default]
     RowMajor,
     ColumnMajor,
     XorSwizzled,
@@ -119,7 +154,7 @@ impl LayoutPolicy {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct PipelineConfig {
     pub num_stages: u32,
     pub m_tile: u32,
@@ -130,7 +165,13 @@ pub struct PipelineConfig {
     pub quantization: QuantizationMode,
     pub layout_policy: Option<LayoutPolicy>,
     pub epilogue: Vec<EpilogueOp>,
-    pub force_num_warps: Option<u32>, // ROCm: Wavefront Count, Metal: Simdgroup Count
+    pub force_num_warps: Option<u32>,
+    pub micro_m: u32,
+    pub micro_n: u32,
+    pub k_unroll: u32,
+    pub prefetch_distance: u32,
+    pub cp_async_distance: u32,
+    pub barrier_mode: BarrierMode,
 }
 
 impl PipelineConfig {
@@ -146,6 +187,12 @@ impl PipelineConfig {
             layout_policy: Some(LayoutPolicy::RowMajor),
             epilogue: Vec::new(),
             force_num_warps: None,
+            micro_m: 1,
+            micro_n: 1,
+            k_unroll: 1,
+            prefetch_distance: 0,
+            cp_async_distance: 0,
+            barrier_mode: BarrierMode::None,
         }
     }
 
@@ -167,6 +214,12 @@ impl PipelineConfig {
             self.instruction.to_f32(),
             self.swizzle_mode.to_f32(),
             self.quantization.to_f32(),
+            self.micro_m as f32,
+            self.micro_n as f32,
+            self.k_unroll as f32,
+            self.prefetch_distance as f32,
+            self.cp_async_distance as f32,
+            self.barrier_mode.to_f32(),
         ]
     }
 
@@ -182,7 +235,19 @@ impl PipelineConfig {
             layout_policy: Some(LayoutPolicy::RowMajor),
             epilogue: Vec::new(),
             force_num_warps: None,
+            micro_m: vec.get(7).map(|&v| v as u32).unwrap_or(1),
+            micro_n: vec.get(8).map(|&v| v as u32).unwrap_or(1),
+            k_unroll: vec.get(9).map(|&v| v as u32).unwrap_or(1),
+            prefetch_distance: vec.get(10).map(|&v| v as u32).unwrap_or(0),
+            cp_async_distance: vec.get(11).map(|&v| v as u32).unwrap_or(0),
+            barrier_mode: vec.get(12).map(|&v| BarrierMode::from_f32(v)).unwrap_or(BarrierMode::None),
         }
+    }
+
+    pub fn with_micro_tile(mut self, m: u32, n: u32) -> Self {
+        self.micro_m = m;
+        self.micro_n = n;
+        self
     }
 }
 

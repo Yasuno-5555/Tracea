@@ -4,116 +4,135 @@
 
 ---
 
+## 🚀 Latest Benchmark Results (v3.1)
+
+| Operation | Hardware | Performance | Notes |
+|-----------|----------|-------------|-------|
+| **GEMM** | RTX 3070 | >20 TFLOPS | Tensor Core MMA, 2-stage pipeline |
+| **Conv2d** | RTX 3070 | 27.66 TFLOPS | NHWC, Batch=64 |
+| **FA2** | RTX 3070 | 11.09 TFLOPS | S=2048, causal masking |
+| **CPU GEMM** | Ryzen 5600X | 0.37 TFLOPS | 3.67x vs naive (SIMD packing) |
+
+---
+
+## 🆕 v3.1 Features
+
+### mbarrier Integration
+- Asynchronous GPU pipelining with producer-consumer warp roles
+- Rule A: Single Init Responsibility
+- Rule B: Static Warp-Role Assignment
+
+### Python Integration (tracea-python)
+```python
+import tracea
+# Zero-copy PyTorch backend with automatic fallback
+tracea.patch_conv2d()
+```
+
+### C++ FFI (tracea-ffi)
+```cpp
+#include "tracea.hpp"
+tracea::conv2d(x, w, nullptr, out, params);
+```
+
+---
+
 ## 🚀 Key Features
 
 - **Multi-Backend Excellence**: Native support for **CUDA**, **ROCm (HIP)**, **Metal**, and **CPU (SIMD)**.
-- **Tracea Doctor**: Intelligent environment diagnostic tool that profiles hardware capabilities and selects the optimal kernel variant (e.g., Tensor Core vs. Matrix Core vs. SIMD).
-- **Persistent Bayesian Auto-Tuning**: Hardware-aware search using Gaussian Processes. Optimal configurations are stored in an intelligent cache (`.tracea/tuning_cache.json`) for sub-millisecond reuse.
-- **Environment-Aware Isolation**: Automatic cache invalidation based on backend, architecture, and driver versions.
-- **Safe & Robust FFI**: Protected GPU memory handling via `PyDeviceBuffer`.
+- **Tracea Doctor**: Intelligent environment diagnostic tool that profiles hardware capabilities and selects the optimal kernel variant.
+- **Persistent Bayesian Auto-Tuning**: Hardware-aware search using Gaussian Processes with intelligent caching.
+- **Zero-Copy Integration**: Python (PyTorch) and C++ bindings with borrowed pointer semantics.
 - **Graph-Level Intelligence**: Optimize entire sequences of operations using priority-based scheduling.
-
----
-
-## 👨‍⚕️ Tracea Doctor (Multi-Backend Engine)
-
-The **Tracea Doctor** automatically detects your hardware and selects the best implementation:
-
-- **NVIDIA**: Leverages Ampere/Hopper Tensor Cores (sm_80+).
-- **AMD**: Utilizes CDNA/RDNA Matrix Cores (gfx900+).
-- **Apple**: Optimized for Apple Silicon M1/M2/M3 via Metal simdgroups.
-- **CPU**: High-performance SIMD fallbacks (AVX512/AVX2/Neon).
-
----
-
-## 📦 Verified Operations
-
-Tracea has been rigorously verified for the following high-performance primitives:
-
-1.  **General Matrix Multiplication (GEMM)**
-    -   **Performance**: >100 TFLOPS on RTX 4090 / >36 TFLOPS on RTX 3070.
-    -   **Technique**: Multi-Stage Pipelining + Tensor Core MMA.
-    
-2.  **FlashAttention-2**
-    -   **Performance**: Near theoretical peak.
-    -   **Technique**: Producer-Consumer Warps, `cp.async`, Causal Masking.
-    -   **Verification**: Numerical correctness (MSE < 1e-5) against PyTorch.
-
-3.  **Convolution (Conv2d)**
-    -   **Strategy**: Implicit GEMM with Magic Number Addressing.
-    -   **Support**: NHWC / NCHW Layouts, Dilation, Striding.
-    -   **Verification**: Verified outputs on CUDA backend.
 
 ---
 
 ## 📦 Installation
 
-Tracea requires **Rust (Cargo)** and optionally **CUDA Toolkit**, **ROCm**, or **Metal** SDKs depending on your target.
+### Rust Library
+```bash
+cargo build --lib --release
+```
 
-1.  **Build the Library**:
-    ```bash
-    cargo build --lib --release
-    ```
-2.  **Install Python Module**:
-    ```bash
-    # Windows
-    copy target\release\tracea.dll tracea.pyd
-    ```
+### Python Module
+```bash
+cd tracea-python && maturin develop
+```
+
+### C++ FFI
+```bash
+cd tracea-ffi && cargo build --release
+# Link against target/release/libtracea_ffi.a
+```
 
 ---
 
 ## 🐍 Python Usage
 
-### 1. Initialize Context
 ```python
 import tracea
 
 # Create context (auto-detects hardware via Doctor)
 ctx = tracea.Context()
-```
 
-### 2. Planning with Doctor
-```python
-# The Doctor selects the best variant for your current backend
-decision = ctx.plan_kernel("flash_attention_2", precision="BF16")
-print(f"Selected Variant: {decision.variant_id} on {decision.backend}")
-```
-
-### 3. Neural Network API
-```python
-# Build a graph
+# Build and optimize a graph
 graph = tracea.Graph()
-graph.add_gemm(m=..., n=..., k=...)
-graph.add_attention(b=1, h=12, s=4096, d=64)
-
-# Optimize
+graph.add_gemm(m=2048, n=2048, k=2048)
 config = ctx.optimize_graph(graph)
+```
+
+### Monkey Patch for PyTorch
+```python
+from tracea import patch_conv2d
+patch_conv2d()  # Replaces torch.nn.Conv2d
 ```
 
 ---
 
-## 🏗️ Architecture
+## 🔧 C++ Usage
 
-Tracea's design separates logical meaning from physical execution:
+```cpp
+#include "tracea.hpp"
 
-1. **L1: User Interface**: Premium Python (PyO3) and Rust APIs.
-2. **L2: Core IR**: Pipelined Op and Graph definitions.
-3. **L3: Tracea Doctor**: Multi-backend capability profiling and variant selection.
-4. **L4: Semantic IR**: Phase Cyclicity, Swizzle Modes, and Lane Mapping.
-5. **L5: Universal Emitters**: Multi-target code generation (PTX, HIP, MSL, SIMD).
-6. **L6: Optimizer**: Persistent Bayesian tuner with backend-aware profiling.
+tracea::TensorView x(x_ptr, {1, 64, 224, 224}, tracea::DType::Float32, 0);
+tracea::TensorView w(w_ptr, {128, 64, 3, 3}, tracea::DType::Float32, 0);
+tracea::TensorView out(out_ptr, {1, 128, 222, 222}, tracea::DType::Float32, 0);
+
+tracea::Conv2dParams params;
+params.stride_h = params.stride_w = 1;
+params.stream = my_cuda_stream;
+
+tracea::conv2d(x, w, nullptr, out, params);
+```
 
 ---
 
 ## 📂 Project Structure
 
-- `src/core/`: IR definitions and graph logic.
-- `src/kernels/`: Optimized kernel implementations (CUDA/ROCm/Metal/CPU).
-- `src/interface/`: Python and C++ bindings (FFI).
-- `src/optimizer/`: Bayesian Tuner and Profiler.
-- `src/emitter/`: Universal Code Generators.
-- `docs/`: Design documents and API references.
-- `examples/`: Demonstration code.
+```
+src/
+├── core/           # IR definitions, graph logic
+├── kernels/        # CUDA/ROCm/Metal/CPU implementations
+├── interface/      # Python and C++ bindings
+├── optimizer/      # Bayesian Tuner, Profiler
+├── emitter/        # Universal Code Generators
+└── doctor/         # Multi-backend diagnostics
+
+tracea-python/      # PyO3 Python extension
+tracea-ffi/         # C ABI for C++ integration
+docs/               # Design documents
+examples/           # Demonstration code
+```
+
+---
+
+## 📄 Documentation
+
+- [API Usage](docs/API_USAGE.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Optimization Guide](docs/OPTIMIZATION.md)
+- [Benchmark Report](docs/BENCHMARK_REPORT.md)
+- [Developer Guide](docs/DEVELOPER_GUIDE.md)
 
 ---
 

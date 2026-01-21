@@ -9,6 +9,7 @@ pub struct TensorView {
     pub data_ptr: *mut f32,
 }
 
+#[cfg(feature = "python")]
 pub mod nn;
 #[cfg(feature = "python")]
 pub mod python;

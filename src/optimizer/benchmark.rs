@@ -130,6 +130,9 @@ impl NVRTCBenchmark {
                 let smem = (mt * kt + kt * nt) * 2;
                 (block, smem)
             }
+            crate::runtime::DeviceBackend::Cpu => {
+                ((1, 1, 1), 0)
+            }
         };
 
         (grid_dim, block_dim, smem_size)
@@ -254,6 +257,14 @@ impl MicroBenchmark for NVRTCBenchmark {
                     api_version: "Metal 3.0".to_string(),
                     driver_version: "macOS 14".to_string(),
                     arch: "Apple M3".to_string(),
+                }
+            }
+            crate::runtime::DeviceBackend::Cpu => {
+                EnvironmentInfo {
+                    backend: DeviceBackend::Cpu,
+                    api_version: "0.1.0".to_string(),
+                    driver_version: "0.1.0".to_string(),
+                    arch: "x86_64".to_string(),
                 }
             }
         }

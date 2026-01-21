@@ -445,6 +445,7 @@ impl PyTuner {
             max_blocks_per_sm: 16,
             shared_memory_per_sm: 102400,
             has_specialized_units: true,
+            compute_capability: Some((8, 6)),
         };
         let tuner = AutoTuner::new(gpu);
         Self { inner: Arc::new(Mutex::new(tuner)) }

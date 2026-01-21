@@ -128,6 +128,7 @@ pub extern "C" fn tracea_tune_conv2d(
         max_blocks_per_sm: 16,
         shared_memory_per_sm: 102400,
         has_specialized_units: true,
+        compute_capability: Some((8, 6)),
     };
     let mut tuner = AutoTuner::new(gpu);
     tuner.runtime = Some(rt); // Set runtime

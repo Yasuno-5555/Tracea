@@ -104,6 +104,41 @@ impl TunableKernel for CudaGemmAdapter {
     }
 
     fn benchmark(&self, cfg: &Self::Config) -> Option<f32> {
+        // --- v3 Optimization: Check for Specialized Template First ---
+        let num_warps = cfg.force_num_warps.unwrap_or(8);
+        let block = (num_warps * 32, 1, 1); 
+        let grid = (
+            (self.problem.m as u32 + cfg.m_tile - 1) / cfg.m_tile,
+            (self.problem.n as u32 + cfg.n_tile - 1) / cfg.n_tile,
+            1
+        );
+        let a_stride = cfg.m_tile * (cfg.k_tile + 8) * 2;
+        let b_stride = cfg.k_tile * (cfg.n_tile + 8) * 2;
+        let smem_bytes = ((a_stride + b_stride) as usize * cfg.num_stages as usize + 512) as u32;
+
+        let a_ptr = self.runtime.get_device_ptr(self.a_buf).ok()?;
+        let b_ptr = self.runtime.get_device_ptr(self.b_buf).ok()?;
+        let c_ptr = self.runtime.get_device_ptr(self.c_buf).ok()?;
+
+        let start = std::time::Instant::now();
+
+        // Attempt v3 Dispatch (Pre-compiled kernels)
+        let dispatched = crate::kernels::gpu::gpu_dispatch::dispatch_gpu_gemm(
+            cfg,
+            a_ptr, b_ptr, c_ptr,
+            self.problem.m as i32, self.problem.n as i32, self.problem.k as i32,
+            grid, block, smem_bytes,
+            std::ptr::null_mut() // stream
+        );
+
+        if dispatched {
+            self.runtime.synchronize();
+            let nanos = start.elapsed().as_nanos() as f32;
+            let gflops = (2.0 * self.problem.m as f32 * self.problem.n as f32 * self.problem.k as f32) / nanos;
+            return Some(gflops);
+        }
+
+        // --- Fallback: NVRTC String Emitter ---
         let ir = UnifiedOpIR {
             op_type: UnifiedOpType::Gemm { 
                 m: self.problem.m as u32,
@@ -127,21 +162,6 @@ impl TunableKernel for CudaGemmAdapter {
             }
         };
 
-        // Grid/Block
-        let num_warps = cfg.force_num_warps.unwrap_or(8);
-        let block = (num_warps * 32, 1, 1); 
-        
-        let grid = (
-            (self.problem.m as u32 + cfg.m_tile - 1) / cfg.m_tile,
-            (self.problem.n as u32 + cfg.n_tile - 1) / cfg.n_tile,
-            1
-        );
-        
-        // Smem calculation: (mt*(kt+8) + kt*(nt+8)) * 2 bytes * stages + padding + barrier space
-        let a_stride = cfg.m_tile * (cfg.k_tile + 8) * 2;
-        let b_stride = cfg.k_tile * (cfg.n_tile + 8) * 2;
-        let smem_bytes = ((a_stride + b_stride) as usize * cfg.num_stages as usize + 512) as u32;
-
         let args = vec![
             KernelArg::Buffer(self.a_buf),
             KernelArg::Buffer(self.b_buf),
@@ -151,7 +171,6 @@ impl TunableKernel for CudaGemmAdapter {
             KernelArg::Int(self.problem.k as i32),
         ];
 
-        let start = std::time::Instant::now();
         if let Err(e) = self.runtime.launch(kernel_id, grid, block, smem_bytes, args) {
              eprintln!("Launch Failed: {}", e);
              return None;
@@ -165,5 +184,34 @@ impl TunableKernel for CudaGemmAdapter {
 
     fn cache_key(&self) -> String {
         format!("cuda_gemm_{}", self.problem.signature())
+    }
+}
+
+impl crate::optimizer::benchmark::MicroBenchmark for CudaGemmAdapter {
+    fn m(&self) -> u32 { self.problem.m as u32 }
+    fn n(&self) -> u32 { self.problem.n as u32 }
+    fn k(&self) -> u32 { self.problem.k as u32 }
+    
+    fn device_info(&self) -> crate::optimizer::benchmark::EnvironmentInfo {
+        crate::optimizer::benchmark::EnvironmentInfo {
+            backend: DeviceBackend::Cuda,
+            api_version: "13.1".to_string(),
+            driver_version: "unknown".to_string(),
+            arch: "Ampere".to_string(),
+        }
+    }
+
+    fn validate_config(&self, config: &PipelineConfig) -> bool {
+        self.is_feasible(config)
+    }
+
+    fn measure(&self, config: &PipelineConfig) -> crate::optimizer::benchmark::BenchmarkResult {
+        let tflops = self.benchmark(config).unwrap_or(0.0);
+        crate::optimizer::benchmark::BenchmarkResult {
+            tflops,
+            mean_tflops: tflops,
+            std_dev: 0.0,
+            latency_ms: if tflops > 0.0 { (2.0 * self.problem.m as f32 * self.problem.n as f32 * self.problem.k as f32) / (tflops * 1e9) * 1000.0 } else { 0.0 },
+        }
     }
 }
