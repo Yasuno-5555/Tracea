@@ -36,7 +36,7 @@ pub use crate::core::config::{PipelineConfig, SwizzleMode, SoftmaxGranularity, B
 pub use crate::semantic::transition::{Phase, PhaseTransition, SyncRequirement};
 pub use crate::semantic::mapping::{LaneMapping, MatrixLayout};
 pub use crate::semantic::fragment::{Fragment, FragmentType, FragmentOp, FragmentRole};
-pub use crate::optimizer::{AutoTuner, GPUInfo};
+pub use crate::optimizer::{AutoTuner, HardwareProfile};
 pub use crate::optimizer::benchmark::{MicroBenchmark, SimulatedBenchmark};
 pub use crate::emitter::cuda::CUDAEmitter;
 pub use half;

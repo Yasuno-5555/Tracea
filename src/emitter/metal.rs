@@ -103,7 +103,7 @@ impl Emitter for MetalEmitter {
     }
 
     fn generate_from_ir(&self, ir: &UnifiedOpIR) -> String {
-        match ir.op_type {
+        match &ir.op_type {
             UnifiedOpType::Gemm { .. } => self.generate_gemm(ir.tiling.clone()),
             UnifiedOpType::FusedAttention { .. } => {
                 "// Metal FA2 not yet implemented in Unified Emitter\n".to_string()

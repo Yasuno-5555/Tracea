@@ -10,7 +10,7 @@
 |-----------|--------------|--------|-------------|-----------|-------|
 | **GEMM** | 2048×2048×2048 | RowMajor | 128×128×32, S2 | **>20** | Tensor Core MMA, mbarrier |
 | **Conv2d** | Batch=32 | NHWC | 64×64×32, W5 | **15.17** | Implicit GEMM |
-| **Conv2d** | Batch=64 | NHWC | 64×64×16, W5 | **27.66** | High-throughput |
+| **Conv2d** | Batch=64 | NHWC | 128x128x32, 3-Stage | **22.73** | Implicit GEMM (Verified) |
 | **FA2** | S=1024, causal | - | 128×64×32, W4 | **7.67** | Baseline |
 | **FA2** | S=2048, causal | - | 128×64×32, W4 | **11.09** | Large-SeqLen Policy |
 

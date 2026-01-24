@@ -26,6 +26,7 @@ Tracea is built on a strictly layered architecture that separates "Meaning" (Sem
 
 ### L5: Universal Emitters
 - **CUDA**: PTX pipelining, Register Double Buffering, Tensor Core MMA.
+- **Implicit GEMM**: Zero-im2col convolution via magic-number coordinate mapping.
 - **HIP**: AMD GCN/CDNA intrinsics (v_mfma).
 - **Metal**: Apple Silicon simdgroup support.
 - **CPU**: SIMD (AVX512, AVX2, NEON) with packed data layouts.

@@ -20,6 +20,7 @@ pub enum KernelArg {
     Int(i32),
     Float(f32),
     Usize(usize),
+    Bytes(Vec<u8>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -83,7 +84,7 @@ pub struct RuntimeManager {
 static INSTANCE: Mutex<Option<Arc<RuntimeManager>>> = Mutex::new(None);
 
 impl RuntimeManager {
-    pub fn init(_pref_backend: Option<DeviceBackend>) -> Result<Arc<Self>, String> {
+    pub fn init(pref_backend: Option<DeviceBackend>) -> Result<Arc<Self>, String> {
         let mut cache = INSTANCE.lock().map_err(|_| "Global Instance Lock Poisoned".to_string())?;
         if let Some(instance) = &*cache {
             return Ok(Arc::clone(instance));
@@ -127,6 +128,10 @@ impl RuntimeManager {
         Ok(instance)
     }
 
+    pub fn new() -> Arc<Self> {
+        Self::init(None).expect("Failed to initialize RuntimeManager")
+    }
+
     pub fn compile(&self, source: &str, kernel_name: &str, backend: DeviceBackend) -> Result<KernelId, String> {
         println!("[Runtime] Debug: compile called for {}", kernel_name);
         // Source-based caching
@@ -155,6 +160,11 @@ impl RuntimeManager {
                 if let Ok(id) = self.load_binary(&cache_name, kernel_name, &target_arch) {
                     self.source_cache.lock().unwrap().insert(source.to_string(), id);
                     return Ok(id);
+                }
+
+                // Debug dump
+                if let Ok(mut f) = std::fs::File::create("last_kernel.cu") {
+                    let _ = f.write_all(source.as_bytes());
                 }
 
                 let mut opts = CompileOptions {
@@ -204,50 +214,52 @@ impl RuntimeManager {
                                   .replace(".version 8.4", ".version 7.0")
                                   .replace(".target sm_86", ".target sm_80");
 
-                let safe_name: String = kernel_name.chars().map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' }).collect();
-                let ptx_path = format!("E:/Projects/Tracea/debug_dump_{}.ptx", safe_name);
-                let _ = std::fs::write(&ptx_path, &ptx_src);
-                let cubin_path = format!("E:/Projects/Tracea/debug_dump_{}.cubin", safe_name);
+                // Direct Driver Load (Bypass ptxas)
+                println!("[Runtime] Loading PTX directly via Driver JIT...");
                 
-                let mut cmd = std::process::Command::new("ptxas");
-                cmd.arg("-v").arg("--gpu-name").arg(&target_arch).arg(&ptx_path).arg("-o").arg(&cubin_path);
-                
-                println!("[Runtime] Executing: ptxas -v --gpu-name {} {} -o {}", target_arch, ptx_path, cubin_path);
+                unsafe {
+                    let lib = cudarc::driver::sys::lib();
+                    let mut module: cudarc::driver::sys::CUmodule = std::ptr::null_mut();
+                    let ptx_cstring = std::ffi::CString::new(ptx_src.clone()).unwrap();
 
-                let output = cmd.output().map_err(|e| format!("Failed to run ptxas: {}", e))?;
-                
-                // Doctor Hook: PTXAS Result
-                let pt_stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                self.doctor.on_assembler_result(crate::doctor::AssemblerResultInfo {
-                    backend: crate::doctor::BackendKind::Cuda,
-                    arch: target_arch.clone(),
-                    return_code: output.status.code().unwrap_or(-1),
-                    stderr: pt_stderr.clone(),
-                    ptx_content: ptx_src.clone(),
-                    cubin_size: Some(std::fs::metadata(&cubin_path).map(|m| m.len()).unwrap_or(0)),
-                });
+                    let res = lib.cuModuleLoadData(&mut module, ptx_cstring.as_ptr() as *const _);
+                    if res != cudarc::driver::sys::CUresult::CUDA_SUCCESS {
+                        let err = format!("Driver JIT Failed: {:?}", res);
+                        println!("[Runtime] ❌ {}", err);
+                        return Err(err);
+                    }
+                    
+                    let mut func: cudarc::driver::sys::CUfunction = std::ptr::null_mut();
+                    let name_c = std::ffi::CString::new(kernel_name).unwrap();
+                    let res_func = lib.cuModuleGetFunction(&mut func, module, name_c.as_ptr());
+                    
+                    if res_func != cudarc::driver::sys::CUresult::CUDA_SUCCESS {
+                         return Err(format!("Failed to get kernel function '{}': {:?}", kernel_name, res_func));
+                    }
 
-                if !output.status.success() {
-                    let err = String::from_utf8_lossy(&output.stderr);
-                    let out = String::from_utf8_lossy(&output.stdout);
-                    println!("[Runtime] ptxas FAILED. Code: {:?}", output.status.code());
-                    println!("[Runtime] stderr: {}", err);
-                    println!("[Runtime] stdout: {}", out);
-                    return Err(format!("ptxas failed: {} (stdout: {})", err, out));
+                    let res_attr = lib.cuFuncSetAttribute(
+                        func, 
+                        cudarc::driver::sys::CUfunction_attribute::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, 
+                        98304 // 96KB
+                    );
+                    if res_attr != cudarc::driver::sys::CUresult::CUDA_SUCCESS {
+                        println!("[Runtime] ⚠️ Failed to set MAX_DYNAMIC_SHARED_SIZE_BYTES: {:?}", res_attr);
+                    } else {
+                        println!("[Runtime] Set MAX_DYNAMIC_SHARED_SIZE_BYTES to 98304");
+                    }
+                    
+                    let id = self.generate_kernel_id()?;
+                    self.kernels.lock().map_err(|_| "Poisoned")?.insert(id, RecordedKernel {
+                        name: kernel_name.to_string(),
+                        raw: func as u64,
+                        module: module as u64,
+                        backend: DeviceBackend::Cuda,
+                    });
+                    
+                    println!("[Runtime] Kernel '{}' loaded successfully. ID: {:?}", kernel_name, id);
+                    Ok(id)
                 }
-                println!("[Runtime] ptxas SUCCESS: {}", pt_stderr);
-
-                let id = self.load_from_file_and_register(kernel_name, &cubin_path)?;
                 
-                // Save to AOT Cache with source-aware name
-                let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                source.hash(&mut hasher);
-                let source_hash = hasher.finish();
-                let cache_name = format!("{}_{:x}", kernel_name, source_hash);
-                
-                let _ = self.save_binary(&cache_name, &target_arch, &cubin_path);
-                
-                Ok(id)
             }
             DeviceBackend::Rocm => {
                 let jit = crate::emitter::rocm_jit::ROCMJITCompiler::new().ok_or("ROCm JIT API not found")?;
@@ -308,6 +320,9 @@ impl RuntimeManager {
                     let ptr = &mut arg_store[i] as *mut u64;
                     unsafe { *ptr = ptr_val; }
                     kernel_params[i] = ptr as *mut c_void;
+                }
+                KernelArg::Bytes(bytes) => {
+                    kernel_params[i] = bytes.as_ptr() as *mut c_void;
                 }
             }
         }

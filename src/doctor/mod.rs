@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-use std::sync::Arc;
 use serde::{Serialize, Deserialize};
 
 pub mod registry;

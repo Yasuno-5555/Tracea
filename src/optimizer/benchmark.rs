@@ -117,7 +117,9 @@ impl NVRTCBenchmark {
                 let element_size = 2; 
                 let s_a = kt + 8;
                 let s_b = nt + 8;
-                let smem = (config.num_stages * mt * s_a + config.num_stages * kt * s_b) * element_size;
+                let smem_pipe = (config.num_stages * mt * s_a + config.num_stages * kt * s_b) * element_size;
+                let smem_epi = mt * nt * 4; // float accumulator
+                let smem = smem_pipe.max(smem_epi) + 256; 
                 (block, smem)
             }
             crate::runtime::DeviceBackend::Rocm => {
@@ -198,8 +200,14 @@ impl MicroBenchmark for NVRTCBenchmark {
             KernelArg::Int(self.k as i32),
         ];
 
+        // Warmup
+        for _ in 0..10 {
+            let _ = self.runtime.launch(kernel_id, grid_dim, block_dim, smem_size as u32, args.clone());
+        }
+        self.runtime.synchronize();
+
         let start = std::time::Instant::now();
-        let iterations = 5;
+        let iterations = 10;
         for i in 0..iterations {
              if let Err(e) = self.runtime.launch(kernel_id, grid_dim, block_dim, smem_size as u32, args.clone()) {
                   eprintln!("[Tracea] ⚠️  Launch Failed on iteration {}: {:?}", i, e);
@@ -810,7 +818,7 @@ impl MicroBenchmark for FlashAttentionBenchmark {
         let grid = (ticks as u32, self.problem.h as u32, self.problem.b as u32);
         
         // Smem calculation handled by Emitter helper
-        let (total_bytes, _, _, _, _) = FlashAttentionEmitter::calculate_smem_layout(config, self.problem.d);
+        let (total_bytes, _, _, _, _, _) = FlashAttentionEmitter::calculate_smem_layout(config, self.problem.d);
         let smem = (total_bytes as u32 + 255) & !255;
         
         // Args

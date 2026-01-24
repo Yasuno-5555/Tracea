@@ -65,7 +65,7 @@ impl ScheduleStrategy for PrioritySchedule {
                             let k = lin.in_features.0 as u64;
                             std::cmp::Reverse(m * n * k)
                         },
-                        crate::core::op::NNOp::Attention(attn) => {
+                        crate::core::op::NNOp::Attention(_attn) => {
                              // Heavy
                              std::cmp::Reverse(u64::MAX)
                         }

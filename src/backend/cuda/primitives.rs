@@ -121,14 +121,15 @@ __device__ __forceinline__ void mbarrier_wait(uint64_t* mbarrier_ptr, uint64_t p
 
     fn cp_async_def() -> String {
         r#"
-__device__ __forceinline__ void cp_async_ampere(void* smem_ptr, const void* global_ptr, uint32_t size) {
-    uint32_t smem_addr = (uint32_t)__cvta_generic_to_shared(smem_ptr);
-    if (size == 16) {
+__device__ __forceinline__ void cp_async_ampere(void* dst, const void* src, bool p) {
+    uint32_t smem_addr = (uint32_t)__cvta_generic_to_shared(dst);
+    if (p) {
         asm volatile(
-            "cp.async.ca.shared.global [%0], [%1], 16;"
-            : 
-            : "r"(smem_addr), "l"(global_ptr)
+            "{ .reg .pred p; setp.ne.b32 p, %2, 0; @p cp.async.ca.shared.global [%0], [%1], 16; }\n"
+            : : "r"(smem_addr), "l"(src), "r"((int)p)
         );
+    } else {
+        *((uint4*)dst) = make_uint4(0, 0, 0, 0);
     }
 }
 
@@ -144,8 +145,15 @@ __device__ __forceinline__ void cp_async_wait_group() {
 
 // Helper for XOR Swizzling (128B aligned safe)
 __device__ __forceinline__ uint32_t smem_swizzle(uint32_t addr) {
+    // bits 4,5,6 XORed with bits 7,8,9
     uint32_t sw = (addr >> 4) & 0x7;
     return addr ^ (sw << 7);
+}
+
+__device__ __forceinline__ void* smem_swizzle_ptr(void* ptr) {
+    uint32_t addr = (uint32_t)__cvta_generic_to_shared(ptr);
+    uint32_t sw_addr = smem_swizzle(addr);
+    return __cvta_shared_to_generic((size_t)sw_addr);
 }
 "#.to_string()
     }

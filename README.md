@@ -9,13 +9,20 @@
 | Operation | Hardware | Performance | Notes |
 |-----------|----------|-------------|-------|
 | **GEMM** | RTX 3070 | >20 TFLOPS | Tensor Core MMA, 2-stage pipeline |
-| **Conv2d** | RTX 3070 | 27.66 TFLOPS | NHWC, Batch=64 |
+| **GEMM** | RTX 3070 | >20 TFLOPS | Tensor Core MMA, 2-stage pipeline |
+| **Conv2d** | RTX 3070 | 22.73 TFLOPS | **Implicit GEMM**, 3-stage Pipeline, 78% Peak |
 | **FA2** | RTX 3070 | 11.09 TFLOPS | S=2048, causal masking |
 | **CPU GEMM** | Ryzen 5600X | 0.37 TFLOPS | 3.67x vs naive (SIMD packing) |
 
 ---
 
-## 🆕 v3.1 Features
+## 🆕 v3.2 Features
+
+### Implicit GEMM Convolution Engine
+- **Zero-im2col Architecture**: Coordinate mapping via fast-divmod primitives.
+- **Hybrid Hoisting**: Adaptive SMEM management for coordinate tables.
+- **Alignment-Safe Stores**: Native support for odd channel counts without performance drop.
+- **Fused Epilogue Pipeline**: One-shot BiasAdd + SiLU/ReLU + Residual integration.
 
 ### mbarrier Integration
 - Asynchronous GPU pipelining with producer-consumer warp roles

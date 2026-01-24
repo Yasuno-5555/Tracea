@@ -95,7 +95,7 @@ impl TunableKernel for Fa2Adapter {
         }
         
         // 2. Shared Memory Limits (Dynamic Check)
-        let (required_smem, _, _, _, _) = FlashAttentionEmitter::calculate_smem_layout(cfg, self.problem.d);
+        let (required_smem, _, _, _, _, _) = FlashAttentionEmitter::calculate_smem_layout(cfg, self.problem.d);
         
         let limit = self.runtime.get_max_shared_memory(DeviceBackend::Cuda);
         
@@ -147,7 +147,7 @@ impl TunableKernel for Fa2Adapter {
         // Emitter: ~32KB (S/O) + ~18KB (K) + ~18KB (V) for 128x64.
         // Let's use a robust calculation:
         // Centralized Shared Memory Calculation
-        let (smem_bytes, _, _, _, _) = FlashAttentionEmitter::calculate_smem_layout(cfg, self.problem.d);
+        let (smem_bytes, _, _, _, _, _) = FlashAttentionEmitter::calculate_smem_layout(cfg, self.problem.d);
 
         // 4. Launch & Measure
         // Warn: This includes overhead. For pure kernel time we need events, but Instant is okay for coarse tuning.

@@ -16,7 +16,7 @@ use crate::kernels::gemm::cpu_adapter::{GemmAdapter, GemmProblem};
 use crate::kernels::attention::cuda_adapter::{Fa2Adapter, Fa2Problem};
 use crate::backend::cpu::CpuBackend;
 use crate::optimizer::benchmark::{Conv2dProblem, NVRTCConvBenchmark};
-use crate::optimizer::{AutoTuner, GPUInfo};
+use crate::optimizer::{AutoTuner, HardwareProfile};
 use std::sync::Mutex;
 
 #[pyclass(name = "Context")]
@@ -204,7 +204,7 @@ impl PyContext {
         let grid = ( (s_in + mt - 1) / mt, h_in, b_in );
         
         // Centralized Smem Calculation
-        let (smem_bytes, _, _, _, _) = FlashAttentionEmitter::calculate_smem_layout(&final_config, dh_in as usize);
+        let (smem_bytes, _, _, _, _, _) = FlashAttentionEmitter::calculate_smem_layout(&final_config, dh_in as usize);
         let scale_val = if scale_sqrt { 1.0 / (dh_in as f32).sqrt() } else { 1.0 };
 
         ctx.runtime.launch(
@@ -320,12 +320,17 @@ impl PyContext {
     ) -> PyResult<u64> {
         let ctx = self;
         
-        let config = PipelineConfig::new(2, 64, 64, 16); // Default config
-        let (epilogue_ops, epilogue_args) = parse_epilogue(epilogue, bias, residual)?;
+        let h_out = (h + 2 * pad - dilation * (r - 1) - 1) / stride + 1;
+        let w_out = (w_in + 2 * pad - dilation * (s - 1) - 1) / stride + 1;
         
-        // Clone config and set epilogue
-        let mut final_config = config.clone();
-        final_config.epilogue = epilogue_ops;
+        // Planning: Universal Tiling Selection
+        let mut config = PipelineConfig::new(3, 128, 128, 32); // Baseline "God Config" tiling
+        if n == 1 || h_out * w_out < 128 {
+            config.m_tile = 32; config.n_tile = 32; config.k_tile = 32;
+        }
+
+        let (epilogue_ops, epilogue_args) = parse_epilogue(epilogue, bias, residual)?;
+        config.epilogue = epilogue_ops;
 
         let backend = DeviceBackend::Cuda; 
         let emitter = UniversalEmitter::new(backend);
@@ -340,59 +345,56 @@ impl PyContext {
                 layout: crate::core::config::LayoutPolicy::NHWC,
             },
             precison: "f16".to_string(),
-            tiling: final_config.clone(),
+            tiling: config.clone(),
             conv_magic_strategy: None,
         };
         
-        // Use consistent naming logic
         let source = emitter.generate(ir);
-        
         let kernel_id = match ctx.runtime.compile(&source, "conv2d_implicit_gemm", backend) {
             Ok(id) => id,
             Err(e) => return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Conv2d Compile Error: {}", e))),
         };
 
-        let arg_x = get_kernel_arg(x)?;
-        let arg_w = get_kernel_arg(w)?;
-        let arg_o = get_kernel_arg(o)?;
+        // Pack ConvParams (struct align=4, size=68)
+        let (hw_m, hw_s) = crate::emitter::conv::magic_u32(h_out * w_out);
+        let (w_m, w_s) = crate::emitter::conv::magic_u32(w_out);
+        let (sic_m, sic_s) = crate::emitter::conv::magic_u32(s * c);
+        let (c_m, c_s) = crate::emitter::conv::magic_u32(c);
+
+        let mut params = Vec::with_capacity(72);
+        for &val in &[n, h, w_in, c, k, h_out, w_out, r, s, stride, pad, dilation] {
+            params.extend_from_slice(&(val as i32).to_ne_bytes());
+        }
+        for &val in &[hw_m, hw_s, w_m, w_s, sic_m, sic_s, c_m, c_s] {
+            params.extend_from_slice(&val.to_ne_bytes());
+        }
+
+        let grid_final = (
+            (batch_ho_wo(n, h_out, w_out) + config.m_tile - 1) / config.m_tile,
+            (k + config.n_tile - 1) / config.n_tile,
+            1u32
+        );
+        let block_final = (256u32, 1u32, 1u32); // MT=128 NT=128 KT=32 needs 256 threads
         
-        // Conv2d simple logic: 
-        // Output H_out = (h + 2*pad - r) / stride + 1
-        // Output W_out = (w + 2*pad - s) / stride + 1
-        let h_out = (h + 2*pad - r) / stride + 1;
-        let w_out = (w_in + 2*pad - s) / stride + 1;
-        
-        // M = N * H_out * W_out
-        // N = K
-        // Tiles: M/m_tile, N/n_tile
-        let m_gemm = n * h_out * w_out;
-        let n_gemm = k;
-        
-        let mt = final_config.m_tile;
-        let nt = final_config.n_tile;
-        
-        let grid = ((m_gemm + mt - 1) / mt, (n_gemm + nt - 1) / nt, 1);
-        let block = (128, 1, 1); 
-        // Calculate smem size
-        let a_stride = final_config.k_tile + 8;
-        let b_stride = final_config.n_tile + 8;
-        let smem_a = final_config.m_tile * a_stride * 2;
-        let smem_b = final_config.k_tile * b_stride * 2;
-        let smem_bytes = 128 + (smem_a + smem_b) * final_config.num_stages;
-        
+        // Smem calculation including hoisting buffers
+        let smem_a = config.m_tile * (config.k_tile + 8) * 2;
+        let smem_b = config.k_tile * (config.n_tile + 8) * 2;
+        let hoisting = config.m_tile * (8 + 4 + 4);
+        let smem_bytes = (smem_a + smem_b) * config.num_stages + hoisting + 1024;
+
+        let k_args = {
+           let mut a = vec![get_kernel_arg(x)?, get_kernel_arg(w)?, get_kernel_arg(o)?];
+           a.extend(epilogue_args);
+           a.push(KernelArg::Bytes(params));
+           a
+        };
+
         ctx.runtime.launch(
-            kernel_id, grid, block, smem_bytes,
-            {
-               // Conv Emitter Arguments: Input, Weight, Output ...
-               let mut args = vec![arg_x, arg_w, arg_o];
-               args.extend(epilogue_args);
-               args
-            }
+            kernel_id, grid_final, block_final, smem_bytes as u32, k_args
         ).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Conv2d Launch Error: {}", e)))?;
         
         Ok(kernel_id.0)
     }
-
 
 
     #[pyo3(signature = (x, w, o, n, c, h, w_in, k, r, s, stride=1, pad=0, output_padding=0, dilation=1, epilogue=None, bias=None, residual=None))]
@@ -512,7 +514,7 @@ impl PyContext {
         let grid = ( (s_in + m_tile - 1) / m_tile, h_in, b_in );
         let temp_config = PipelineConfig::new(stages, m_tile, n_tile, 32); // K-tile matches?
         // Emitter doesn't use k_tile for Smem calc?
-        let (smem_bytes, _, _, _, _) = FlashAttentionEmitter::calculate_smem_layout(&temp_config, dh_in as usize);
+        let (smem_bytes, _, _, _, _, _) = FlashAttentionEmitter::calculate_smem_layout(&temp_config, dh_in as usize);
         let scale_val = if scale_sqrt { 1.0 / (dh_in as f32).sqrt() } else { 1.0 };
         
         Ok((
@@ -557,6 +559,40 @@ impl PyContext {
          let id = self.runtime.compile(&source, &name, backend).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))?;
          Ok(id.0)
     }
+
+    #[pyo3(signature = (graph, iterations=10))]
+    pub fn optimize_graph(&self, graph: &Bound<'_, PyGraph>, iterations: usize) -> PyResult<()> {
+        let rust_graph = &graph.borrow_mut().inner;
+        
+        eprintln!("[Tracea] 🚀 Optimizing Graph ({} nodes, {} iterations)", rust_graph.nodes.len(), iterations);
+        
+        for node in &rust_graph.nodes {
+            match &node.op {
+                crate::core::graph::Operation::FusedAttention(op) => {
+                    eprintln!("[Tracea] Tuning FusedAttention Node {} (B={}, S={}, H={}, D={})", node.id, op.b, op.s, op.h, op.dh);
+                    
+                    // Crucial: Use op.dh (Head Dim) for Fa2Problem.d
+                    let problem = Fa2Problem {
+                        b: op.b as usize,
+                        s: op.s as usize,
+                        h: op.h as usize,
+                        d: op.dh as usize, // Correct field
+                        is_causal: op.causal,
+                    };
+                    
+                    let adapter = Fa2Adapter::new(Arc::clone(&self.runtime), problem);
+                    let best = tune_kernel(&adapter, SearchMode::GridSearch); // Use GridSearch for now
+                    
+                    println!("[Tracea] Node {} Best Config: {:?}", node.id, best);
+                },
+                _ => {
+                    // Skip others for FA2 demo focus
+                }
+            }
+        }
+        
+        Ok(())
+    }
 }
 
 // Minimal Device Buffers
@@ -598,6 +634,8 @@ impl PyDeviceBufferU16 {
     pub fn data_ptr(&self) -> usize { self.id.0 as usize }
 }
 
+
+
 #[pyclass]
 #[derive(Clone)]
 pub struct PyDeviceBufferI32 {
@@ -628,7 +666,7 @@ pub enum PyEpilogueType { ReLU, Gelu, BiasAdd }
 #[derive(Clone)]
 pub enum PyOptimizationGoal { MaximizeTFLOPS }
 
-#[pyclass]
+#[pyclass(name = "Graph")]
 #[derive(Clone)]
 pub struct PyGraph {
     pub inner: crate::core::graph::Graph,
@@ -639,6 +677,22 @@ impl PyGraph {
     #[new]
     pub fn new() -> Self {
         Self { inner: crate::core::graph::Graph::new() }
+    }
+
+    #[pyo3(signature = (m, n, k))]
+    pub fn add_gemm(&mut self, m: u32, n: u32, k: u32) -> PyResult<usize> {
+        let id = self.inner.add_gemm(m, n, k, vec![]);
+        Ok(id)
+    }
+
+    pub fn lower(&self) -> PyResult<Self> {
+        let lowered = self.inner.lower();
+        Ok(Self { inner: lowered })
+    }
+    
+    // For counting nodes
+    pub fn __len__(&self) -> usize {
+        self.inner.nodes.len()
     }
 }
 
@@ -682,17 +736,20 @@ impl PyTuner {
     pub fn new() -> Self {
         // Initialize with default/detected GPU info. 
         // Real implementation should query RuntimeManager/CUDA driver.
-        let gpu = GPUInfo {
+        let gpu = HardwareProfile {
             name: "Generic GPU".to_string(), 
             backend: DeviceBackend::Cuda,
             shared_memory_per_block: 102400,
             max_registers_per_thread: 255,
+            registers_per_sm: 65536,
+            max_registers_per_block: 65536,
             max_warps_per_sm: 32,
             wavefront_size: 32,
             max_blocks_per_sm: 16,
             shared_memory_per_sm: 102400,
             has_specialized_units: true,
             compute_capability: Some((8, 6)),
+            supported_intrinsic_shapes: vec![],
         };
         let tuner = AutoTuner::new(gpu);
         Self { inner: Arc::new(Mutex::new(tuner)) }
@@ -741,5 +798,7 @@ impl PyTuner {
         serde_json::to_string(&config).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))
     }
 }
+
+fn batch_ho_wo(n: u32, h: u32, w: u32) -> u32 { n * h * w }
 
 

@@ -11,7 +11,7 @@ impl CUDAEmitter {
         Self {}
     }
 
-    fn generate_gemm(&self, m: u32, n: u32, k: u32, config: &PipelineConfig) -> String {
+    fn generate_gemm(&self, _m: u32, _n: u32, _k: u32, config: &PipelineConfig) -> String {
         let mt = config.m_tile;
         let nt = config.n_tile;
         let kt = config.k_tile;
@@ -31,6 +31,9 @@ impl CUDAEmitter {
         let b_stride = nt + 8;
         let smem_a_bytes = mt * a_stride * 2;
         let smem_b_bytes = kt * b_stride * 2;
+        
+        let a_smem_offset = 128; // Header
+        let b_smem_offset = (a_smem_offset + smem_a_bytes * stages as u32 + 1023) & !1023;
 
         let mut epilogue_args = String::new();
         let mut epilogue_apply = String::new();
@@ -53,7 +56,7 @@ impl CUDAEmitter {
                 EpilogueOp::ResidualAdd { .. } => {
                     epilogue_args.push_str(&format!(", const float* __restrict__ residual_{}", i));
                     // Residual add usually adds element-wise from distinct tensor, assumed (M, N) layout
-                    epilogue_apply.push_str(&format!("tracea::epilogue::ResidualAdd op_{}; op_{}.residual = residual_{}; val = op_{}(val, (long long)m_glob * K_OUT + n_glob);\n", i, i, i, i));
+                    epilogue_apply.push_str(&format!("tracea::epilogue::ResidualAdd op_{}; op_{}.residual = residual_{}; val = op_{}(val, (long long)m_glob * N + n_glob);\n", i, i, i, i));
                 }
                 EpilogueOp::BiasAddSiLU { .. } => {
                      epilogue_args.push_str(&format!(", const float* __restrict__ bias_{}", i));
@@ -61,6 +64,19 @@ impl CUDAEmitter {
                 }
                 _ => {}
             }
+        }
+
+        // Warp Tiling Logic (2D vs 1D)
+        // If consumers=16 and MT=128, 1D split gives 8 rows/warp (Too small). Use 2D (8x2).
+        let (warp_m, warp_n) = if consumers == 16 && mt == 128 {
+            (8, 2)
+        } else {
+            (consumers, 1)
+        };
+        // Verify valid tiling
+        if mt / warp_m < 16 {
+             // Panic or fallback to safe config to avoid 0 M_FRAGS
+             panic!("Invalid Warp Partitioning: MT={} / WarpsM={} < 16. M_FRAGS would be 0.", mt, warp_m);
         }
 
         format!(r#"
@@ -81,6 +97,17 @@ using namespace nvcuda;
 #define A_STRIDE {a_stride}
 #define B_STRIDE {b_stride}
 
+// Warp Tiling
+#define WARP_M {warp_m}
+#define WARP_N {warp_n}
+
+// Swizzle Macros
+#if {swizzle_enabled}
+  #define SWIZZLE_PTR(ptr) smem_swizzle_ptr(ptr)
+#else
+  #define SWIZZLE_PTR(ptr) (ptr)
+#endif
+
 {primitives}
 
 extern "C" __global__ void __launch_bounds__(NUM_WARPS * 32, 1) gemm_mma_kernel(
@@ -94,15 +121,22 @@ extern "C" __global__ void __launch_bounds__(NUM_WARPS * 32, 1) gemm_mma_kernel(
     bool is_producer = (warp_id < PRODUCER_WARPS);
 
     extern __shared__ char smem[];
-    int a_smem_offset = 128;
-    int b_smem_offset = a_smem_offset + {smem_a_bytes} * STAGES;
+    int a_smem_offset = {a_smem_offset};
+    int b_smem_offset = {b_smem_offset};
 
     int a_tile_row = blockIdx.y * MT;
     int b_tile_col = blockIdx.x * NT;
+    
+    // Consumer Warp Tiling
     int cons_warp = warp_id - PRODUCER_WARPS;
-    int mt_per_warp = MT / (NUM_WARPS - PRODUCER_WARPS);
-    const int M_FRAGS = MT / (NUM_WARPS - PRODUCER_WARPS) / 16;
-    const int N_FRAGS = NT / 16;
+    int warp_row_idx = cons_warp / WARP_N; 
+    int warp_col_idx = cons_warp % WARP_N;
+
+    int mt_per_warp = MT / WARP_M;
+    int nt_per_warp = NT / WARP_N;
+    
+    const int M_FRAGS = MT / WARP_M / 16;
+    const int N_FRAGS = NT / WARP_N / 16;
 
     wmma::fragment<wmma::accumulator, 16, 16, 16, float> frag_acc[M_FRAGS][N_FRAGS];
     #pragma unroll
@@ -128,14 +162,14 @@ extern "C" __global__ void __launch_bounds__(NUM_WARPS * 32, 1) gemm_mma_kernel(
                     int m = (i * 8) / KT;
                     int k = (i * 8) % KT;
                     if (a_tile_row + m < M && k_tile * KT + k < K)
-                        cp_async_ampere(sA + m * A_STRIDE + k, A + (a_tile_row + m) * K + (k_tile * KT + k), 16);
+                        cp_async_ampere(SWIZZLE_PTR(sA + m * A_STRIDE + k), A + (a_tile_row + m) * K + (k_tile * KT + k), 16);
                 }}
                 #pragma unroll
                 for (int i = tid; i < (KT * NT) / 8; i += 32) {{
                     int k = (i * 8) / NT;
                     int n = (i * 8) % NT;
                     if (k_tile * KT + k < K && b_tile_col + n < N)
-                        cp_async_ampere(sB + k * B_STRIDE + n, B + (k_tile * KT + k) * N + (b_tile_col + n), 16);
+                        cp_async_ampere(SWIZZLE_PTR(sB + k * B_STRIDE + n), B + (k_tile * KT + k) * N + (b_tile_col + n), 16);
                 }}
                 cp_async_commit_group();
             }}
@@ -155,11 +189,13 @@ extern "C" __global__ void __launch_bounds__(NUM_WARPS * 32, 1) gemm_mma_kernel(
                 #pragma unroll
                 for (int mi = 0; mi < M_FRAGS; ++mi) {{
                     wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::row_major> frag_a;
-                    wmma::load_matrix_sync(frag_a, sA + (cons_warp * mt_per_warp + mi * 16) * A_STRIDE + k_inner, A_STRIDE);
+                    // Adjusted for 2D tiling (use warp_row_idx)
+                    wmma::load_matrix_sync(frag_a, (half*)SWIZZLE_PTR(sA + (warp_row_idx * mt_per_warp + mi * 16) * A_STRIDE + k_inner), A_STRIDE);
                     #pragma unroll
                     for (int ni = 0; ni < N_FRAGS; ++ni) {{
                         wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::row_major> frag_b;
-                        wmma::load_matrix_sync(frag_b, sB + k_inner * B_STRIDE + ni * 16, B_STRIDE);
+                        // Adjusted for 2D tiling (use warp_col_idx)
+                        wmma::load_matrix_sync(frag_b, (half*)SWIZZLE_PTR(sB + k_inner * B_STRIDE + (warp_col_idx * nt_per_warp + ni * 16)), B_STRIDE);
                         wmma::mma_sync(frag_acc[mi][ni], frag_a, frag_b, frag_acc[mi][ni]);
                     }}
                 }}
@@ -179,14 +215,14 @@ extern "C" __global__ void __launch_bounds__(NUM_WARPS * 32, 1) gemm_mma_kernel(
                     int m = (i * 8) / KT;
                     int k = (i * 8) % KT;
                     if (a_tile_row + m < M && k_next_tile_idx * KT + k < K)
-                        cp_async_ampere(sA + m * A_STRIDE + k, A + (a_tile_row + m) * K + (k_next_tile_idx * KT + k), 16);
+                        cp_async_ampere(SWIZZLE_PTR(sA + m * A_STRIDE + k), A + (a_tile_row + m) * K + (k_next_tile_idx * KT + k), 16);
                 }}
                 #pragma unroll
                 for (int i = tid; i < (KT * NT) / 8; i += 32) {{
                     int k = (i * 8) / NT;
                     int n = (i * 8) % NT;
                     if (k_next_tile_idx * KT + k < K && b_tile_col + n < N)
-                        cp_async_ampere(sB + k * B_STRIDE + n, B + (k_next_tile_idx * KT + k) * N + (b_tile_col + n), 16);
+                        cp_async_ampere(SWIZZLE_PTR(sB + k * B_STRIDE + n), B + (k_next_tile_idx * KT + k) * N + (b_tile_col + n), 16);
                 }}
                 cp_async_commit_group();
                 // Ensure k_tile + 1 is ready for next iter
@@ -205,8 +241,8 @@ extern "C" __global__ void __launch_bounds__(NUM_WARPS * 32, 1) gemm_mma_kernel(
         for (int mi = 0; mi < M_FRAGS; ++mi) {{
              #pragma unroll
              for (int ni = 0; ni < N_FRAGS; ++ni) {{
-                 int row_tile_offset = (cons_warp * mt_per_warp + mi * 16);
-                 int col_tile_offset = (ni * 16);
+                 int row_tile_offset = (warp_row_idx * mt_per_warp + mi * 16);
+                 int col_tile_offset = (warp_col_idx * nt_per_warp + ni * 16);
                  // Store to padded smem to avoid bank conflicts if needed, but row major here.
                  wmma::store_matrix_sync(sC + row_tile_offset * NT + col_tile_offset, frag_acc[mi][ni], NT, wmma::mem_row_major);
              }}
@@ -214,32 +250,65 @@ extern "C" __global__ void __launch_bounds__(NUM_WARPS * 32, 1) gemm_mma_kernel(
         __syncthreads();
 
         int epis_tid = tid - PRODUCER_WARPS * 32;
-        #pragma unroll
-        for (int i = epis_tid; i < MT * NT; i += (NUM_WARPS - PRODUCER_WARPS) * 32) {{
-             // Logic to distribute work among consumers
-             // Or can use strict mapping. 
-             // Simple grid stride over the tile:
-             int r = i / NT;
-             int c = i % NT;
-             
-             int row = a_tile_row + r;
-             int col = b_tile_col + c;
+        if ({vectorize_epilogue} && N % 8 == 0 && NT % 8 == 0) {{
+             // Vectorized Path: float4 stores (8 halves)
+             int vec_size = 8;
+             // Ensure loop increments by vector size
+             #pragma unroll
+             for (int i = epis_tid * vec_size; i < MT * NT; i += (NUM_WARPS - PRODUCER_WARPS) * 32 * vec_size) {{
+                 int r = i / NT;
+                 int c = i % NT;
+                 int row = a_tile_row + r;
+                 int col = b_tile_col + c;
 
-             if (row < M && col < N) {{
-                 int n_glob = col;
-                 int m_glob = row;
-                 float val = sC[i];
-                 {epilogue_apply}
-                 C_global[(long long)row * N + col] = (half)val;
+                 if (row < M && col + 7 < N) {{
+                     // Load 8 values from sC (float)
+                     float vals[8];
+                     #pragma unroll
+                     for(int v=0; v<8; ++v) vals[v] = sC[i + v];
+
+                     // Apply Epilogue & Pack
+                     half packs[8];
+                     int m_glob = row; 
+                     #pragma unroll
+                     for(int v=0; v<8; ++v) {{
+                         int n_glob = col + v;
+                         float val = vals[v];
+                         {epilogue_apply}
+                         packs[v] = (half)val;
+                     }}
+                     // Store using float4 alias
+                     *(float4*)(&C_global[(long long)row * N + col]) = *(float4*)packs;
+                 }}
+             }}
+        }} else {{
+             // Scalar Fallback
+             #pragma unroll
+             for (int i = epis_tid; i < MT * NT; i += (NUM_WARPS - PRODUCER_WARPS) * 32) {{
+                  int r = i / NT;
+                  int c = i % NT;
+                  int row = a_tile_row + r;
+                  int col = b_tile_col + c;
+                  if (row < M && col < N) {{
+                      int n_glob = col;
+                      int m_glob = row;
+                      float val = sC[i];
+                      {epilogue_apply}
+                      C_global[(long long)row * N + col] = (half)val;
+                  }}
              }}
         }}
     }}
 }}
 "# , mt=mt, nt=nt, kt=kt, stages=stages, num_warps=num_warps, smem_a_bytes=smem_a_bytes, smem_b_bytes=smem_b_bytes, 
+a_smem_offset=a_smem_offset, b_smem_offset=b_smem_offset,
 primitives=CudaBackend::get_primitive_defs(), 
 epilogue_defs=include_str!("../kernels/gpu/epilogue.cuh"),
 epilogue_args=epilogue_args,
-epilogue_apply=epilogue_apply)
+epilogue_apply=epilogue_apply,
+swizzle_enabled=(if config.swizzle_mode != crate::core::config::SwizzleMode::None { 1 } else { 0 }),
+vectorize_epilogue=config.vectorize_epilogue,
+warp_m=warp_m, warp_n=warp_n)
     }
 }
 
@@ -254,9 +323,7 @@ impl Emitter for CUDAEmitter {
                 let emitter = FlashAttentionEmitter::new(ir.tiling.clone());
                 emitter.generate_kernel(*h as usize, *dh as usize, *causal)
             }
-            UnifiedOpType::Gemm { m, n, k } => {
-                self.generate_gemm(*m, *n, *k, &ir.tiling)
-            }
+            UnifiedOpType::Gemm { m, n, k } => self.generate_gemm(*m, *n, *k, &ir.tiling),
             UnifiedOpType::Elementwise { .. } => {
                 panic!("Elementwise Ops should be handled by UniversalEmitter.");
             }

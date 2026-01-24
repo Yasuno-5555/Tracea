@@ -1,9 +1,9 @@
+use std::path::Path;
 use std::env;
 use std::fs::File;
 use std::io::Write;
-use std::path::Path;
-use tracea::runtime::manager::{RuntimeManager, DeviceBackend};
-use tracea::optimizer::{AutoTuner, OptimizationGoal};
+use tracea::runtime::{RuntimeManager, DeviceBackend};
+use tracea::optimizer::{AutoTuner, OptimizationGoal, HardwareProfile};
 use chrono::Local;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -53,7 +53,7 @@ fn run_gemm(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Run AutoTuner
-    let gpu_info = tracea::optimizer::GPUInfo::rtx3070(); 
+    let gpu_info = tracea::optimizer::HardwareProfile::rtx3070(); 
     let mut tuner = AutoTuner::new(gpu_info).with_runtime(runtime.clone());
     
     let best_config = tuner.optimize(

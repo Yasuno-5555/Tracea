@@ -8,7 +8,7 @@ name = "tracea"
 crate-type = ["cdylib", "rlib"]
 
 [features]
-default = ["python", "cpp"]
+default = ["python"]
 python = ["dep:pyo3"]
 cpp = []
 

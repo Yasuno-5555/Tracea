@@ -9,14 +9,12 @@ fn main() {
         .map(|s| s.success())
         .unwrap_or(false);
 
-    if cuda_available {
+    let cpp_feature = std::env::var("CARGO_FEATURE_CPP").is_ok();
+    if cuda_available && cpp_feature {
         println!("cargo:info=CUDA found, compiling templates...");
         
         // Detect GPU architecture (default to sm_86 for RTX 3070)
         let arch = std::env::var("TRACEA_CUDA_ARCH").unwrap_or_else(|_| "sm_86".to_string());
-
-        // Path to cl.exe (Host compiler for nvcc on Windows)
-        let host_compiler = "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.44.35207\\bin\\Hostx64\\x64\\cl.exe";
 
         cc::Build::new()
             .cuda(true)
@@ -25,7 +23,6 @@ fn main() {
             .flag("--use_fast_math")
             .flag("-gencode")
             .flag(&format!("arch=compute_{},code={}", &arch[3..], arch))
-            .flag(&format!("-ccbin={}", host_compiler))
             .include("src/kernels/gpu")
             .compile("tracea_kernels");
 

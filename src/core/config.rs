@@ -118,6 +118,38 @@ pub enum SpecializedInstruction {
     Neon,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+pub enum IntrinsicShape {
+    #[default]
+    None,
+    // CUDA Tensor Core (m16n8k16)
+    M16N8K16,
+    // CUDA Tensor Core (m16n8k32 for TF32)
+    M16N8K32,
+    // ROCm MFMA (m32n32k2)
+    M32N32K2,
+    // ROCm MFMA (m16n16k4)
+    M16N16K4,
+    // Metal Simdgroup (m16n16k1)
+    M16N16K1,
+    // Fallback / SIMD
+    SimdAvx2,
+}
+
+impl IntrinsicShape {
+    pub fn k_split(&self) -> u32 {
+        match self {
+            Self::M16N8K16 => 16,
+            Self::M16N8K32 => 32,
+            Self::M32N32K2 => 2,
+            Self::M16N16K4 => 4,
+            Self::M16N16K1 => 1,
+            Self::SimdAvx2 => 8, // Approx
+            Self::None => 1,
+        }
+    }
+}
+
 impl SpecializedInstruction {
     pub fn to_f32(self) -> f32 {
         match self {
@@ -203,6 +235,8 @@ pub struct PipelineConfig {
     pub cp_async_distance: u32,
     pub barrier_mode: BarrierMode,
     pub softmax_granularity: SoftmaxGranularity,
+    pub intrinsic_shape: IntrinsicShape,
+    pub vectorize_epilogue: bool,
 }
 
 impl PipelineConfig {
@@ -225,6 +259,8 @@ impl PipelineConfig {
             cp_async_distance: 0,
             barrier_mode: BarrierMode::None,
             softmax_granularity: SoftmaxGranularity::PerTile,
+            intrinsic_shape: IntrinsicShape::None,
+            vectorize_epilogue: true,
         }
     }
 
@@ -253,6 +289,8 @@ impl PipelineConfig {
             self.cp_async_distance as f32,
             self.barrier_mode.to_f32(),
             self.softmax_granularity.to_f32(),
+            if self.vectorize_epilogue { 1.0 } else { 0.0 },
+            0.0, // Placeholder
         ]
     }
 
@@ -275,6 +313,8 @@ impl PipelineConfig {
             cp_async_distance: vec.get(11).map(|&v| v as u32).unwrap_or(0),
             barrier_mode: vec.get(12).map(|&v| BarrierMode::from_f32(v)).unwrap_or(BarrierMode::None),
             softmax_granularity: vec.get(13).map(|&v| SoftmaxGranularity::from_f32(v)).unwrap_or(SoftmaxGranularity::PerTile),
+            intrinsic_shape: IntrinsicShape::None,
+            vectorize_epilogue: vec.get(14).map(|&v| v > 0.5).unwrap_or(true),
         }
     }
 

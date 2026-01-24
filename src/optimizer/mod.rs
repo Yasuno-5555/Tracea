@@ -1,6 +1,7 @@
 use crate::PipelineConfig;
 use std::sync::Arc;
 use cudarc::driver::CudaDevice;
+use serde::{Serialize, Deserialize};
 
 use crate::runtime::manager::DeviceBackend;
 use crate::core::backend::{Device, CudaArch, CpuArch};
@@ -11,47 +12,56 @@ pub mod heroscope;
 use heroscope::{HeroScopeV3, get_cpu_id};
 
 #[derive(Debug, Clone)]
-pub struct GPUInfo {
+pub struct HardwareProfile {
     pub name: String,
     pub backend: DeviceBackend,
     pub shared_memory_per_block: usize,
     pub max_registers_per_thread: u32,
+    pub registers_per_sm: u32,
+    pub max_registers_per_block: u32,
     pub max_warps_per_sm: u32, // CUDA: Warps, ROCm: Waves, Metal: Simdgroups
     pub wavefront_size: u32,  // CUDA: 32, ROCm: 64 or 32, Metal: 32
     pub max_blocks_per_sm: u32,
     pub shared_memory_per_sm: usize,
     pub has_specialized_units: bool,
     pub compute_capability: Option<(u32, u32)>,
+    pub supported_intrinsic_shapes: Vec<crate::core::config::IntrinsicShape>,
 }
 
-impl GPUInfo {
+impl HardwareProfile {
     pub fn rtx3070() -> Self {
         Self {
             name: "NVIDIA GeForce RTX 3070".to_string(),
             backend: DeviceBackend::Cuda,
-            shared_memory_per_block: 99 * 1024, // Real limit with dynamic SMEM config
+            shared_memory_per_block: 48 * 1024, // Configurable up to 99KB
             max_registers_per_thread: 255,
+            registers_per_sm: 65536,
+            max_registers_per_block: 65536,
             max_warps_per_sm: 48,
             wavefront_size: 32,
             max_blocks_per_sm: 16,
             shared_memory_per_sm: 100 * 1024,
             has_specialized_units: true,
             compute_capability: Some((8, 6)),
+            supported_intrinsic_shapes: vec![crate::core::config::IntrinsicShape::M16N8K16],
         }
     }
-    // ... (Other GPU implementations omitted for brevity but should typically be here) ...
-     pub fn mi250() -> Self {
+
+    pub fn mi250() -> Self {
         Self {
             name: "AMD Instinct MI250X".to_string(),
             backend: DeviceBackend::Rocm,
             shared_memory_per_block: 64 * 1024,
             max_registers_per_thread: 256,
+            registers_per_sm: 163840, // 256KB across WGP
+            max_registers_per_block: 65536,
             max_warps_per_sm: 32,
             wavefront_size: 64,
             max_blocks_per_sm: 16,
             shared_memory_per_sm: 64 * 1024,
             has_specialized_units: true,
             compute_capability: None,
+            supported_intrinsic_shapes: vec![crate::core::config::IntrinsicShape::M32N32K2, crate::core::config::IntrinsicShape::M16N16K4],
         }
     }
 
@@ -61,13 +71,113 @@ impl GPUInfo {
             backend: DeviceBackend::Cuda,
             shared_memory_per_block: 164 * 1024,
             max_registers_per_thread: 255,
+            registers_per_sm: 65536,
+            max_registers_per_block: 65536,
             max_warps_per_sm: 64,
             wavefront_size: 32,
             max_blocks_per_sm: 32,
             shared_memory_per_sm: 164 * 1024,
             has_specialized_units: true,
             compute_capability: Some((8, 0)),
+            supported_intrinsic_shapes: vec![crate::core::config::IntrinsicShape::M16N8K16],
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum PruningReason {
+    SharedMemoryOverflow,
+    RegisterPressureTooHigh,
+    LowOccupancy(u32), // Occupancy in milli-percentage (0-1000)
+    InvalidTileSize,
+    UnsupportedIntrinsic,
+    ForbiddenZone(&'static str),
+}
+
+impl HardwareProfile {
+    pub fn check_feasibility(&self, config: &PipelineConfig, problem: &ProblemDescriptor) -> Result<(), PruningReason> {
+        // 1. Shared Memory Check
+        let policy = PolicyFactory::derive(problem);
+        let smem_usage = policy.estimate_smem_usage(config);
+        if smem_usage > self.shared_memory_per_block {
+            return Err(PruningReason::SharedMemoryOverflow);
+        }
+
+        // 2. Intrinsic Check
+        if config.instruction != crate::core::config::SpecializedInstruction::None {
+            if !self.supported_intrinsic_shapes.contains(&config.intrinsic_shape) {
+                // If it's a generic instruction but we asked for a specific shape, check it.
+                // In some cases we might fallback, but for tuning we want to prune if requested shape isn't there.
+            }
+        }
+
+        // 3. Occupancy Estimation
+        let occupancy = self.estimate_occupancy(config);
+        if occupancy < 0.05 { // Arbitrary low threshold: 5%
+            return Err(PruningReason::LowOccupancy((occupancy * 1000.0) as u32));
+        }
+
+        // 4. Forbidden Zones (Reproducibility & Ethics)
+        // Example: Tiles that are too small for large problems causing excessive overhead/noise
+        if problem.shape.m > 1024 && config.m_tile < 16 {
+             return Err(PruningReason::ForbiddenZone("Excessive tile-overhead for large M"));
+        }
+        
+        // Example: Stages that exceed a sane limit for this arch
+        if config.num_stages > 8 {
+             return Err(PruningReason::ForbiddenZone("Unstable pipeline depth (>8 stages)"));
+        }
+
+        Ok(())
+    }
+
+    pub fn estimate_occupancy(&self, config: &PipelineConfig) -> f32 {
+        let warps_per_block = config.force_num_warps.unwrap_or(4);
+        let blocks_by_warps = self.max_warps_per_sm / warps_per_block;
+        
+        // ⚠️ Conservative Register Estimation (Lower Bound)
+        // Registers ≈ (TileSizeElements * PipelineDepth) / ThreadCount + BaseOverhead
+        // Using f32 for intermediate calc to avoid overflow/truncation early
+        let thread_count = (warps_per_block * self.wavefront_size) as f32;
+        let tile_elements = (config.m_tile * config.n_tile) as f32; // Simplified
+        let base_overhead = 32.0;
+        
+        let est_regs = match config.instruction {
+            crate::core::config::SpecializedInstruction::CudaMMA | crate::core::config::SpecializedInstruction::RocmMFMA => {
+                let load_regs = (tile_elements * config.num_stages as f32) / thread_count;
+                (load_regs + base_overhead) as u32
+            },
+            _ => 32,
+        }.min(self.max_registers_per_thread);
+
+        let regs_per_block = (warps_per_block * self.wavefront_size) * est_regs;
+        
+        let blocks_by_regs = if regs_per_block > 0 {
+            self.registers_per_sm / regs_per_block
+        } else {
+            self.max_blocks_per_sm
+        };
+
+        let blocks_per_sm = blocks_by_warps.min(blocks_by_regs).min(self.max_blocks_per_sm);
+        
+        // Return 0.0 only if strictly impossible, otherwise give it a chance.
+        if blocks_per_sm == 0 { 0.0 } else { blocks_per_sm as f32 / self.max_blocks_per_sm as f32 }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TuningStats {
+    pub total_trials: usize,
+    pub pruned_count: usize,
+    pub pruning_reasons: std::collections::HashMap<String, usize>,
+    pub forbidden_configs: Vec<PipelineConfig>,
+}
+
+impl TuningStats {
+    pub fn log_pruning(&mut self, reason: PruningReason) {
+        self.pruned_count += 1;
+        let entry = self.pruning_reasons.entry(format!("{:?}", reason)).or_insert(0);
+        *entry += 1;
     }
 }
 
@@ -116,7 +226,7 @@ impl GaussianProcess {
         }
     }
 
-    pub fn observe(&mut self, obs: Observation, gpu: &GPUInfo) {
+    pub fn observe(&mut self, obs: Observation, gpu: &HardwareProfile) {
         if self.observations.is_empty() {
              let features = self.config_features(&obs.config, obs.m, obs.n, obs.k);
              self.num_features = features.len();
@@ -128,7 +238,7 @@ impl GaussianProcess {
         }
     }
     
-    pub fn optimize_hyperparams(&mut self, gpu: &GPUInfo) {
+    pub fn optimize_hyperparams(&mut self, gpu: &HardwareProfile) {
         if self.observations.len() < 3 { return; }
         let lr = 0.1;
         let num_iters = 10;
@@ -152,7 +262,7 @@ impl GaussianProcess {
         }
     }
 
-    fn marginal_log_likelihood(&self, gpu: &GPUInfo) -> f32 {
+    fn marginal_log_likelihood(&self, gpu: &HardwareProfile) -> f32 {
         if self.observations.is_empty() { return 0.0; }
         let n = self.observations.len();
         let mut sum_sq_error = 0.0;
@@ -167,7 +277,7 @@ impl GaussianProcess {
         -sum_sq_error / sum_variance.max(1e-6)
     }
     
-    fn predict_excluding(&self, m: u32, n: u32, k: u32, config: &PipelineConfig, exclude_idx: usize, gpu: &GPUInfo) -> (f32, f32) {
+    fn predict_excluding(&self, m: u32, n: u32, k: u32, config: &PipelineConfig, exclude_idx: usize, gpu: &HardwareProfile) -> (f32, f32) {
         let prior_mean = self.roofline_prior(m, n, k, config, gpu);
         if self.observations.len() <= 1 { return (prior_mean, 1.0); }
         let mut mean_diff = 0.0;
@@ -204,7 +314,7 @@ impl GaussianProcess {
         v
     }
     
-    fn roofline_prior(&self, m: u32, n: u32, k: u32, config: &PipelineConfig, _gpu: &GPUInfo) -> f32 {
+    fn roofline_prior(&self, m: u32, n: u32, k: u32, config: &PipelineConfig, _gpu: &HardwareProfile) -> f32 {
          let is_tc = config.instruction != crate::core::config::SpecializedInstruction::None;
          let peak_tflops = if is_tc { 160.0 } else { 20.0 };
          let mem_bw = 448.0; 
@@ -225,7 +335,7 @@ impl GaussianProcess {
         ]
     }
 
-    pub fn predict(&self, m: u32, n: u32, k: u32, config: &PipelineConfig, gpu: &GPUInfo) -> (f32, f32) {
+    pub fn predict(&self, m: u32, n: u32, k: u32, config: &PipelineConfig, gpu: &HardwareProfile) -> (f32, f32) {
          let prior_mean = self.roofline_prior(m, n, k, config, gpu);
          if self.observations.is_empty() { return (prior_mean, 1.0); }
          
@@ -254,7 +364,7 @@ impl GaussianProcess {
          (mu, sigma)
     }
 
-    pub fn expected_improvement(&self, m: u32, n: u32, k: u32, config: &PipelineConfig, current_best_y: f32, gpu: &GPUInfo) -> f32 {
+    pub fn expected_improvement(&self, m: u32, n: u32, k: u32, config: &PipelineConfig, current_best_y: f32, gpu: &HardwareProfile) -> f32 {
          let (mu, sigma) = self.predict(m, n, k, config, gpu);
          if sigma < 1e-6 { return 0.0; }
          let z = (mu - current_best_y) / sigma;
@@ -264,12 +374,12 @@ impl GaussianProcess {
          (mu - current_best_y) * pt + sigma * phi_z
     }
     
-    pub fn ucb(&self, m: u32, n: u32, k: u32, config: &PipelineConfig, gpu: &GPUInfo) -> f32 {
+    pub fn ucb(&self, m: u32, n: u32, k: u32, config: &PipelineConfig, gpu: &HardwareProfile) -> f32 {
         let (mu, sigma) = self.predict(m, n, k, config, gpu);
         mu + self.exploration_beta * sigma
     }
     
-    pub fn thompson_sample(&self, m: u32, n: u32, k: u32, config: &PipelineConfig, gpu: &GPUInfo) -> f32 {
+    pub fn thompson_sample(&self, m: u32, n: u32, k: u32, config: &PipelineConfig, gpu: &HardwareProfile) -> f32 {
         let (mu, sigma) = self.predict(m, n, k, config, gpu);
         let mut rng = thread_rng();
         let dist = Normal::new(mu, sigma.max(1e-6)).unwrap_or(Normal::new(mu, 1e-6).unwrap());
@@ -279,17 +389,18 @@ impl GaussianProcess {
 
 #[derive(Debug, Clone)]
 pub struct AutoTuner {
-    pub gpu: GPUInfo,
+    pub gpu: HardwareProfile,
     pub gp: GaussianProcess,
     pub best_config: Option<PipelineConfig>,
     pub device: Device,
     pub runtime: Option<Arc<crate::runtime::RuntimeManager>>, 
     pub heroscope: HeroScopeV3,
     pub hardware_id: String,
+    pub stats: TuningStats,
 }
 
 impl AutoTuner {
-    pub fn new(gpu: GPUInfo) -> Self {
+    pub fn new(gpu: HardwareProfile) -> Self {
         let device = match gpu.backend {
             DeviceBackend::Cuda => Device::Cuda(CudaArch::Ampere), // Assume Ampere for auto-detection if unknown
             DeviceBackend::Rocm => Device::Cuda(CudaArch::Unknown), // Temporary
@@ -315,6 +426,7 @@ impl AutoTuner {
             runtime: None,
             heroscope: HeroScopeV3::new(),
             hardware_id,
+            stats: TuningStats::default(),
         }
     }
     
@@ -407,7 +519,7 @@ impl AutoTuner {
             k: problem.shape.k as u32,
             dtype: "f16".to_string(), 
             epilogue: vec![], // To be refined
-            env_version: "v2".to_string(),
+            env_version: "v3.1_forced".to_string(),
             arch: match self.gpu.name.as_str() {
                 n if n.contains("RTX 30") => "Ampere".to_string(),
                 n if n.contains("RTX 40") => "Ada".to_string(),
@@ -500,8 +612,13 @@ impl AutoTuner {
             
             let candidate = self.propose_candidate(problem, &policy.search_space(), acq, &policy, current_best_score);
             
-             if !benchmark.validate_config(&candidate) {
-                // ... Blacklist logic ...
+            if let Err(reason) = self.gpu.check_feasibility(&candidate, problem) {
+                eprintln!("[Tracea] 鉁 Pruned configuration {:?} - Reason: {:?}", candidate, reason);
+                self.stats.log_pruning(reason);
+                continue;
+            }
+
+            if !benchmark.validate_config(&candidate) {
                 continue;
             }
 
@@ -567,6 +684,7 @@ impl AutoTuner {
                                                     cfg.cp_async_distance = stages - 1;
                                                 }
 
+                                                if let Err(_) = self.gpu.check_feasibility(&cfg, problem) { continue; }
                                                 if !policy.is_feasible(&cfg, &self.gpu) { continue; }
                                                 
                                                 let score = match acq {
@@ -590,5 +708,30 @@ impl AutoTuner {
             }
         }
         best_cfg
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::config::{PipelineConfig, SpecializedInstruction, SwizzleMode, IntrinsicShape};
+    use crate::optimizer::problem::{ProblemDescriptor};
+
+    #[test]
+    fn test_golden_config_preservation() {
+        let gpu = HardwareProfile::rtx3070();
+        let problem = ProblemDescriptor::new_gemm(2048, 2048, 2048);
+        
+        // Gemm v3.1 "Golden Config": Known best for Ampere
+        let mut golden = PipelineConfig::new(3, 128, 128, 32).with_warps(8);
+        golden.instruction = SpecializedInstruction::CudaMMA;
+        golden.swizzle_mode = SwizzleMode::Xor4;
+        golden.intrinsic_shape = IntrinsicShape::M16N8K16;
+
+        // Verification: Should NOT be pruned
+        let result = gpu.check_feasibility(&golden, &problem);
+        assert!(result.is_ok(), "Golden Config was incorrectly pruned: {:?}", result.err());
+        
+        println!("[Test] ✅ Golden Config Preserved (Occupancy: {:.2}%)", gpu.estimate_occupancy(&golden) * 100.0);
     }
 }

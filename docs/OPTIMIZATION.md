@@ -10,6 +10,12 @@ Tracea uses **Software Pipelining** to overlap memory transfers with computation
 
 The `SyncRequirement` enum manages the necessary wait-states (`cp.async.wait_group` or barriers) to ensure data integrity without over-synchronizing.
 
+## 2. Implicit GEMM Optimizations (v3.2)
+Tracea's Conv2d engine completely avoids `im2col` memory expansion by computing indices on the fly.
+- **Magic Number Division**: Replaces expensive integer division (`/`, `%`) with high-throughput 32-bit fixed-point multiplication for coordinate recovery.
+- **Hybrid Hoisting**: Automatically decides whether to pre-compute coordinates into Shared Memory (for speed) or re-compute them (to save SMEM for larger tiles), based on the `smem_size < 96KB` threshold.
+- **Alignment-Safe Epilogues**: Vectorized `uint4` stores for aligned channels, falling back to conditional scalar stores for odd shapes ($C \pmod 8 \neq 0$), ensuring safety without penalizing the common case.
+
 ## 3. Backend-Aware Variant Selection (Tracea Doctor)
 Tracea doesn't just tune; it *diagnoses*. The **Doctor** performs a multi-objective search:
 - **Requirement Filtering**: Discards variants that exceed physical hardware limits (e.g., shared memory).

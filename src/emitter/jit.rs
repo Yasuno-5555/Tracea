@@ -141,6 +141,29 @@ impl JITCompiler {
         let kernel = self.device.get_func(module_name_static, kernel_name_static)
             .ok_or_else(|| format!("Function {} not found", kernel_name))?;
 
+        // Query and log register pressure (Phase 5: Reliability)
+        unsafe {
+            if let Ok(driver) = crate::emitter::driver::get_driver_api() {
+                let mut num_regs: i32 = 0;
+                let base_ptr = &kernel as *const CudaFunction as *const *mut c_void;
+                let mut h_ptr: *mut c_void = std::ptr::null_mut();
+                for i in 0..10 {
+                    let candidate = *base_ptr.add(i);
+                    if !candidate.is_null() {
+                        let mut val: i32 = 0;
+                        if (driver.cu_func_get_attribute)(&mut val, 0, candidate) == 0 && val >= 32 && val <= 1024 {
+                             h_ptr = candidate; break;
+                        }
+                    }
+                }
+                if !h_ptr.is_null() {
+                    if (driver.cu_func_get_attribute)(&mut num_regs, 4, h_ptr) == 0 {
+                        eprintln!("[Doctor] JIT Performance Audit: Kernel '{}' uses {} registers.", kernel_name, num_regs);
+                    }
+                }
+            }
+        }
+
         let mut cache = self.kernel_cache.lock().map_err(|_| "Cache Lock Poisoned".to_string())?;
         cache.insert(cache_key, kernel.clone());
         

@@ -1,5 +1,5 @@
 ﻿use crate::PipelineConfig;
-use crate::optimizer::GPUInfo;
+use crate::optimizer::HardwareProfile;
 use crate::optimizer::problem::{ProblemDescriptor, LayerType, HeroConfig, ArchHint, Fa2Variant};
 use crate::core::backend::Device;
 use crate::core::config::SoftmaxGranularity;
@@ -74,7 +74,7 @@ pub struct TuningContext {
 
 pub trait TuningPolicy: Send + Sync {
     fn search_space(&self) -> SearchSpace;
-    fn is_feasible(&self, config: &PipelineConfig, device: &GPUInfo) -> bool;
+    fn is_feasible(&self, config: &PipelineConfig, device: &HardwareProfile) -> bool;
     fn hero_configs(&self) -> Vec<HeroConfig>;
     fn sampling_plan(&self, ctx: &TuningContext) -> SamplingPlan; // Renamed from sampling_strategy
     
@@ -178,7 +178,7 @@ impl TuningPolicy for Conv2dPolicy {
         configs
     }
 
-    fn is_feasible(&self, cfg: &PipelineConfig, dev: &GPUInfo) -> bool {
+    fn is_feasible(&self, cfg: &PipelineConfig, dev: &HardwareProfile) -> bool {
         let nw = cfg.force_num_warps.unwrap_or(4);
         
         // Alignment check: M_FRAGS must be > 0
@@ -280,7 +280,7 @@ impl TuningPolicy for GemmPolicy {
         configs
     }
 
-    fn is_feasible(&self, cfg: &PipelineConfig, dev: &GPUInfo) -> bool {
+    fn is_feasible(&self, cfg: &PipelineConfig, dev: &HardwareProfile) -> bool {
          if self.estimate_smem_usage(cfg) > dev.shared_memory_per_block {
             return false;
         }
@@ -390,7 +390,7 @@ impl TuningPolicy for Fa2Policy {
         heroes
     }
 
-    fn is_feasible(&self, cfg: &PipelineConfig, dev: &GPUInfo) -> bool {
+    fn is_feasible(&self, cfg: &PipelineConfig, dev: &HardwareProfile) -> bool {
         let smem_qk = self.estimate_qk_smem(cfg);
         let smem_softmax = self.estimate_softmax_smem(cfg);
         let smem_pv = self.estimate_pv_smem(cfg);
@@ -464,7 +464,7 @@ impl TuningPolicy for CpuGemmPolicy {
         configs
     }
 
-    fn is_feasible(&self, _cfg: &PipelineConfig, _dev: &GPUInfo) -> bool { true }
+    fn is_feasible(&self, _cfg: &PipelineConfig, _dev: &HardwareProfile) -> bool { true }
     fn sampling_plan(&self, _ctx: &TuningContext) -> SamplingPlan { SamplingPlan::Balanced }
 }
 

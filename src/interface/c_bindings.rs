@@ -475,7 +475,7 @@ pub extern "C" fn tracea_attention(
     let num_warps = 2 + (mt / 16);
     let block = ((num_warps * 32) as u32, 1, 1);
     
-    let (smem_bytes, _, _, _, _) = FlashAttentionEmitter::calculate_smem_layout(&config, d);
+    let (smem_bytes, _, _, _, _, _) = FlashAttentionEmitter::calculate_smem_layout(&config, d);
 
     let args = vec![q.to_arg(), k.to_arg(), v.to_arg(), unsafe { (*o).to_arg() },
         KernelArg::Usize(b), KernelArg::Usize(h), KernelArg::Usize(s), KernelArg::Usize(d),

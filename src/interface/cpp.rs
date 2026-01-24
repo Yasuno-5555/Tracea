@@ -2,7 +2,7 @@ use std::ffi::CStr;
 use std::os::raw::{c_char, c_int};
 use std::sync::Arc;
 use crate::emitter::jit::JITCompiler;
-use crate::optimizer::{AutoTuner, GPUInfo};
+use crate::optimizer::{AutoTuner, HardwareProfile};
 
 pub struct CppContext {
     pub jit: Arc<JITCompiler>,
@@ -29,9 +29,9 @@ pub extern "C" fn tracea_create_context(device_name: *const c_char) -> TraceaCon
     };
 
     let bit_arch = if device_str.contains("A100") {
-        GPUInfo::a100()
+        HardwareProfile::a100()
     } else {
-        GPUInfo::rtx3070()
+        HardwareProfile::rtx3070()
     };
 
     let jit = match JITCompiler::new() {
