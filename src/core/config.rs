@@ -237,6 +237,7 @@ pub struct PipelineConfig {
     pub softmax_granularity: SoftmaxGranularity,
     pub intrinsic_shape: IntrinsicShape,
     pub vectorize_epilogue: bool,
+    pub ttg_enabled: bool,
 }
 
 impl PipelineConfig {
@@ -261,6 +262,7 @@ impl PipelineConfig {
             softmax_granularity: SoftmaxGranularity::PerTile,
             intrinsic_shape: IntrinsicShape::None,
             vectorize_epilogue: true,
+            ttg_enabled: false,
         }
     }
 
@@ -290,7 +292,7 @@ impl PipelineConfig {
             self.barrier_mode.to_f32(),
             self.softmax_granularity.to_f32(),
             if self.vectorize_epilogue { 1.0 } else { 0.0 },
-            0.0, // Placeholder
+            if self.ttg_enabled { 1.0 } else { 0.0 },
         ]
     }
 
@@ -315,6 +317,7 @@ impl PipelineConfig {
             softmax_granularity: vec.get(13).map(|&v| SoftmaxGranularity::from_f32(v)).unwrap_or(SoftmaxGranularity::PerTile),
             intrinsic_shape: IntrinsicShape::None,
             vectorize_epilogue: vec.get(14).map(|&v| v > 0.5).unwrap_or(true),
+            ttg_enabled: vec.get(15).map(|&v| v > 0.5).unwrap_or(false),
         }
     }
 

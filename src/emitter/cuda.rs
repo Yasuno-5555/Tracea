@@ -97,6 +97,9 @@ using namespace nvcuda;
 #define A_STRIDE {a_stride}
 #define B_STRIDE {b_stride}
 
+// Typedef for NVRTC
+typedef unsigned int uint;
+
 // Warp Tiling
 #define WARP_M {warp_m}
 #define WARP_N {warp_n}
@@ -110,22 +113,57 @@ using namespace nvcuda;
 
 {primitives}
 
-extern "C" __global__ void __launch_bounds__(NUM_WARPS * 32, 1) gemm_mma_kernel(
-    const half* __restrict__ A,
-    const half* __restrict__ B,
-    half* __restrict__ C_global,
-    int M, int N, int K{epilogue_args}
-) {{
-    int tid = threadIdx.x;
-    int warp_id = tid / 32;
-    bool is_producer = (warp_id < PRODUCER_WARPS);
+    extern "C" __global__ void __launch_bounds__(NUM_WARPS * 32, 1) gemm_mma_kernel(
+        const half* __restrict__ A,
+        const half* __restrict__ B,
+        half* __restrict__ C_global,
+        int M, int N, int K,
+        // TTG Arguments
+        const uint* __restrict__ l1_active_tiles,
+        const unsigned char* __restrict__ l2_metadata
+        {epilogue_args}
+    ) {{
+        int tid = threadIdx.x;
+        int warp_id = tid / 32;
 
-    extern __shared__ char smem[];
-    int a_smem_offset = {a_smem_offset};
-    int b_smem_offset = {b_smem_offset};
+        // --- TTG Indirection Layer ---
+        int tile_idx_m, tile_idx_n;
+        uint ttg_role = 0; // 0=Main, 1=Boundary
+        bool ttg_active = true;
 
-    int a_tile_row = blockIdx.y * MT;
-    int b_tile_col = blockIdx.x * NT;
+        #if {ttg_enabled}
+            // 1. Hardware Lying: blockIdx.x is the "Physical ID"
+            uint physical_id = blockIdx.x;
+            // Note: Grid should be 1D: [NumActiveTiles, 1, 1]
+            
+            // 2. L1 Lookup
+            // For now, assume simple array
+            uint logical_id = l1_active_tiles[physical_id];
+            
+            // 3. L2 Lookup
+            // struct TileMetadata {{ uint m; uint n; uint k_start; uint k_end; uint role; }}
+            // Size = 5 * 4 = 20 bytes. Let's use int* casting for simplicity or struct definition in preamble
+            // Using raw offsets for phase A P0
+            const uint* l2_ptr = (const uint*)(l2_metadata + logical_id * 20);
+            tile_idx_m = l2_ptr[0];
+            tile_idx_n = l2_ptr[1];
+            // k_start = l2_ptr[2];
+            // k_end = l2_ptr[3];
+            ttg_role = l2_ptr[4];
+
+        #else
+            // Legacy Rectangular Grid
+            tile_idx_m = blockIdx.y;
+            tile_idx_n = blockIdx.x;
+        #endif
+
+        int a_tile_row = tile_idx_m * MT;
+        int b_tile_col = tile_idx_n * NT;
+        
+        bool is_producer = (warp_id < PRODUCER_WARPS);
+
+        extern __shared__ char smem[];
+
     
     // Consumer Warp Tiling
     int cons_warp = warp_id - PRODUCER_WARPS;
@@ -153,8 +191,8 @@ extern "C" __global__ void __launch_bounds__(NUM_WARPS * 32, 1) gemm_mma_kernel(
         for (int s = 0; s < STAGES - 1; ++s) {{
             if (s < total_tiles) {{
                 int stage = s; // Simple direct mapping for prologue
-                half* sA = (half*)(smem + a_smem_offset + stage * {smem_a_bytes});
-                half* sB = (half*)(smem + b_smem_offset + stage * {smem_b_bytes});
+                half* sA = (half*)(smem + {a_smem_offset} + stage * {smem_a_bytes});
+                half* sB = (half*)(smem + {b_smem_offset} + stage * {smem_b_bytes});
                 
                 int k_tile = s;
                 #pragma unroll
@@ -183,8 +221,8 @@ extern "C" __global__ void __launch_bounds__(NUM_WARPS * 32, 1) gemm_mma_kernel(
     for (int k_tile = 0; k_tile < total_tiles; ++k_tile) {{
         if (!is_producer) {{
             int stage = k_tile % STAGES;
-            half* sA = (half*)(smem + a_smem_offset + stage * {smem_a_bytes});
-            half* sB = (half*)(smem + b_smem_offset + stage * {smem_b_bytes});
+            half* sA = (half*)(smem + {a_smem_offset} + stage * {smem_a_bytes});
+            half* sB = (half*)(smem + {b_smem_offset} + stage * {smem_b_bytes});
             for (int k_inner = 0; k_inner < KT; k_inner += 16) {{
                 #pragma unroll
                 for (int mi = 0; mi < M_FRAGS; ++mi) {{
@@ -206,8 +244,8 @@ extern "C" __global__ void __launch_bounds__(NUM_WARPS * 32, 1) gemm_mma_kernel(
             int next_k = k_tile + STAGES - 1;
             if (next_k < total_tiles) {{
                 int stage = next_k % STAGES;
-                half* sA = (half*)(smem + a_smem_offset + stage * {smem_a_bytes});
-                half* sB = (half*)(smem + b_smem_offset + stage * {smem_b_bytes});
+                half* sA = (half*)(smem + {a_smem_offset} + stage * {smem_a_bytes});
+                half* sB = (half*)(smem + {b_smem_offset} + stage * {smem_b_bytes});
                 
                 int k_next_tile_idx = next_k; // rename to handle capture
                 #pragma unroll
@@ -301,14 +339,14 @@ extern "C" __global__ void __launch_bounds__(NUM_WARPS * 32, 1) gemm_mma_kernel(
     }}
 }}
 "# , mt=mt, nt=nt, kt=kt, stages=stages, num_warps=num_warps, smem_a_bytes=smem_a_bytes, smem_b_bytes=smem_b_bytes, 
-a_smem_offset=a_smem_offset, b_smem_offset=b_smem_offset,
 primitives=CudaBackend::get_primitive_defs(), 
 epilogue_defs=include_str!("../kernels/gpu/epilogue.cuh"),
 epilogue_args=epilogue_args,
 epilogue_apply=epilogue_apply,
 swizzle_enabled=(if config.swizzle_mode != crate::core::config::SwizzleMode::None { 1 } else { 0 }),
 vectorize_epilogue=config.vectorize_epilogue,
-warp_m=warp_m, warp_n=warp_n)
+ttg_enabled=(if config.ttg_enabled { 1 } else { 0 }),
+warp_m=warp_m, warp_n=warp_n, a_smem_offset=a_smem_offset, b_smem_offset=b_smem_offset)
     }
 }
 
@@ -330,8 +368,29 @@ impl Emitter for CUDAEmitter {
             UnifiedOpType::Conv2d { .. } => {
                 crate::emitter::conv::generate_conv(ir)
             }
+            UnifiedOpType::MatrixCore { m, n, k } => {
+                // Low-level MMA call using wmma / MatrixCore primitives
+                format!(r#"
+#include <cuda_fp16.h>
+#include <mma.h>
+using namespace nvcuda;
+extern "C" __global__ void matrix_core_kernel(const half* a, const half* b, float* c) {{
+    wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::row_major> fa;
+    wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::row_major> fb;
+    wmma::fragment<wmma::accumulator, 16, 16, 16, float> fc;
+    wmma::fill_fragment(fc, 0.0f);
+    wmma::load_matrix_sync(fa, a, 16);
+    wmma::load_matrix_sync(fb, b, 16);
+    wmma::mma_sync(fc, fa, fb, fc);
+    wmma::store_matrix_sync(c, fc, 16, wmma::mem_row_major);
+}}
+"#)
+            }
             UnifiedOpType::ConvTranspose2d { .. } => {
                 crate::emitter::conv_transpose::generate_conv_transpose(ir)
+            }
+            UnifiedOpType::LowRankMlp { .. } => {
+                crate::emitter::cuda_low_rank::generate_low_rank_mlp(ir)
             }
         }
     }

@@ -1,0 +1,405 @@
+warning: tracea@0.1.0: CUDA (nvcc) not found. Skipping template compilation.
+    Checking tracea v0.1.0 (E:\Projects\Tracea)
+error[E0255]: the name `CrossBackendTuner` is defined multiple times
+ --> src\optimizer\orchestrator.rs:6:1
+  |
+1 | use crate::optimizer::orchestrator::CrossBackendTuner;
+  |     ------------------------------------------------- previous import of the type `CrossBackendTuner` here
+...
+6 | pub struct CrossBackendTuner {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `CrossBackendTuner` redefined here
+  |
+  = note: `CrossBackendTuner` must be defined only once in the type namespace of this module
+help: you can use `as` to change the binding name of the import
+  |
+1 | use crate::optimizer::orchestrator::CrossBackendTuner as OtherCrossBackendTuner;
+  |                                                       +++++++++++++++++++++++++
+
+error: invalid format string: expected `}`, found `u`
+   --> src\emitter\cuda.rs:141:38
+    |
+141 |             // struct TileMetadata { uint m; uint n; uint k_start; uint k_end; uint role; }
+    |                                    - ^ expected `}` in format string
+    |                                    |
+    |                                    because of this opening brace
+    |
+    = note: if you intended to print `{`, you can escape it using `{{`
+
+error[E0433]: failed to resolve: could not find `vulkan` in `backend`
+  --> src\emitter\vulkan.rs:5:42
+   |
+ 5 |     let primitive_defs = crate::backend::vulkan::VulkanBackend::get_primitive_defs();
+   |                                          ^^^^^^ could not find `vulkan` in `backend`
+   |
+note: found an item that was configured out
+  --> src\backend\mod.rs:33:9
+   |
+32 | #[cfg(feature = "vulkan")]
+   |       ------------------ the item is gated behind the `vulkan` feature
+33 | pub mod vulkan;
+   |         ^^^^^^
+
+error[E0433]: failed to resolve: could not find `vulkan` in `backend`
+  --> src\emitter\vulkan.rs:84:46
+   |
+84 |         let primitive_defs = crate::backend::vulkan::VulkanBackend::get_primitive_defs();
+   |                                              ^^^^^^ could not find `vulkan` in `backend`
+   |
+note: found an item that was configured out
+  --> src\backend\mod.rs:33:9
+   |
+32 | #[cfg(feature = "vulkan")]
+   |       ------------------ the item is gated behind the `vulkan` feature
+33 | pub mod vulkan;
+   |         ^^^^^^
+
+error[E0412]: cannot find type `RuntimeManager` in this scope
+ --> src\optimizer\orchestrator.rs:7:18
+  |
+7 |     runtime: Arc<RuntimeManager>,
+  |                  ^^^^^^^^^^^^^^ not found in this scope
+  |
+help: consider importing this struct through its public re-export
+  |
+1 + use crate::runtime::RuntimeManager;
+  |
+
+error[E0412]: cannot find type `DeviceBackend` in this scope
+ --> src\optimizer\orchestrator.rs:8:21
+  |
+8 |     tuners: HashMap<DeviceBackend, AutoTuner>,
+  |                     ^^^^^^^^^^^^^ not found in this scope
+  |
+help: consider importing this enum through its public re-export
+  |
+1 + use crate::optimizer::DeviceBackend;
+  |
+
+error[E0412]: cannot find type `AutoTuner` in this scope
+ --> src\optimizer\orchestrator.rs:8:36
+  |
+8 |     tuners: HashMap<DeviceBackend, AutoTuner>,
+  |                                    ^^^^^^^^^ not found in this scope
+  |
+help: consider importing this struct through its public re-export
+  |
+1 + use crate::AutoTuner;
+  |
+
+error[E0412]: cannot find type `RuntimeManager` in this scope
+  --> src\optimizer\orchestrator.rs:13:29
+   |
+13 |     pub fn new(runtime: Arc<RuntimeManager>) -> Self {
+   |                             ^^^^^^^^^^^^^^ not found in this scope
+   |
+help: consider importing this struct through its public re-export
+   |
+ 1 + use crate::runtime::RuntimeManager;
+   |
+
+error[E0433]: failed to resolve: use of undeclared type `DeviceBackend`
+  --> src\optimizer\orchestrator.rs:19:17
+   |
+19 |                 DeviceBackend::Cuda => HardwareProfile::rtx3070(),
+   |                 ^^^^^^^^^^^^^ use of undeclared type `DeviceBackend`
+   |
+help: consider importing this enum through its public re-export
+   |
+ 1 + use crate::optimizer::DeviceBackend;
+   |
+
+error[E0433]: failed to resolve: use of undeclared type `HardwareProfile`
+  --> src\optimizer\orchestrator.rs:19:40
+   |
+19 |                 DeviceBackend::Cuda => HardwareProfile::rtx3070(),
+   |                                        ^^^^^^^^^^^^^^^ use of undeclared type `HardwareProfile`
+   |
+help: consider importing this struct through its public re-export
+   |
+ 1 + use crate::HardwareProfile;
+   |
+
+error[E0433]: failed to resolve: use of undeclared type `DeviceBackend`
+  --> src\optimizer\orchestrator.rs:20:17
+   |
+20 |                 DeviceBackend::Rocm => HardwareProfile::mi250(),
+   |                 ^^^^^^^^^^^^^ use of undeclared type `DeviceBackend`
+   |
+help: consider importing this enum through its public re-export
+   |
+ 1 + use crate::optimizer::DeviceBackend;
+   |
+
+error[E0433]: failed to resolve: use of undeclared type `HardwareProfile`
+  --> src\optimizer\orchestrator.rs:20:40
+   |
+20 |                 DeviceBackend::Rocm => HardwareProfile::mi250(),
+   |                                        ^^^^^^^^^^^^^^^ use of undeclared type `HardwareProfile`
+   |
+help: consider importing this struct through its public re-export
+   |
+ 1 + use crate::HardwareProfile;
+   |
+
+error[E0433]: failed to resolve: use of undeclared type `HardwareProfile`
+  --> src\optimizer\orchestrator.rs:21:22
+   |
+21 |                 _ => HardwareProfile::rtx3070(),
+   |                      ^^^^^^^^^^^^^^^ use of undeclared type `HardwareProfile`
+   |
+help: consider importing this struct through its public re-export
+   |
+ 1 + use crate::HardwareProfile;
+   |
+
+error[E0433]: failed to resolve: use of undeclared type `AutoTuner`
+  --> src\optimizer\orchestrator.rs:24:37
+   |
+24 |             tuners.insert(*backend, AutoTuner::new(profile).with_runtime(runtime.clone()));
+   |                                     ^^^^^^^^^ use of undeclared type `AutoTuner`
+   |
+help: consider importing this struct through its public re-export
+   |
+ 1 + use crate::AutoTuner;
+   |
+
+error[E0405]: cannot find trait `MicroBenchmark` in this scope
+  --> src\optimizer\orchestrator.rs:34:33
+   |
+34 |     pub fn find_best_backend<B: MicroBenchmark>(
+   |                                 ^^^^^^^^^^^^^^ not found in this scope
+   |
+help: consider importing this trait through its public re-export
+   |
+ 1 + use crate::MicroBenchmark;
+   |
+
+error[E0412]: cannot find type `ProblemDescriptor` in this scope
+  --> src\optimizer\orchestrator.rs:37:19
+   |
+37 |         problem: &ProblemDescriptor,
+   |                   ^^^^^^^^^^^^^^^^^ not found in this scope
+   |
+help: consider importing this struct through its public re-export
+   |
+ 1 + use crate::optimizer::ProblemDescriptor;
+   |
+
+error[E0412]: cannot find type `DeviceBackend` in this scope
+  --> src\optimizer\orchestrator.rs:39:11
+   |
+39 |     ) -> (DeviceBackend, PipelineConfig, f32) {
+   |           ^^^^^^^^^^^^^ not found in this scope
+   |
+help: consider importing this enum through its public re-export
+   |
+ 1 + use crate::optimizer::DeviceBackend;
+   |
+
+error[E0412]: cannot find type `PipelineConfig` in this scope
+  --> src\optimizer\orchestrator.rs:39:26
+   |
+39 |     ) -> (DeviceBackend, PipelineConfig, f32) {
+   |                          ^^^^^^^^^^^^^^ not found in this scope
+   |
+help: consider importing this struct through its public re-export
+   |
+ 1 + use crate::PipelineConfig;
+   |
+
+error[E0433]: failed to resolve: use of undeclared type `DeviceBackend`
+  --> src\optimizer\orchestrator.rs:46:32
+   |
+46 |         let mut best_backend = DeviceBackend::Cpu;
+   |                                ^^^^^^^^^^^^^ use of undeclared type `DeviceBackend`
+   |
+help: consider importing this enum through its public re-export
+   |
+ 1 + use crate::optimizer::DeviceBackend;
+   |
+
+error[E0433]: failed to resolve: use of undeclared type `PipelineConfig`
+  --> src\optimizer\orchestrator.rs:47:31
+   |
+47 |         let mut best_config = PipelineConfig::new(2, 64, 64, 32);
+   |                               ^^^^^^^^^^^^^^ use of undeclared type `PipelineConfig`
+   |
+help: consider importing this struct through its public re-export
+   |
+ 1 + use crate::PipelineConfig;
+   |
+
+error[E0433]: failed to resolve: use of undeclared type `OptimizationGoal`
+  --> src\optimizer\orchestrator.rs:52:76
+   |
+52 |             let config = tuner.optimize_v2(benchmark, problem, iterations, OptimizationGoal::MaximizeTFLOPS);
+   |                                                                            ^^^^^^^^^^^^^^^^ use of undeclared type `OptimizationGoal`
+   |
+help: consider importing this enum
+   |
+ 1 + use crate::optimizer::OptimizationGoal;
+   |
+
+warning: unused import: `crate::backend::cuda::CudaBackend`
+ --> src\kernels\attention\cuda_emitter.rs:2:5
+  |
+2 | use crate::backend::cuda::CudaBackend;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `ParameterRange`
+ --> src\kernels\attention\cuda_adapter.rs:1:55
+  |
+1 | use crate::core::tuning::{TunableKernel, SearchSpace, ParameterRange};
+  |                                                       ^^^^^^^^^^^^^^
+
+warning: unused import: `QuantizationMode`
+ --> src\kernels\attention\cuda_adapter.rs:2:80
+  |
+2 | use crate::core::config::{PipelineConfig, SwizzleMode, SpecializedInstruction, QuantizationMode};
+  |                                                                                ^^^^^^^^^^^^^^^^
+
+warning: unused import: `SpecializedInstruction`
+ --> src\kernels\attention\rocm_adapter.rs:2:56
+  |
+2 | use crate::core::config::{PipelineConfig, SwizzleMode, SpecializedInstruction};
+  |                                                        ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::emitter::rocm::ROCMEmitter`
+ --> src\kernels\attention\rocm_adapter.rs:3:5
+  |
+3 | use crate::emitter::rocm::ROCMEmitter;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `KernelArg`
+ --> src\kernels\attention\rocm_adapter.rs:4:62
+  |
+4 | use crate::runtime::manager::{RuntimeManager, DeviceBackend, KernelArg};
+  |                                                              ^^^^^^^^^
+
+warning: unused imports: `SpecializedInstruction` and `SwizzleMode`
+ --> src\kernels\attention\metal_adapter.rs:2:43
+  |
+2 | use crate::core::config::{PipelineConfig, SwizzleMode, SpecializedInstruction};
+  |                                           ^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::emitter::metal::MetalEmitter`
+ --> src\kernels\attention\metal_adapter.rs:3:5
+  |
+3 | use crate::emitter::metal::MetalEmitter;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `KernelArg`
+ --> src\kernels\attention\metal_adapter.rs:4:62
+  |
+4 | use crate::runtime::manager::{RuntimeManager, DeviceBackend, KernelArg};
+  |                                                              ^^^^^^^^^
+
+warning: unused import: `wide::*`
+ --> src\kernels\cpu\gemm.rs:2:5
+  |
+2 | use wide::*;
+  |     ^^^^^^^
+
+warning: unused import: `std::convert::TryInto`
+ --> src\kernels\cpu\gemm.rs:3:5
+  |
+3 | use std::convert::TryInto;
+  |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `DeviceBackend` and `KernelArg`
+ --> src\kernels\gpu\gpu_dispatch.rs:2:31
+  |
+2 | use crate::runtime::manager::{DeviceBackend, KernelArg};
+  |                               ^^^^^^^^^^^^^  ^^^^^^^^^
+
+warning: unused import: `std::collections::HashSet`
+ --> src\semantic\mapping.rs:1:5
+  |
+1 | use std::collections::HashSet;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `UnifiedOpIR` and `UnifiedOpType`
+ --> src\emitter\jit.rs:4:39
+  |
+4 | use crate::emitter::traits::{Emitter, UnifiedOpIR, UnifiedOpType};
+  |                                       ^^^^^^^^^^^  ^^^^^^^^^^^^^
+
+warning: unused import: `LayoutPolicy`
+ --> src\emitter\cuda.rs:3:43
+  |
+3 | use crate::core::config::{PipelineConfig, LayoutPolicy};
+  |                                           ^^^^^^^^^^^^
+
+warning: unused import: `crate::backend::cuda::CudaBackend`
+ --> src\emitter\cuda.rs:5:5
+  |
+5 | use crate::backend::cuda::CudaBackend;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `Ptx`
+ --> src\runtime\manager.rs:5:37
+  |
+5 | use cudarc::nvrtc::{CompileOptions, Ptx};
+  |                                     ^^^
+
+warning: unused import: `CString`
+ --> src\runtime\manager.rs:6:24
+  |
+6 | use std::ffi::{c_void, CString};
+  |                        ^^^^^^^
+
+warning: unused imports: `AssemblerResultInfo`, `BackendKind`, `JitResultInfo`, `KernelLaunchInfo`, and `ModuleLoadInfo`
+  --> src\runtime\manager.rs:11:21
+   |
+11 | use crate::doctor::{BackendKind, JitResultInfo, AssemblerResultInfo, KernelLaunchInfo, ModuleLoadInfo};
+   |                     ^^^^^^^^^^^  ^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^
+
+warning: unused import: `cudarc::driver::CudaDevice`
+ --> src\optimizer\mod.rs:3:5
+  |
+3 | use cudarc::driver::CudaDevice;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::optimizer::orchestrator::CrossBackendTuner`
+ --> src\optimizer\orchestrator.rs:1:5
+  |
+1 | use crate::optimizer::orchestrator::CrossBackendTuner;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `Node`
+ --> src\optimizer\semantic.rs:1:33
+  |
+1 | use crate::core::graph::{Graph, Node, Operation};
+  |                                 ^^^^
+
+warning: unused imports: `EpilogueOp` and `FusedGemmOp`
+ --> src\optimizer\semantic.rs:2:23
+  |
+2 | use crate::core::op::{FusedGemmOp, EpilogueOp};
+  |                       ^^^^^^^^^^^  ^^^^^^^^^^
+
+warning: unused import: `Conv2dProblem`
+   --> src\optimizer\mod.rs:218:92
+    |
+218 | use benchmark::{MicroBenchmark, Observation, BenchmarkResult, Conv2dBenchmark, ConvConfig, Conv2dProblem};
+    |                                                                                            ^^^^^^^^^^^^^
+
+warning: unused imports: `Deserialize` and `Serialize`
+ --> src\doctor\mod.rs:1:13
+  |
+1 | use serde::{Serialize, Deserialize};
+  |             ^^^^^^^^^  ^^^^^^^^^^^
+
+warning: unused import: `Path`
+ --> src\doctor\diagnosis.rs:1:17
+  |
+1 | use std::path::{Path, PathBuf};
+  |                 ^^^^
+
+Some errors have detailed explanations: E0255, E0405, E0412, E0433.
+For more information about an error, try `rustc --explain E0255`.
+warning: `tracea` (lib) generated 26 warnings
+warning: tracea@0.1.0: CUDA (nvcc) not found. Skipping template compilation.
+error: could not compile `tracea` (lib) due to 21 previous errors; 26 warnings emitted

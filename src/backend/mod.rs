@@ -29,3 +29,5 @@ pub mod cuda;
 pub mod cpu;
 pub mod rocm;
 pub mod metal;
+#[cfg(feature = "vulkan")]
+pub mod vulkan;

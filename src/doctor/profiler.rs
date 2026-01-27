@@ -26,6 +26,13 @@ pub fn get_capabilities() -> TraceaCapabilities {
         backends.push(metal_cap);
     }
 
+    // 5. Vulkan
+    // 5. Vulkan
+    #[cfg(feature = "vulkan")]
+    if let Some(vulkan_cap) = detect_vulkan() {
+        backends.push(vulkan_cap);
+    }
+
     // Calculate Environment ID
     let mut env_id = [0u8; 32];
     calculate_env_id_from_backends(&backends, &mut env_id);
@@ -67,6 +74,8 @@ fn detect_cpu() -> BackendCapabilities {
         driver_or_runtime_version: 0,
         simd_width_bits,
         core_count,
+        current_occupancy: Some(0.0),
+        register_pressure: Some(0),
     }
 }
 
@@ -96,6 +105,8 @@ fn detect_cuda() -> Option<BackendCapabilities> {
                 driver_or_runtime_version: driver_v as u32,
                 simd_width_bits: 0,
                 core_count: 0,
+                current_occupancy: Some(0.0),
+                register_pressure: Some(0),
             })
         }
         Err(_) => None,
@@ -115,6 +126,8 @@ fn detect_rocm() -> Option<BackendCapabilities> {
             driver_or_runtime_version: 50700, // ROCm 5.7
             simd_width_bits: 0,
             core_count: 0,
+            current_occupancy: Some(0.0),
+            register_pressure: Some(0),
         })
     } else {
         None
@@ -132,10 +145,61 @@ fn detect_metal() -> Option<BackendCapabilities> {
             driver_or_runtime_version: 300, 
             simd_width_bits: 0,
             core_count: 0,
+            current_occupancy: Some(0.0),
+            register_pressure: Some(0),
         })
     } else {
         None
     }
+}
+
+#[cfg(feature = "vulkan")]
+fn detect_vulkan() -> Option<BackendCapabilities> {
+    // Try via ash
+    let entry = match unsafe { ash::Entry::load() } {
+        Ok(e) => e,
+        Err(_) => return None,
+    };
+    
+    let app_info = ash::vk::ApplicationInfo::builder()
+        .api_version(ash::vk::make_api_version(0, 1, 1, 0));
+    let create_info = ash::vk::InstanceCreateInfo::builder().application_info(&app_info);
+    
+    let instance = match unsafe { entry.create_instance(&create_info, None) } {
+        Ok(i) => i,
+        Err(_) => return None,
+    };
+    
+    let p_devices = unsafe { instance.enumerate_physical_devices().unwrap_or_default() };
+    if p_devices.is_empty() {
+        unsafe { instance.destroy_instance(None); }
+        return None;
+    }
+    
+    let p_device = p_devices[0];
+    let props = unsafe { instance.get_physical_device_properties(p_device) };
+    
+    // Check for subgroup properties (requires Vulkan 1.1)
+    let mut subgroup_props = ash::vk::PhysicalDeviceSubgroupProperties::default();
+    let mut props2 = ash::vk::PhysicalDeviceProperties2::builder()
+        .push_next(&mut subgroup_props);
+    unsafe { instance.get_physical_device_properties2(p_device, &mut props2); }
+
+    let res = Some(BackendCapabilities {
+        backend: BackendKind::Vulkan,
+        max_shared_mem: props.limits.max_compute_shared_memory_size as u32,
+        warp_or_wavefront: subgroup_props.subgroup_size,
+        has_tensor_core_like: false, // Could check for cooperative matrix extensions
+        arch_code: props.device_id,
+        driver_or_runtime_version: props.driver_version,
+        simd_width_bits: 0,
+        core_count: 0,
+        current_occupancy: Some(0.0),
+        register_pressure: Some(0),
+    });
+    
+    unsafe { instance.destroy_instance(None); }
+    res
 }
 
 

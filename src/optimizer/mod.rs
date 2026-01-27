@@ -26,6 +26,9 @@ pub struct HardwareProfile {
     pub has_specialized_units: bool,
     pub compute_capability: Option<(u32, u32)>,
     pub supported_intrinsic_shapes: Vec<crate::core::config::IntrinsicShape>,
+    pub max_threadgroup_memory: usize, // Metal: 32KB on some devices
+    pub preferred_tile_shape: [usize; 3], // [M, N, K] hint
+    pub simd_width: usize, // Warp/Wave/SimdGroup width
 }
 
 impl HardwareProfile {
@@ -44,6 +47,9 @@ impl HardwareProfile {
             has_specialized_units: true,
             compute_capability: Some((8, 6)),
             supported_intrinsic_shapes: vec![crate::core::config::IntrinsicShape::M16N8K16],
+            max_threadgroup_memory: 0,
+            preferred_tile_shape: [128, 128, 32], 
+            simd_width: 32,
         }
     }
 
@@ -62,6 +68,9 @@ impl HardwareProfile {
             has_specialized_units: true,
             compute_capability: None,
             supported_intrinsic_shapes: vec![crate::core::config::IntrinsicShape::M32N32K2, crate::core::config::IntrinsicShape::M16N16K4],
+            max_threadgroup_memory: 64 * 1024, // LDS size approximation
+            preferred_tile_shape: [256, 128, 16], // MI250 prefers large tiles
+            simd_width: 64,
         }
     }
 
@@ -80,6 +89,9 @@ impl HardwareProfile {
             has_specialized_units: true,
             compute_capability: Some((8, 0)),
             supported_intrinsic_shapes: vec![crate::core::config::IntrinsicShape::M16N8K16],
+            max_threadgroup_memory: 0,
+            preferred_tile_shape: [128, 256, 32],
+            simd_width: 32,
         }
     }
 }
@@ -199,6 +211,9 @@ pub mod benchmark;
 pub mod cache;
 pub mod policy;
 pub mod problem;
+pub mod orchestrator;
+pub mod semantic;
+pub mod history;
 
 use benchmark::{MicroBenchmark, Observation, BenchmarkResult, Conv2dBenchmark, ConvConfig, Conv2dProblem};
 use cache::{TuningCache, CacheKey};

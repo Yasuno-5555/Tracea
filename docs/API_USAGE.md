@@ -139,6 +139,47 @@ let space = SearchSpace::new()
     .barrier_modes(&[BarrierMode::None, BarrierMode::ProducerConsumer]);
 ```
 
+### Policy-Driven Launch
+v3.2 introduces the **Policy Engine** for automated tiling and strategy selection.
+
+```rust
+use tracea::policy::{PolicyEngine, OperatorTopology, TopologyKind};
+use tracea::runtime::{RuntimeManager, DeviceBackend};
+
+let runtime = RuntimeManager::new(DeviceBackend::Cuda(0)).unwrap();
+
+// Describe the operator
+let op = OperatorTopology {
+    op_id: 101,
+    name: "low_rank_mlp".into(),
+    op_type: "Gemm".into(),
+    m: 4096, n: 4096, k: 512,
+    kind: TopologyKind::LowRank { r: 32 },
+};
+
+// Generate decision and launch
+runtime.launch_with_policy(&[op]).unwrap();
+```
+
+### Manual TTG Construction
+For custom sparse patterns, you can build a **Topological Tile Graph (TTG)** directly.
+
+```rust
+use tracea::runtime::ttg_builder::TTGBuilder;
+use tracea::core::ttg::TileMetadata;
+
+let mut builder = TTGBuilder::new(4096, 4096);
+
+// Manually add active tiles
+builder.add_tile(TileMetadata {
+    region_m: 0, region_n: 0,
+    k_start: 0, k_end: 512,
+    role: 0, // Main
+});
+
+let layout = builder.build_dense(); // or build_sparse()
+```
+
 ---
 
 ## C FFI (tracea.h)

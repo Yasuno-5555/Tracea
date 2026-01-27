@@ -51,6 +51,7 @@ impl Linear {
     fn __call__(&self, graph: &mut PyGraph, input_node: usize) -> PyResult<usize> {
         // In the future, we might infer shapes or check inputs here.
         let id = graph.inner.add_linear(
+            crate::core::op::DimExpr::Symbol("B".to_string()),
             self.in_features, 
             self.out_features, 
             self.bias, 

@@ -27,5 +27,16 @@ Tracea doesn't just tune; it *diagnoses*. The **Doctor** performs a multi-object
 - **Metal/ROCm**: Leverages `simdgroup` and `wavefront` level parallelism to hide memory latency.
 - **CPU**: Uses multi-threaded blocking and AVX512/AVX2 intrinsics to maximize host-side throughput.
 
-## 5. Swizzle & Bank Conflict Resolution
+## 5. TTG-Driven Sparse & Low-Rank Optimization (v3.2)
+With the introduction of the **Topological Tile Graph (TTG)**, Tracea can optimize beyond simple dense kernels:
+- **Windowed Attention**: Restricts computation to a local window around the diagonal, skipping outer tiles via the TTG L1 Map.
+- **Block-Sparse Execution**: Only tiles with non-zero occupancy are dispatched to the GPU, significantly reducing FLOPs for structured sparse models.
+- **Low-Rank MLP Decomposition**: Implements $W \approx A \times B$ by tiling in the rank-$r$ dimension, enabling high throughput for adapter layers and compressed models.
+
+## 6. Policy-Guided Auto-Tuning
+The **Policy Engine** serves as a high-level heuristic guide for the Bayesian Tuner:
+- **Contextual Pruning**: Policy decisions (like `TilingKind::BlockSparse`) narrow the search space before Gaussian Process exploration begins.
+- **Pre-computed Hero Configs**: Seeds the auto-tuner with known-good parameters for standard architectures (A100, RTX 3070, etc.).
+
+## 7. Swizzle & Bank Conflict Resolution
 Tracea automatically generates **XOR-swizzled shared memory addresses**. The `BankConflictSimulator` in L3 verifies that the generated access patterns result in zero bank conflicts for the target hardware's bank count (typically 32).

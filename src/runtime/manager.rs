@@ -3,10 +3,37 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use cudarc::driver::*;
 use cudarc::nvrtc::{CompileOptions, Ptx};
-use std::ffi::c_void;
+use std::ffi::{c_void, CString};
 use std::io::Write;
 use serde::{Serialize, Deserialize};
+#[cfg(feature = "vulkan")]
+use ash::vk;
 use crate::doctor::{BackendKind, JitResultInfo, AssemblerResultInfo, KernelLaunchInfo, ModuleLoadInfo};
+
+#[derive(Debug)]
+pub struct CudaModule(pub cudarc::driver::sys::CUmodule);
+
+impl Drop for CudaModule {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe {
+                let res = cudarc::driver::sys::lib().cuModuleUnload(self.0);
+                if res != cudarc::driver::sys::CUresult::CUDA_SUCCESS {
+                    eprintln!("[Runtime] ⚠️ Failed to unload CUDA module: {:?}", res);
+                }
+            }
+        }
+    }
+}
+
+unsafe impl Send for CudaModule {}
+unsafe impl Sync for CudaModule {}
+
+#[derive(Debug, Clone, Copy)]
+pub struct CudaFunction(pub cudarc::driver::sys::CUfunction);
+
+unsafe impl Send for CudaFunction {}
+unsafe impl Sync for CudaFunction {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct KernelId(pub u64);
@@ -29,6 +56,8 @@ pub enum DeviceBackend {
     Rocm,
     Metal,
     Cpu,
+    #[cfg(feature = "vulkan")]
+    Vulkan,
 }
 
 #[derive(Debug)]
@@ -36,12 +65,59 @@ pub enum DeviceBuffer {
     Cuda(CudaSlice<u8>),
     Rocm(RocmBuffer), 
     External(u64),
+    #[cfg(feature = "vulkan")]
+    Vulkan(VulkanBuffer),
+}
+
+#[cfg(feature = "vulkan")]
+#[derive(Debug)]
+pub struct VulkanBuffer {
+    pub allocation: Option<gpu_allocator::vulkan::Allocation>,
+    pub buffer: ash::vk::Buffer,
+    pub device: ash::Device,
+    pub allocator: Arc<Mutex<gpu_allocator::vulkan::Allocator>>,
+}
+
+#[cfg(feature = "vulkan")]
+impl Drop for VulkanBuffer {
+    fn drop(&mut self) {
+        unsafe {
+            self.device.destroy_buffer(self.buffer, None);
+            if let Some(alloc) = self.allocation.take() {
+                if let Ok(mut lock) = self.allocator.lock() {
+                    let _ = lock.free(alloc);
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
 pub struct RocmBuffer {
     pub ptr: u64,
 }
+
+#[derive(Debug)]
+pub struct RocmModule(pub *mut c_void);
+
+impl Drop for RocmModule {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            if let Some(api) = crate::emitter::rocm_driver::RocmDriverApi::get() {
+                unsafe { (api.hipModuleUnload)(self.0); }
+            }
+        }
+    }
+}
+
+unsafe impl Send for RocmModule {}
+unsafe impl Sync for RocmModule {}
+
+#[derive(Debug, Clone, Copy)]
+pub struct RocmFunction(pub *mut c_void);
+
+unsafe impl Send for RocmFunction {}
+unsafe impl Sync for RocmFunction {}
 
 impl Drop for RocmBuffer {
     fn drop(&mut self) {
@@ -54,11 +130,59 @@ impl Drop for RocmBuffer {
     }
 }
 
+#[cfg(feature = "vulkan")]
+#[derive(Debug)]
+pub struct VulkanModule {
+    pub module: ash::vk::ShaderModule,
+    pub device: ash::Device,
+}
+
+#[cfg(feature = "vulkan")]
+impl Drop for VulkanModule {
+    fn drop(&mut self) {
+        unsafe {
+            self.device.destroy_shader_module(self.module, None);
+        }
+    }
+}
+
+#[cfg(feature = "vulkan")]
+unsafe impl Send for VulkanModule {}
+#[cfg(feature = "vulkan")]
+unsafe impl Sync for VulkanModule {}
+
+#[cfg(feature = "vulkan")]
+#[derive(Debug, Clone, Copy)]
+pub struct VulkanFunction {
+    pub pipeline: ash::vk::Pipeline,
+}
+
+#[cfg(feature = "vulkan")]
+unsafe impl Send for VulkanFunction {}
+#[cfg(feature = "vulkan")]
+unsafe impl Sync for VulkanFunction {}
+
+#[derive(Debug, Clone)]
+pub enum KernelHandle {
+    Cuda {
+        func: CudaFunction,
+        module: Arc<CudaModule>,
+    },
+    Rocm {
+        func: RocmFunction,
+        module: Arc<RocmModule>,
+    },
+    #[cfg(feature = "vulkan")]
+    Vulkan {
+        func: VulkanFunction,
+        module: Arc<VulkanModule>,
+    },
+}
+
 #[derive(Debug, Clone)]
 pub struct RecordedKernel {
     pub name: String,
-    pub raw: u64, // handle to CUfunction
-    pub module: u64, // handle to CUmodule
+    pub handle: KernelHandle,
     pub backend: DeviceBackend,
 }
 
@@ -66,6 +190,8 @@ pub struct RecordedKernel {
 pub struct DeviceHandle {
     pub backend: DeviceBackend,
     pub cuda_dev: Option<Arc<CudaDevice>>,
+    #[cfg(feature = "vulkan")]
+    pub vulkan_dev: Option<Arc<crate::backend::vulkan::VulkanBackend>>,
     pub arch: String,
 }
 
@@ -97,6 +223,8 @@ impl RuntimeManager {
             devices.insert(DeviceBackend::Cuda, DeviceHandle {
                 backend: DeviceBackend::Cuda,
                 cuda_dev: Some(dev),
+                #[cfg(feature = "vulkan")]
+                vulkan_dev: None,
                 arch: format!("sm_{}{}", major, minor),
             });
             println!("[Doctor] 🟢 CUDA Device Registered.");
@@ -106,9 +234,28 @@ impl RuntimeManager {
              devices.insert(DeviceBackend::Rocm, DeviceHandle {
                  backend: DeviceBackend::Rocm,
                  cuda_dev: None,
+                 #[cfg(feature = "vulkan")]
+                 vulkan_dev: None,
                  arch: "gfx90a".to_string(),
              });
              println!("[Doctor] 🟢 ROCm Backend Registered.");
+        }
+
+        #[cfg(feature = "vulkan")]
+        {
+            let mut vulkan_dev_option = None;
+            // Try to init Vulkan as fallback or primary if requested.
+            // For baseline, we always try to init it.
+            if let Ok(vk_backend) = unsafe { crate::backend::vulkan::VulkanBackend::new() } {
+                println!("[Runtime] 🌋 Vulkan Initialization Successful: {}", vk_backend.device_id);
+                vulkan_dev_option = Some(Arc::new(vk_backend));
+                devices.insert(DeviceBackend::Vulkan, DeviceHandle {
+                    backend: DeviceBackend::Vulkan,
+                    cuda_dev: None,
+                    vulkan_dev: vulkan_dev_option.clone(),
+                    arch: "vulkan".to_string(), // Or a more specific Vulkan device name
+                });
+            }
         }
 
         let doctor = crate::doctor::Doctor::global();
@@ -143,13 +290,34 @@ impl RuntimeManager {
         }
 
         let id = match backend {
+            #[cfg(feature = "vulkan")]
+            DeviceBackend::Vulkan => {
+                 println!("[Runtime] JIT Compiling GLSL for Vulkan: {}", kernel_name);
+                 let compiler = shaderc::Compiler::new().ok_or("Failed to create shaderc compiler")?;
+                 let mut options = shaderc::CompileOptions::new().ok_or("Failed to create shaderc options")?;
+                 options.set_optimization_level(shaderc::OptimizationLevel::Performance);
+                 options.set_target_env(shaderc::TargetEnv::Vulkan, shaderc::EnvVersion::Vulkan1_2 as u32);
+
+                 let binary = compiler.compile_into_spirv(
+                     source,
+                     shaderc::ShaderKind::Compute,
+                     "source.glsl",
+                     "main",
+                     Some(&options)
+                 ).map_err(|e| format!("GLSL Compilation Failed: {}", e))?;
+
+                 self.load_vulkan(binary.as_binary_u8(), kernel_name)
+            }
             DeviceBackend::Cuda => {
                 let devices = self.devices.lock().map_err(|_| "Lock")?;
                 let cuda_handle = devices.get(&DeviceBackend::Cuda).ok_or("No CUDA device")?;
                 let target_arch = cuda_handle.arch.clone();
                 let _target_sm = target_arch.replace("sm_", "");
 
-                let arch_static: &'static str = Box::leak(target_arch.clone().into_boxed_str());
+                let mut arch_static: &'static str = "sm_80";
+                if let Some(handle) = devices.get(&DeviceBackend::Cuda) {
+                    arch_static = Box::leak(handle.arch.clone().into_boxed_str());
+                }
 
                 // Source-aware AOT Cache Check
                 let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -157,7 +325,7 @@ impl RuntimeManager {
                 let source_hash = hasher.finish();
                 let cache_name = format!("{}_{:x}", kernel_name, source_hash);
 
-                if let Ok(id) = self.load_binary(&cache_name, kernel_name, &target_arch) {
+                if let Ok(id) = self.load_binary(&cache_name, kernel_name, arch_static) {
                     self.source_cache.lock().unwrap().insert(source.to_string(), id);
                     return Ok(id);
                 }
@@ -172,7 +340,8 @@ impl RuntimeManager {
                     options: vec![
                         "-I".to_string(), 
                         "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.1/include".to_string(),
-                        // "--use_fast_math".to_string(),
+                        // Correct architecture flag instead of version hacking later
+                        format!("--gpu-architecture=compute_{}", arch_static.replace("sm_", "")),
                     ],
                     ..Default::default()
                 };
@@ -198,7 +367,7 @@ impl RuntimeManager {
                      println!("[Runtime] 📝 Dumped failed source to failed_source.cu");
                 }
 
-                let mut ptx_src = match ptx_res {
+                let ptx_src = match ptx_res {
                     Ok(ptx) => {
                         println!("[Runtime] JIT Compilation Successful for {}", kernel_name);
                         ptx.to_src()
@@ -210,9 +379,7 @@ impl RuntimeManager {
                     }
                 };
                 
-                ptx_src = ptx_src.replace(".version 8.5", ".version 7.0")
-                                  .replace(".version 8.4", ".version 7.0")
-                                  .replace(".target sm_86", ".target sm_80");
+                // PTX VERSION HACKING REMOVED AS WE USE CORRECT ARCH FLAGS NOW.
 
                 // Direct Driver Load (Bypass ptxas)
                 println!("[Runtime] Loading PTX directly via Driver JIT...");
@@ -242,17 +409,14 @@ impl RuntimeManager {
                         cudarc::driver::sys::CUfunction_attribute::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, 
                         98304 // 96KB
                     );
-                    if res_attr != cudarc::driver::sys::CUresult::CUDA_SUCCESS {
-                        println!("[Runtime] ⚠️ Failed to set MAX_DYNAMIC_SHARED_SIZE_BYTES: {:?}", res_attr);
-                    } else {
-                        println!("[Runtime] Set MAX_DYNAMIC_SHARED_SIZE_BYTES to 98304");
-                    }
                     
                     let id = self.generate_kernel_id()?;
                     self.kernels.lock().map_err(|_| "Poisoned")?.insert(id, RecordedKernel {
                         name: kernel_name.to_string(),
-                        raw: func as u64,
-                        module: module as u64,
+                        handle: KernelHandle::Cuda {
+                            func: CudaFunction(func),
+                            module: Arc::new(CudaModule(module)),
+                        },
                         backend: DeviceBackend::Cuda,
                     });
                     
@@ -265,17 +429,19 @@ impl RuntimeManager {
                 let jit = crate::emitter::rocm_jit::ROCMJITCompiler::new().ok_or("ROCm JIT API not found")?;
                 let binary = jit.compile(source, kernel_name, vec![])?;
                 let api = crate::emitter::rocm_driver::RocmDriverApi::get().ok_or("ROCm Driver API not found")?;
-                let mut module: *mut c_void = std::ptr::null_mut();
+                let mut module_ptr: *mut c_void = std::ptr::null_mut();
                 unsafe {
-                    let _ = (api.hipModuleLoadData)(&mut module, binary.as_ptr() as *const _);
-                    let mut func: *mut c_void = std::ptr::null_mut();
+                    let _ = (api.hipModuleLoadData)(&mut module_ptr, binary.as_ptr() as *const _);
+                    let mut func_ptr: *mut c_void = std::ptr::null_mut();
                     let name_c = std::ffi::CString::new(kernel_name).unwrap();
-                    let _ = (api.hipModuleGetFunction)(&mut func, module, name_c.as_ptr());
+                    let _ = (api.hipModuleGetFunction)(&mut func_ptr, module_ptr, name_c.as_ptr());
                     let id = self.generate_kernel_id()?;
                     self.kernels.lock().map_err(|_| "Poisoned")?.insert(id, RecordedKernel {
                         name: kernel_name.to_string(),
-                        raw: func as u64,
-                        module: module as u64,
+                        handle: KernelHandle::Rocm {
+                            func: RocmFunction(func_ptr),
+                            module: Arc::new(RocmModule(module_ptr)),
+                        },
                         backend: DeviceBackend::Rocm,
                     });
                     Ok(id)
@@ -327,13 +493,13 @@ impl RuntimeManager {
             }
         }
 
-        match recorded.backend {
-            DeviceBackend::Cuda => {
+        match &recorded.handle {
+            KernelHandle::Cuda { func, .. } => {
                 unsafe {
                     let lib = cudarc::driver::sys::lib();
                     
                     let res = lib.cuLaunchKernel(
-                        recorded.raw as sys::CUfunction,
+                        func.0,
                         grid.0, grid.1, grid.2,
                         block.0, block.1, block.2,
                         smem, std::ptr::null_mut(),
@@ -365,11 +531,11 @@ impl RuntimeManager {
                     });
                 }
             }
-            DeviceBackend::Rocm => {
+            KernelHandle::Rocm { func, .. } => {
                 let api = crate::emitter::rocm_driver::RocmDriverApi::get().ok_or("ROCm API not found")?;
                 unsafe {
                     let res = (api.hipModuleLaunchKernel)(
-                        recorded.raw as *mut _,
+                        func.0,
                         grid.0, grid.1, grid.2,
                         block.0, block.1, block.2,
                         smem, std::ptr::null_mut(),
@@ -379,9 +545,64 @@ impl RuntimeManager {
                     if res != 0 { return Err(format!("ROCm Launch Failed: {}", res)); }
                 }
             }
+            #[cfg(feature = "vulkan")]
+            KernelHandle::Vulkan { func, .. } => {
+                let vk_backend = self.get_device(DeviceBackend::Vulkan)?.vulkan_dev.clone().ok_or("Vulkan Device not found")?; // .clone added/fixed
+                unsafe {
+                    let device = &vk_backend.device;
+                    let command_pool_info = vk::CommandPoolCreateInfo::builder()
+                        .queue_family_index(vk_backend.queue_family_index)
+                        .flags(vk::CommandPoolCreateFlags::TRANSIENT);
+                    let pool = device.create_command_pool(&command_pool_info, None).map_err(|e| e.to_string())?;
+                    
+                    let alloc_info = vk::CommandBufferAllocateInfo::builder()
+                        .command_pool(pool)
+                        .level(vk::CommandBufferLevel::PRIMARY)
+                        .command_buffer_count(1);
+                    let cmd_buf = device.allocate_command_buffers(&alloc_info).map_err(|e| e.to_string())?[0];
+                    
+                    device.begin_command_buffer(cmd_buf, &vk::CommandBufferBeginInfo::builder().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT)).map_err(|e| e.to_string())?;
+                    device.cmd_bind_pipeline(cmd_buf, vk::PipelineBindPoint::COMPUTE, func.pipeline);
+                    
+                    // Simple Dispatch - Parameters/Descriptors FIXME
+                    device.cmd_dispatch(cmd_buf, grid.0, grid.1, grid.2);
+                    
+                    device.end_command_buffer(cmd_buf).map_err(|e| e.to_string())?;
+                    device.queue_submit(vk_backend.queue, &[vk::SubmitInfo::builder().command_buffers(&[cmd_buf]).build()], vk::Fence::null()).map_err(|e| e.to_string())?;
+                    device.queue_wait_idle(vk_backend.queue).map_err(|e| e.to_string())?;
+                    
+                    device.destroy_command_pool(pool, None);
+                }
+            }
             _ => return Err("Unsupported backend".to_string()),
         }
         Ok(())
+    }
+
+    pub fn launch_ttg(
+        &self,
+        kernel_id: KernelId,
+        block: (u32, u32, u32),
+        smem: u32,
+        base_args: Vec<KernelArg>,
+        ttg: &crate::runtime::ttg::DeviceTTG,
+        epilogue_args: Vec<KernelArg>
+    ) -> Result<(), String> {
+        let mut final_args = base_args;
+        
+        // Append TTG Arguments (L1, L2)
+        // Ensure this matches the generated kernel signature: 
+        // func(..., l1_ptr, l2_ptr, ...epilogue)
+        final_args.push(KernelArg::Buffer(ttg.l1_buffer));
+        final_args.push(KernelArg::Buffer(ttg.l2_buffer));
+        
+        // Append Epilogue Arguments
+        final_args.extend(epilogue_args);
+
+        // Grid is determined by active tiles
+        let grid = (ttg.num_active_tiles, 1, 1);
+        
+        self.launch(kernel_id, grid, block, smem, final_args)
     }
 
     fn load_prebuilt_fallback(&self, kernel_name: &str, backend: DeviceBackend) -> Result<KernelId, String> {
@@ -441,8 +662,10 @@ impl RuntimeManager {
             let id = self.generate_kernel_id()?;
             self.kernels.lock().map_err(|_| "Poisoned")?.insert(id, RecordedKernel { 
                 name: name.to_string(), 
-                raw: func as u64, 
-                module: module as u64,
+                handle: KernelHandle::Cuda {
+                    func: CudaFunction(func),
+                    module: Arc::new(CudaModule(module)),
+                },
                 backend: DeviceBackend::Cuda 
             });
             Ok(id)
@@ -451,19 +674,69 @@ impl RuntimeManager {
 
     pub fn load_rocm(&self, binary: &[u8], name: &str) -> Result<KernelId, String> {
         let api = crate::emitter::rocm_driver::RocmDriverApi::get().ok_or("ROCm API not found")?;
-        let mut module: *mut c_void = std::ptr::null_mut();
+        let mut module_ptr: *mut c_void = std::ptr::null_mut();
         unsafe {
-            let res = (api.hipModuleLoadData)(&mut module, binary.as_ptr() as *const _);
+            let res = (api.hipModuleLoadData)(&mut module_ptr, binary.as_ptr() as *const _);
             if res != 0 { return Err(format!("hipModuleLoadData failed: {}", res)); }
-            let mut func: *mut c_void = std::ptr::null_mut();
+            let mut func_ptr: *mut c_void = std::ptr::null_mut();
             let name_c = std::ffi::CString::new(name).unwrap();
-            let _ = (api.hipModuleGetFunction)(&mut func, module, name_c.as_ptr());
+            let _ = (api.hipModuleGetFunction)(&mut func_ptr, module_ptr, name_c.as_ptr());
             let id = self.generate_kernel_id()?;
             self.kernels.lock().map_err(|_| "Poisoned")?.insert(id, RecordedKernel { 
                 name: name.to_string(), 
-                raw: func as u64, 
-                module: module as u64,
+                handle: KernelHandle::Rocm {
+                    func: RocmFunction(func_ptr),
+                    module: Arc::new(RocmModule(module_ptr)),
+                },
                 backend: DeviceBackend::Rocm 
+            });
+            Ok(id)
+        }
+    }
+
+    #[cfg(feature = "vulkan")]
+    pub fn load_vulkan(&self, spirv: &[u8], name: &str) -> Result<KernelId, String> {
+        let handle = self.get_device(DeviceBackend::Vulkan)?; 
+        let vk_backend = handle.vulkan_dev.as_ref().ok_or("Vulkan device not found")?;
+        let device = &vk_backend.device;
+        
+        unsafe {
+            let shader_module_info = vk::ShaderModuleCreateInfo::builder()
+                .code(bytemuck::cast_slice(spirv));
+            let module = device.create_shader_module(&shader_module_info, None).map_err(|e| e.to_string())?;
+            
+            let entry_point_name = CString::new("main").unwrap();
+            let stage_info = vk::PipelineShaderStageCreateInfo::builder()
+                .stage(vk::ShaderStageFlags::COMPUTE)
+                .module(module)
+                .name(&entry_point_name);
+            
+            let layout_info = vk::PipelineLayoutCreateInfo::builder();
+            let layout = device.create_pipeline_layout(&layout_info, None).map_err(|e| e.to_string())?;
+            
+            let compute_info = vk::ComputePipelineCreateInfo::builder()
+                .stage(stage_info.build())
+                .layout(layout);
+            
+            let pipeline_res = device.create_compute_pipelines(vk::PipelineCache::null(), &[compute_info.build()], None);
+            let pipeline = match pipeline_res {
+                Ok(pipes) => pipes[0],
+                Err((pipes, err)) => {
+                    if !pipes.is_empty() {
+                         for p in pipes { device.destroy_pipeline(p, None); }
+                    }
+                    return Err(format!("Pipeline creation failed: {:?}", err));
+                }
+            };
+            
+            let id = self.generate_kernel_id()?;
+            self.kernels.lock().map_err(|_| "Poisoned")?.insert(id, RecordedKernel {
+                name: name.to_string(),
+                handle: KernelHandle::Vulkan {
+                    func: VulkanFunction { pipeline },
+                    module: Arc::new(VulkanModule { module, device: device.clone() }),
+                },
+                backend: DeviceBackend::Vulkan,
             });
             Ok(id)
         }
@@ -472,6 +745,39 @@ impl RuntimeManager {
     pub fn alloc(&self, size_bytes: usize, backend: DeviceBackend) -> Result<BufferId, String> {
         let id = self.generate_buffer_id()?;
         let buf = match backend {
+            #[cfg(feature = "vulkan")]
+            DeviceBackend::Vulkan => {
+                let handle = self.get_device(DeviceBackend::Vulkan)?;
+                let vk_backend = handle.vulkan_dev.as_ref().ok_or("Vulkan device not found")?;
+                let mut allocator = vk_backend.allocator.lock().map_err(|_| "Allocator Lock")?;
+                
+                unsafe {
+                    let buffer_info = vk::BufferCreateInfo::builder()
+                        .size(size_bytes as u64)
+                        .usage(vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::TRANSFER_DST)
+                        .sharing_mode(vk::SharingMode::EXCLUSIVE);
+                    
+                    let buffer = vk_backend.device.create_buffer(&buffer_info, None).map_err(|e| e.to_string())?;
+                    let requirements = vk_backend.device.get_buffer_memory_requirements(buffer);
+                    
+                    let allocation = allocator.allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
+                        name: "TraceaBuffer",
+                        requirements,
+                        location: gpu_allocator::MemoryLocation::GpuOnly,
+                        linear: true,
+                        allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
+                    }).map_err(|e| e.to_string())?;
+                    
+                    vk_backend.device.bind_buffer_memory(buffer, allocation.memory(), allocation.offset()).map_err(|e| e.to_string())?;
+                    
+                    DeviceBuffer::Vulkan(VulkanBuffer {
+                        allocation: Some(allocation),
+                        buffer,
+                        device: vk_backend.device.clone(),
+                        allocator: vk_backend.allocator.clone(),
+                    })
+                }
+            }
             DeviceBackend::Cuda => {
                 let devs = self.devices.lock().map_err(|_| "Lock")?;
                 let d_handle = devs.get(&DeviceBackend::Cuda).ok_or("No CUDA")?;
@@ -655,10 +961,47 @@ impl RuntimeManager {
             Err("Cache miss".to_string())
         }
     }
+
+    pub fn read_buffer(&self, id: BufferId) -> Result<Vec<u8>, String> {
+        let bufs = self.buffers.lock().map_err(|_| "Lock")?;
+        let buf = bufs.get(&id).ok_or("No buffer")?;
+        
+        match buf {
+            DeviceBuffer::Cuda(slice) => {
+                let len = slice.len();
+                let mut host = vec![0u8; len];
+                let _lock = self.devices.lock(); // Keep devices alive?
+                
+                unsafe {
+                    let res = cudarc::driver::sys::lib().cuMemcpyDtoH_v2(host.as_mut_ptr() as *mut _, *slice.device_ptr(), len);
+                    if res != cudarc::driver::sys::CUresult::CUDA_SUCCESS { return Err(format!("cuMemcpyDtoH failed: {:?}", res)); }
+                }
+                Ok(host)
+            }
+            _ => Err("Not implemented for this backend".to_string()),
+        }
+    }
+
+    pub fn launch_with_policy(
+        &self,
+        kernel_id: KernelId,
+        args: Vec<KernelArg>,
+        op: &crate::policy::types::OperatorTopology,
+        t_policy: &crate::policy::types::TilePolicy,
+        e_policy: &crate::policy::types::ExecPolicy,
+        epilogue_args: Vec<KernelArg>,
+        backend: DeviceBackend,
+    ) -> Result<(), String> {
+        let layout = crate::runtime::ttg_builder::TTGBuilder::from_policy(op, t_policy);
+        let device_ttg = crate::runtime::ttg::DeviceTTG::new(self, &layout, backend)?;
+        let block = e_policy.backend_hint.preferred_block_dim;
+        let smem = 48 * 1024;
+        self.launch_ttg(kernel_id, block, smem as u32, args, &device_ttg, epilogue_args)
+    }
 }
 
 impl RecordedKernel {
     fn backend_copy(&self) -> Self {
-        Self { name: self.name.clone(), raw: self.raw, module: self.module, backend: self.backend }
+        self.clone()
     }
 }

@@ -9,9 +9,10 @@ Tracea is built on a strictly layered architecture that separates "Meaning" (Sem
 - **C++**: RAII header (`tracea.hpp`) wrapping stable C-FFI from `tracea-ffi` crate.
 - **Rust**: Native entry points for kernel dispatch and hardware diagnostics.
 
-### L2: Core IR
+### L2: Core IR & TTG (Topological Tile Graph)
 - Defines logical operations: `GemmOp`, `Conv2dOp`, `AttentionOp`.
-- **Shape-based Problem Descriptors** (v3.1): Unified dimension handling via `Shape` struct.
+- **TTG Layout**: A hardware-agnostic tiling plan consisting of an L1 Map (logical assignment) and L2 Table (tile metadata).
+- **Shape-based Problem Descriptors**: Unified dimension handling for arbitrary tensor shapes.
 
 ### L3: Tracea Doctor (The Brain)
 - **Capability Profiler**: Queries hardware specifics (Shared Mem, Warp size, Tensor Core availability).
@@ -19,10 +20,11 @@ Tracea is built on a strictly layered architecture that separates "Meaning" (Sem
 - **Decision Engine**: Requirement-matching and scoring for optimal variant selection.
 
 ### L4: Semantic IR (The Heart)
+- **TTG Builder**: Translates high-level logical intent or Policy Decisions into concrete `TTGLayout` objects.
 - **Phase Transition**: Models Z/NZ cyclicity in asynchronous pipes.
 - **Lane Mapping**: Matrix Core / Tensor Core register layout abstractions.
 - **Swizzle Mode**: Algebraic bank conflict resolution (XOR swizzle).
-- **BarrierMode** (v3.1): `mbarrier` integration for producer-consumer patterns.
+- **BarrierMode**: `mbarrier` integration for producer-consumer patterns.
 
 ### L5: Universal Emitters
 - **CUDA**: PTX pipelining, Register Double Buffering, Tensor Core MMA.
@@ -31,29 +33,31 @@ Tracea is built on a strictly layered architecture that separates "Meaning" (Sem
 - **Metal**: Apple Silicon simdgroup support.
 - **CPU**: SIMD (AVX512, AVX2, NEON) with packed data layouts.
 
-### L6: Optimizer
-- **Bayesian Auto-tuner**: Gaussian Processes + UCB exploration.
+### L6: Optimizer & Policy Engine
+- **Policy Engine**: High-level planner that decides Tiling Kind (Dense, Sparse, Low-Rank) and Execution Order based on Context.
+- **Bayesian Auto-tuner**: Gaussian Processes + UCB exploration for fine-tuning kernel parameters.
 - **HeroScope v3**: Architecture-aware pre-computed hero configurations.
 - **Persistent Cache**: Hardware-fingerprinted tuning results.
 
 ---
 
-## v3.1 Module Additions
+## v3.2 Module Additions
 
 | Module | Purpose |
 |--------|---------|
-| `tracea-python/` | PyO3 extension with zero-copy TensorView |
+| `src/policy/` | Policy Engine and Decision Types |
+| `src/runtime/ttg*` | TTG construction and device buffer management |
+| `src/semantic/` | Tiling patterns and Semantic IR abstractions |
 | `tracea-ffi/` | C ABI with panic containment |
-| `src/optimizer/problem.rs` | Shape-based ProblemDescriptor |
-| `src/core/config.rs` | BarrierMode enum |
 
 ---
 
 ## Data Flow: From User to Kernel
 
-1. **Capture**: Python call or C++ invocation defines logical intent.
-2. **Diagnostics**: Doctor profiles environment and backends.
-3. **Planning**: Selects optimal Kernel Variant.
-4. **Optimization**: AutoTuner searches for best PipelineConfig.
-5. **Emission**: Emitter generates kernel (PTX/HIP/MSL/SIMD).
-6. **Launch**: RuntimeManager executes with zero-copy buffers.
+1. **Capture**: Logical intent captured via Python/C++/Rust APIs.
+2. **Diagnostics**: Doctor profiles environment (CUDA Compute Capability, etc).
+3. **Policy Planning**: Policy Engine selects Tiling strategy (e.g., Low-Rank for MLP).
+4. **TTG Generation**: TTG Builder creates the topological tile graph.
+5. **Tuning**: AutoTuner optimizes the specific kernel parameters for the selected TTG.
+6. **Emission**: Universal emitter generates target code (PTX/MSL/HIP).
+7. **Launch**: RuntimeManager uploads TTG buffers and executes the kernel.

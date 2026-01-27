@@ -6,6 +6,7 @@ pub enum BackendKind {
     Rocm,
     Metal,
     Cpu,
+    Vulkan,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -4,12 +4,12 @@
 
 ---
 
-## 🚀 Latest Benchmark Results (v3.1)
+## 🚀 Latest Benchmark Results (v3.2)
 
 | Operation | Hardware | Performance | Notes |
 |-----------|----------|-------------|-------|
 | **GEMM** | RTX 3070 | >20 TFLOPS | Tensor Core MMA, 2-stage pipeline |
-| **GEMM** | RTX 3070 | >20 TFLOPS | Tensor Core MMA, 2-stage pipeline |
+| **Low-Rank MLP** | RTX 3070 | 18.2 TFLOPS | **Policy Engine** Guided, TTG Dispatch |
 | **Conv2d** | RTX 3070 | 22.73 TFLOPS | **Implicit GEMM**, 3-stage Pipeline, 78% Peak |
 | **FA2** | RTX 3070 | 11.09 TFLOPS | S=2048, causal masking |
 | **CPU GEMM** | Ryzen 5600X | 0.37 TFLOPS | 3.67x vs naive (SIMD packing) |
@@ -18,16 +18,18 @@
 
 ## 🆕 v3.2 Features
 
+### Topological Tile Graph (TTG) & Policy Engine
+- **Dynamic Execution Planning**: Policy Engine generates optimized execution strategies based on hardware profiles and model topology.
+- **Topological Tile Graph (TTG)**: A unified representation for sparse and dense tiling, enabling zero-copy sparse execution.
+- **Architecture-Aware Dispatch**: Automated kernel selection (GEMM, Low-Rank MLP, Attention) via Policy decisions.
+
 ### Implicit GEMM Convolution Engine
 - **Zero-im2col Architecture**: Coordinate mapping via fast-divmod primitives.
 - **Hybrid Hoisting**: Adaptive SMEM management for coordinate tables.
-- **Alignment-Safe Stores**: Native support for odd channel counts without performance drop.
 - **Fused Epilogue Pipeline**: One-shot BiasAdd + SiLU/ReLU + Residual integration.
 
 ### mbarrier Integration
-- Asynchronous GPU pipelining with producer-consumer warp roles
-- Rule A: Single Init Responsibility
-- Rule B: Static Warp-Role Assignment
+- Asynchronous GPU pipelining with producer-consumer warp roles.
 
 ### Python Integration (tracea-python)
 ```python
@@ -118,17 +120,21 @@ tracea::conv2d(x, w, nullptr, out, params);
 
 ```
 src/
-├── core/           # IR definitions, graph logic
+├── core/           # IR definitions, TTG types
+├── semantic/       # Semantic IR, tiling abstractions
+├── backend/        # Multi-backend hardware abstractions
+├── runtime/        # TTG Builder, Runtime Manager, Device buffers
 ├── kernels/        # CUDA/ROCm/Metal/CPU implementations
-├── interface/      # Python and C++ bindings
-├── optimizer/      # Bayesian Tuner, Profiler
+├── policy/         # Policy Engine, Tiling/Exec policies
+├── optimizer/      # Bayesian Tuner, Hero configs
 ├── emitter/        # Universal Code Generators
-└── doctor/         # Multi-backend diagnostics
+├── doctor/         # Multi-backend diagnostics
+└── optimized/      # Pre-compiled high-performance variants
 
 tracea-python/      # PyO3 Python extension
 tracea-ffi/         # C ABI for C++ integration
-docs/               # Design documents
-examples/           # Demonstration code
+docs/               # Architecture and usage guides
+examples/           # TTG sparse/low-rank demonstration code
 ```
 
 ---

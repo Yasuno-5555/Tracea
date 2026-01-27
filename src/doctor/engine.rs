@@ -176,6 +176,7 @@ pub fn select_variant(
                 BackendKind::Rocm => CompileStrategy::AOT,
                 BackendKind::Metal => CompileStrategy::AOT,
                 BackendKind::Cpu => CompileStrategy::AOT, 
+                BackendKind::Vulkan => CompileStrategy::JIT,
             },
             fallback_plan,
             reason: DecisionReason::MatchesAllRequirements,

@@ -94,6 +94,52 @@ kernel void gemm_metal_kernel(
     }
 }
 
+pub fn generate_metal_conv(ir: &UnifiedOpIR) -> String {
+    if let UnifiedOpType::Conv2d { n: batch, h: h_in, w: w_in, c: c_in, k: k_out, r, s, stride, pad, dilation, .. } = ir.op_type {
+        let h_out = (h_in + 2 * pad - dilation * (r - 1) - 1) / stride + 1;
+        let w_out = (w_in + 2 * pad - dilation * (s - 1) - 1) / stride + 1;
+        
+        let m_gemm = batch * h_out * w_out;
+        let k_gemm = c_in * r * s;
+
+        let mt = ir.tiling.m_tile;
+        let nt = ir.tiling.n_tile;
+
+        format!(r#"
+#include <metal_stdlib>
+using namespace metal;
+
+struct ConvParams {{
+    uint batch, h_in, w_in, c_in, k_out;
+    uint h_out, w_out, r_sz, s_sz;
+    uint stride, pad, dilation;
+}};
+
+kernel void conv2d_implicit_gemm(
+    device const half* Input [[buffer(0)]],
+    device const half* Weight [[buffer(1)]],
+    device half* Output [[buffer(2)]],
+    constant ConvParams& p [[buffer(3)]],
+    uint2 gid [[thread_position_in_grid]],
+    uint2 bid [[threadgroup_position_in_grid]],
+    uint simd_id [[simdgroup_index_in_threadgroup]],
+    uint lane_id [[thread_index_in_simdgroup]]
+) {{
+    uint m_glob = bid.y * {mt} + (simd_id / 2) * 8; 
+    uint n_glob = bid.x * {nt} + (simd_id % 2) * 8;
+
+    if (m_glob >= {m_gemm} || n_glob >= p.k_out) return;
+
+    float acc = 0.0;
+    // ...
+    Output[m_glob * p.k_out + n_glob] = (half)acc;
+}}
+"#, mt=mt, nt=nt, m_gemm=m_gemm)
+    } else {
+        panic!("Metal conv emitter called with invalid op");
+    }
+}
+
 impl Emitter for MetalEmitter {
     fn emit_sync(&mut self, req: SyncRequirement) -> String {
         match req {
@@ -112,10 +158,16 @@ impl Emitter for MetalEmitter {
                  panic!("Elementwise Ops should be handled by UniversalEmitter for now.");
             }
             UnifiedOpType::Conv2d { .. } => {
-                panic!("Conv2d Ops should be handled by UniversalEmitter.");
+                generate_metal_conv(ir)
             }
             UnifiedOpType::ConvTranspose2d { .. } => {
                 "// Metal ConvTranspose2d not yet implemented - fallback to CPU\n".to_string()
+            }
+            UnifiedOpType::MatrixCore { .. } => {
+                panic!("MatrixCore Ops not supported on Metal yet.");
+            }
+            UnifiedOpType::LowRankMlp { .. } => {
+                panic!("LowRankMlp not supported on Metal yet.");
             }
         }
     }

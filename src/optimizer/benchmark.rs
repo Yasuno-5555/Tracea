@@ -1,5 +1,6 @@
 use crate::core::config::{PipelineConfig, MagicNumberStrategy};
 use crate::runtime::{RuntimeManager, BufferId, KernelArg};
+use crate::runtime::ttg_builder::TTGBuilder; 
 use std::sync::Arc;
 
 pub struct BenchmarkResult {
@@ -144,21 +145,24 @@ impl NVRTCBenchmark {
 impl MicroBenchmark for NVRTCBenchmark {
     fn validate_config(&self, config: &PipelineConfig) -> bool {
          let emitter = crate::emitter::universal::UniversalEmitter::new(self.backend);
-         let source = emitter.generate(crate::emitter::traits::UnifiedOpIR {
+         let ir = crate::emitter::traits::UnifiedOpIR {
              op_type: crate::emitter::traits::UnifiedOpType::Gemm { m: self.m, n: self.n, k: self.k },
              precison: "f16".to_string(),
              tiling: config.clone(),
              conv_magic_strategy: None,
-         });
-         
-         let kernel_id = match self.runtime.compile(&source, "gemm_mma_kernel", self.backend) {
-             Ok(k) => k,
-             Err(_) => return false,
          };
-
-         let (grid_dim, block_dim, smem_size) = self.get_launch_params(config);
+         let source = emitter.generate(ir.clone());
          
-         let args = vec![
+          let kernel_name = if let crate::emitter::traits::UnifiedOpType::Gemm { .. } = ir.op_type { "unified_gemm_kernel" } else { "gemm_mma_kernel" };
+          
+          let kernel_id = match self.runtime.compile(&source, kernel_name, self.backend) {
+              Ok(k) => k,
+              Err(_) => return false,
+          };
+
+         let (mut grid_dim, block_dim, smem_size) = self.get_launch_params(config);
+         
+         let mut args = vec![
              KernelArg::Buffer(self.buffers_in.0),
              KernelArg::Buffer(self.buffers_in.1),
              KernelArg::Buffer(self.buffer_c),
@@ -166,6 +170,46 @@ impl MicroBenchmark for NVRTCBenchmark {
              KernelArg::Int(self.n as i32),
              KernelArg::Int(self.k as i32),
          ];
+
+         // TTG Handling
+         let mut _l1_buf = None;
+         let mut _l2_buf = None;
+         if config.ttg_enabled {
+             let layout = TTGBuilder::from_dense(self.m, self.n, self.k, config.m_tile, config.n_tile, config.k_tile);
+             
+             let l1_bytes: Vec<u8> = layout.l1_map.iter().flat_map(|x| x.to_ne_bytes().to_vec()).collect();
+             // TileMetadata(20 bytes) iter
+             // Using unsafe to cast struct to bytes or manual mapping
+             let l2_bytes: Vec<u8> = layout.l2_table.iter().flat_map(|meta| {
+                 let mut b = Vec::with_capacity(20);
+                 b.extend_from_slice(&meta.region_m.to_ne_bytes());
+                 b.extend_from_slice(&meta.region_n.to_ne_bytes());
+                 b.extend_from_slice(&meta.k_start.to_ne_bytes());
+                 b.extend_from_slice(&meta.k_end.to_ne_bytes());
+                 b.extend_from_slice(&meta.role.to_ne_bytes());
+                 b
+             }).collect();
+
+             let l1 = match self.runtime.alloc(l1_bytes.len(), self.backend) {
+                 Ok(x) => x,
+                 Err(_) => return false,
+             };
+             let l2 = match self.runtime.alloc(l2_bytes.len(), self.backend) {
+                 Ok(x) => x,
+                 Err(_) => return false,
+             };
+             if self.runtime.copy_to_device(l1, &l1_bytes).is_err() { return false; }
+             if self.runtime.copy_to_device(l2, &l2_bytes).is_err() { return false; }
+             
+             args.push(KernelArg::Buffer(l1));
+             args.push(KernelArg::Buffer(l2));
+             
+             // Update Grid
+             grid_dim = (layout.num_active_tiles, 1, 1);
+             
+             _l1_buf = Some(l1);
+             _l2_buf = Some(l2);
+         }
 
          if let Err(_) = self.runtime.launch(kernel_id, grid_dim, block_dim, smem_size as u32, args) {
               return false;
@@ -177,21 +221,24 @@ impl MicroBenchmark for NVRTCBenchmark {
 
     fn measure(&self, config: &PipelineConfig) -> BenchmarkResult {
         let emitter = crate::emitter::universal::UniversalEmitter::new(self.backend);
-        let source = emitter.generate(crate::emitter::traits::UnifiedOpIR {
+        let ir = crate::emitter::traits::UnifiedOpIR {
             op_type: crate::emitter::traits::UnifiedOpType::Gemm { m: self.m, n: self.n, k: self.k },
             precison: "f16".to_string(),
             tiling: config.clone(),
             conv_magic_strategy: None,
-        });
+        };
+        let source = emitter.generate(ir.clone());
 
-        let kernel_id = match self.runtime.compile(&source, "gemm_mma_kernel", self.backend) {
+        let kernel_name = if let crate::emitter::traits::UnifiedOpType::Gemm { .. } = ir.op_type { "unified_gemm_kernel" } else { "gemm_mma_kernel" };
+
+        let kernel_id = match self.runtime.compile(&source, kernel_name, self.backend) {
             Ok(k) => k,
             Err(_) => return BenchmarkResult { tflops: 0.0, mean_tflops: 0.0, std_dev: 0.0, latency_ms: 1e9 },
         };
 
-        let (grid_dim, block_dim, smem_size) = self.get_launch_params(config);
+        let (mut grid_dim, block_dim, smem_size) = self.get_launch_params(config);
         
-        let args = vec![
+        let mut args = vec![
             KernelArg::Buffer(self.buffers_in.0),
             KernelArg::Buffer(self.buffers_in.1),
             KernelArg::Buffer(self.buffer_c),
@@ -199,6 +246,38 @@ impl MicroBenchmark for NVRTCBenchmark {
             KernelArg::Int(self.n as i32),
             KernelArg::Int(self.k as i32),
         ];
+
+         // TTG Handling
+         let mut _l1_buf = None;
+         let mut _l2_buf = None;
+         if config.ttg_enabled {
+             let layout = TTGBuilder::from_dense(self.m, self.n, self.k, config.m_tile, config.n_tile, config.k_tile);
+             
+             let l1_bytes: Vec<u8> = layout.l1_map.iter().flat_map(|x| x.to_ne_bytes().to_vec()).collect();
+             let l2_bytes: Vec<u8> = layout.l2_table.iter().flat_map(|meta| {
+                 let mut b = Vec::with_capacity(20);
+                 b.extend_from_slice(&meta.region_m.to_ne_bytes());
+                 b.extend_from_slice(&meta.region_n.to_ne_bytes());
+                 b.extend_from_slice(&meta.k_start.to_ne_bytes());
+                 b.extend_from_slice(&meta.k_end.to_ne_bytes());
+                 b.extend_from_slice(&meta.role.to_ne_bytes());
+                 b
+             }).collect();
+
+             // Unwrap unsafe/expect in measure block for simplicity or handle gracefully
+             let l1 = self.runtime.alloc(l1_bytes.len(), self.backend).expect("TTG L1 Alloc");
+             let l2 = self.runtime.alloc(l2_bytes.len(), self.backend).expect("TTG L2 Alloc");
+             self.runtime.copy_to_device(l1, &l1_bytes).expect("TTG L1 Copy");
+             self.runtime.copy_to_device(l2, &l2_bytes).expect("TTG L2 Copy");
+             
+             args.push(KernelArg::Buffer(l1));
+             args.push(KernelArg::Buffer(l2));
+             
+             grid_dim = (layout.num_active_tiles, 1, 1);
+             
+             _l1_buf = Some(l1);
+             _l2_buf = Some(l2);
+         }
 
         // Warmup
         for _ in 0..10 {
@@ -783,29 +862,46 @@ impl MicroBenchmark for FlashAttentionBenchmark {
     fn k(&self) -> u32 { self.problem.d as u32 }
 
     fn validate_config(&self, config: &PipelineConfig) -> bool {
-        use crate::kernels::attention::cuda_emitter::FlashAttentionEmitter;
-        
         let backend = crate::runtime::DeviceBackend::Cuda;
-        let emitter = FlashAttentionEmitter::new(config.clone());
-        let source = emitter.generate_kernel(self.problem.h, self.problem.d, self.problem.is_causal);
+        let emitter = crate::emitter::universal::UniversalEmitter::new(backend);
+        let source = emitter.generate(crate::emitter::traits::UnifiedOpIR {
+            op_type: crate::emitter::traits::UnifiedOpType::FusedAttention {
+                b: self.problem.b as u32,
+                s: self.problem.s as u32,
+                d: self.problem.d as u32,
+                h: self.problem.h as u32,
+                dh: self.problem.d as u32, // Simplified dh estimation
+                causal: self.problem.is_causal,
+            },
+            precison: "f16".to_string(),
+            tiling: config.clone(),
+            conv_magic_strategy: None,
+        });
         
-        match self.runtime.compile(&source, "flash_attention_v2_kernel", backend) {
+        match self.runtime.compile(&source, "unified_attention_kernel", backend) {
             Ok(_) => true,
-            Err(e) => {
-                // eprintln!("[FA2] Compilation Failed: {:?}", e);
-                false
-            }
+            Err(_) => false,
         }
     }
 
     fn measure(&self, config: &PipelineConfig) -> BenchmarkResult {
-        use crate::kernels::attention::cuda_emitter::FlashAttentionEmitter;
-        
         let backend = crate::runtime::DeviceBackend::Cuda;
-        let emitter = FlashAttentionEmitter::new(config.clone());
-        let source = emitter.generate_kernel(self.problem.h, self.problem.d, self.problem.is_causal);
-        
-        let kernel_id = match self.runtime.compile(&source, "flash_attention_v2_kernel", backend) {
+        let emitter = crate::emitter::universal::UniversalEmitter::new(backend);
+        let source = emitter.generate(crate::emitter::traits::UnifiedOpIR {
+            op_type: crate::emitter::traits::UnifiedOpType::FusedAttention {
+                b: self.problem.b as u32,
+                s: self.problem.s as u32,
+                d: self.problem.d as u32,
+                h: self.problem.h as u32,
+                dh: self.problem.d as u32,
+                causal: self.problem.is_causal,
+            },
+            precison: "f16".to_string(),
+            tiling: config.clone(),
+            conv_magic_strategy: None,
+        });
+
+        let kernel_id = match self.runtime.compile(&source, "unified_attention_kernel", backend) {
             Ok(k) => k,
             Err(_) => return BenchmarkResult { tflops: 0.0, mean_tflops: 0.0, std_dev: 0.0, latency_ms: 1e9 },
         };
@@ -817,20 +913,16 @@ impl MicroBenchmark for FlashAttentionBenchmark {
         let ticks = (self.problem.s + mt - 1) / mt;
         let grid = (ticks as u32, self.problem.h as u32, self.problem.b as u32);
         
-        // Smem calculation handled by Emitter helper
-        let (total_bytes, _, _, _, _, _) = FlashAttentionEmitter::calculate_smem_layout(config, self.problem.d);
-        let smem = (total_bytes as u32 + 255) & !255;
+        let smem = 4096; // Baseline for simplified unified kernel
         
-        // Args
+        // Args match unified_attention_kernel: Q, K, V, O, S, D, scale
         let args = vec![
             KernelArg::Buffer(self.d_q),
             KernelArg::Buffer(self.d_k),
             KernelArg::Buffer(self.d_v),
             KernelArg::Buffer(self.d_o),
-            KernelArg::Usize(self.problem.b),
-            KernelArg::Usize(self.problem.h),
-            KernelArg::Usize(self.problem.s),
-            KernelArg::Usize(self.problem.d),
+            KernelArg::Int(self.problem.s as i32),
+            KernelArg::Int(self.problem.d as i32),
             KernelArg::Float(1.0 / (self.problem.d as f32).sqrt()),
         ];
         

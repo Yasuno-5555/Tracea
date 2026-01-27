@@ -36,37 +36,36 @@ impl ScheduleStrategy for PrioritySchedule {
             let node = &graph.nodes[id];
             match &node.op {
                 Operation::Gemm(gemm) => {
-                    let m = gemm.m.0 as u64;
-                    let n = gemm.n.0 as u64;
-                    let k = gemm.k.0 as u64;
+                    let m = gemm.m.as_static().unwrap_or(1024) as u64;
+                    let n = gemm.n.as_static().unwrap_or(1024) as u64;
+                    let k = gemm.k.as_static().unwrap_or(1024) as u64;
                     std::cmp::Reverse(m * n * k)
                 },
                 Operation::FusedGemm(fused) => {
-                    let m = fused.base.m.0 as u64;
-                    let n = fused.base.n.0 as u64;
-                    let k = fused.base.k.0 as u64;
+                    let m = fused.base.m.as_static().unwrap_or(1024) as u64;
+                    let n = fused.base.n.as_static().unwrap_or(1024) as u64;
+                    let k = fused.base.k.as_static().unwrap_or(1024) as u64;
                     std::cmp::Reverse(m * n * k)
                 },
                 Operation::Softmax(_) => {
-                    // Softmax is relatively light but critical path
                     std::cmp::Reverse(1000)
                 },
                 Operation::FusedAttention(attn) => {
-                    // Complexity: Batch * SeqLen^2 * HeadDim * 2 + Batch * SeqLen^2 (softmax)
-                    let complexity = (attn.b as u64) * (attn.s as u64) * (attn.s as u64) * (attn.dh as u64) * 2;
+                    let b = attn.b.as_static().unwrap_or(1) as u64;
+                    let s = attn.s.as_static().unwrap_or(1024) as u64;
+                    let dh = attn.dh.as_static().unwrap_or(64) as u64;
+                    let complexity = b * s * s * dh * 2;
                     std::cmp::Reverse(complexity)
                 },
                 Operation::NN(nn_op) => {
                     match nn_op {
                         crate::core::op::NNOp::Linear(lin) => {
-                            // Rough estimate: In * Out * Batch(assume 128)
-                            let m = 128; 
-                            let n = lin.out_features.0 as u64;
-                            let k = lin.in_features.0 as u64;
+                            let m = lin.batch_size.as_static().unwrap_or(128) as u64; 
+                            let n = lin.out_features.as_static().unwrap_or(1024) as u64;
+                            let k = lin.in_features.as_static().unwrap_or(1024) as u64;
                             std::cmp::Reverse(m * n * k)
                         },
                         crate::core::op::NNOp::Attention(_attn) => {
-                             // Heavy
                              std::cmp::Reverse(u64::MAX)
                         }
                     }
@@ -82,7 +81,7 @@ impl Graph {
         Self { nodes: Vec::new() }
     }
 
-    pub fn add_gemm(&mut self, m: u32, n: u32, k: u32, deps: Vec<usize>) -> usize {
+    pub fn add_gemm<M: Into<crate::core::op::DimExpr>, N: Into<crate::core::op::DimExpr>, K: Into<crate::core::op::DimExpr>>(&mut self, m: M, n: N, k: K, deps: Vec<usize>) -> usize {
         let id = self.nodes.len();
         self.nodes.push(Node {
             id,
@@ -92,7 +91,7 @@ impl Graph {
         id
     }
 
-    pub fn add_fused_gemm(&mut self, m: u32, n: u32, k: u32, epilogue: Vec<crate::core::op::EpilogueOp>, deps: Vec<usize>) -> usize {
+    pub fn add_fused_gemm<M: Into<crate::core::op::DimExpr>, N: Into<crate::core::op::DimExpr>, K: Into<crate::core::op::DimExpr>>(&mut self, m: M, n: N, k: K, epilogue: Vec<crate::core::op::EpilogueOp>, deps: Vec<usize>) -> usize {
         let id = self.nodes.len();
         let base = GemmOp::new(m, n, k);
         self.nodes.push(Node {
@@ -103,11 +102,12 @@ impl Graph {
         id
     }
 
-    pub fn add_linear(&mut self, in_features: u32, out_features: u32, bias: bool, activation: Vec<crate::core::op::EpilogueOp>, deps: Vec<usize>) -> usize {
+    pub fn add_linear<B: Into<crate::core::op::DimExpr>, I: Into<crate::core::op::DimExpr>, O: Into<crate::core::op::DimExpr>>(&mut self, batch_size: B, in_features: I, out_features: O, bias: bool, activation: Vec<crate::core::op::EpilogueOp>, deps: Vec<usize>) -> usize {
         let id = self.nodes.len();
         let op = crate::core::op::LinearOp {
-             in_features: crate::core::op::Dim(in_features),
-             out_features: crate::core::op::Dim(out_features),
+             batch_size: batch_size.into(),
+             in_features: in_features.into(),
+             out_features: out_features.into(),
              bias,
              activation,
         };
@@ -129,12 +129,12 @@ impl Graph {
         id
     }
 
-    pub fn add_attention(&mut self, embed_dim: u32, num_heads: u32, head_dim: u32, causal: bool, deps: Vec<usize>) -> usize {
+    pub fn add_attention<E: Into<crate::core::op::DimExpr>, H: Into<crate::core::op::DimExpr>, HD: Into<crate::core::op::DimExpr>>(&mut self, embed_dim: E, num_heads: H, head_dim: HD, causal: bool, deps: Vec<usize>) -> usize {
         let id = self.nodes.len();
         let op = crate::core::op::AttentionOp {
-            embed_dim: crate::core::op::Dim(embed_dim),
-            num_heads: crate::core::op::Dim(num_heads),
-            head_dim: crate::core::op::Dim(head_dim),
+            embed_dim: embed_dim.into(),
+            num_heads: num_heads.into(),
+            head_dim: head_dim.into(),
             causal,
         };
         self.nodes.push(Node {
@@ -145,11 +145,15 @@ impl Graph {
         id
     }
 
-    pub fn add_fused_attention(&mut self, b: u32, s: u32, d: u32, h: u32, dh: u32, causal: bool, deps: Vec<usize>) -> usize {
+    pub fn add_fused_attention<B, S, D, H, DH>(&mut self, b: B, s: S, d: D, h: H, dh: DH, causal: bool, deps: Vec<usize>) -> usize 
+    where B: Into<crate::core::op::DimExpr>, S: Into<crate::core::op::DimExpr>, D: Into<crate::core::op::DimExpr>, H: Into<crate::core::op::DimExpr>, DH: Into<crate::core::op::DimExpr> {
         let id = self.nodes.len();
         self.nodes.push(Node {
             id,
-            op: Operation::FusedAttention(crate::core::op::FusedAttentionOp { b, s, d, h, dh, causal, scale_inv_sqrt_d: true }),
+            op: Operation::FusedAttention(crate::core::op::FusedAttentionOp { 
+                b: b.into(), s: s.into(), d: d.into(), h: h.into(), dh: dh.into(), 
+                causal, scale_inv_sqrt_d: true 
+            }),
             dependencies: deps,
         });
         id
@@ -175,23 +179,21 @@ impl Graph {
                             if let Some(qk_node) = self.nodes.get(maybe_qk_id) {
                                 if let Operation::Gemm(ref qk_gemm) = qk_node.op {
                                     // Found Attention Pattern!
-                                    let s = qk_gemm.n.0;
-                                    let dh = qk_gemm.k.0;
-                                    let b_h_s = qk_gemm.m.0;
-                                    
-                                    // Robustness Fix: Instead of assuming h=8, we flatten B and H.
-                                    // Treat effective batch size as B_eff = B * H.
-                                    // Set h=1 for the fused operator.
-                                    let b_eff = b_h_s / s;
-                                    let h_eff = 1;
-                                    
-                                    let causal = true; // Heuristic for now
+                                     let s = qk_gemm.n.clone();
+                                     let dh = qk_gemm.k.clone();
+                                     let b_h_s = qk_gemm.m.clone();
+                                     
+                                     // Flatten B and H (Effective batch size)
+                                     let b_eff = b_h_s; 
+                                     let h_eff = crate::core::op::DimExpr::Static(1);
+                                     
+                                     let causal = true; 
 
-                                    let q_id = qk_node.dependencies[0];
-                                    let k_id = qk_node.dependencies[1];
-                                    let v_id = maybe_v_id;
+                                     let q_id = qk_node.dependencies[0];
+                                     let k_id = qk_node.dependencies[1];
+                                     let v_id = maybe_v_id;
 
-                                    fusion_mapping.insert(node.id, (b_eff, s, 512, h_eff, dh, causal, vec![q_id, k_id, v_id]));
+                                     fusion_mapping.insert(node.id, (b_eff, s, crate::core::op::DimExpr::Static(512), h_eff, dh, causal, vec![q_id, k_id, v_id]));
                                     
                                     // Mark nodes to be swallowed by fusion
                                     fused_source_nodes.insert(node.id);
@@ -210,7 +212,7 @@ impl Graph {
             if fusion_mapping.contains_key(&node.id) {
                 let (b, s, d, h, dh, causal, orig_deps) = fusion_mapping.get(&node.id).unwrap();
                 let deps = orig_deps.iter().map(|d| *id_map.get(d).unwrap_or(d)).collect();
-                let new_id = optimized.add_fused_attention(*b, *s, *d, *h, *dh, *causal, deps);
+                let new_id = optimized.add_fused_attention(b.clone(), s.clone(), d.clone(), h.clone(), dh.clone(), *causal, deps);
                 id_map.insert(node.id, new_id);
                 continue;
             }
@@ -226,14 +228,11 @@ impl Graph {
                 .collect();
 
             let new_id = match &node.op {
-                Operation::Gemm(gemm) => optimized.add_gemm(gemm.m.0, gemm.n.0, gemm.k.0, deps),
-                Operation::FusedGemm(fused) => optimized.add_fused_gemm(fused.base.m.0, fused.base.n.0, fused.base.k.0, fused.epilogue.clone(), deps),
+                Operation::Gemm(gemm) => optimized.add_gemm(gemm.m.clone(), gemm.n.clone(), gemm.k.clone(), deps),
+                Operation::FusedGemm(fused) => optimized.add_fused_gemm(fused.base.m.clone(), fused.base.n.clone(), fused.base.k.clone(), fused.epilogue.clone(), deps),
                 Operation::Softmax(s) => optimized.add_softmax(s.axis, deps),
                 Operation::FusedAttention(f) => {
-                    let mut id = optimized.add_fused_attention(f.b, f.s, f.d, f.h, f.dh, f.causal, deps);
-                    // Hack: add_fused_attention sets scale to true by default, but we should copy if we had it
-                    // Since add_fused_attention doesn't take scale arg yet, let's just leave it as true for now
-                    // Or explicit update:
+                    let id = optimized.add_fused_attention(f.b.clone(), f.s.clone(), f.d.clone(), f.h.clone(), f.dh.clone(), f.causal, deps);
                     if let Operation::FusedAttention(ref mut op) = optimized.nodes[id].op {
                         op.scale_inv_sqrt_d = f.scale_inv_sqrt_d;
                     }
@@ -241,8 +240,8 @@ impl Graph {
                 },
                 Operation::NN(nn) => {
                      match nn {
-                        crate::core::op::NNOp::Linear(lin) => optimized.add_linear(lin.in_features.0, lin.out_features.0, lin.bias, lin.activation.clone(), deps),
-                        crate::core::op::NNOp::Attention(attn) => optimized.add_attention(attn.embed_dim.0, attn.num_heads.0, attn.head_dim.0, attn.causal, deps),
+                        crate::core::op::NNOp::Linear(lin) => optimized.add_linear(lin.batch_size.clone(), lin.in_features.clone(), lin.out_features.clone(), lin.bias, lin.activation.clone(), deps),
+                        crate::core::op::NNOp::Attention(attn) => optimized.add_attention(attn.embed_dim.clone(), attn.num_heads.clone(), attn.head_dim.clone(), attn.causal, deps),
                      }
                 }
             };
@@ -263,54 +262,51 @@ impl Graph {
 
             let new_id = match &node.op {
                 Operation::Gemm(gemm) => {
-                    lowered.add_gemm(gemm.m.0, gemm.n.0, gemm.k.0, deps)
+                    lowered.add_gemm(gemm.m.clone(), gemm.n.clone(), gemm.k.clone(), deps)
                 },
                 Operation::FusedGemm(fused) => {
-                    lowered.add_fused_gemm(fused.base.m.0, fused.base.n.0, fused.base.k.0, fused.epilogue.clone(), deps)
+                    lowered.add_fused_gemm(fused.base.m.clone(), fused.base.n.clone(), fused.base.k.clone(), fused.epilogue.clone(), deps)
                 },
                 Operation::Softmax(s) => {
                     lowered.add_softmax(s.axis, deps)
                 },
                 Operation::FusedAttention(f) => {
-                    lowered.add_fused_attention(f.b, f.s, f.d, f.h, f.dh, f.causal, deps)
+                    lowered.add_fused_attention(f.b.clone(), f.s.clone(), f.d.clone(), f.h.clone(), f.dh.clone(), f.causal, deps)
                 },
                 Operation::NN(nn_op) => {
                     match nn_op {
                         crate::core::op::NNOp::Linear(lin) => {
                             // Expand Linear to FusedGemm
-                            // Batch size is currently not tracked in LinearOp, assuming 128 for optimization
-                            let batch_size = 128; 
                             lowered.add_fused_gemm(
-                                batch_size, 
-                                lin.out_features.0, 
-                                lin.in_features.0, 
+                                lin.batch_size.clone(), 
+                                lin.out_features.clone(), 
+                                lin.in_features.clone(), 
                                 lin.activation.clone(), 
                                 deps
                             )
                         },
                         crate::core::op::NNOp::Attention(attn) => {
-                            // Decompose Attention (MVP: Single Batch/Head for demo logic)
-                            let b = 1; // Batch
-                            let s = 128; // SeqLen
-                            let d = attn.embed_dim.0;
-                            let h = attn.num_heads.0;
-                            let dh = attn.head_dim.0;
+                            let b = 1; // Batch Symbol might be better
+                            let s = 128; // SeqLen Symbol
+                            let d = attn.embed_dim.clone();
+                            let h_val = attn.num_heads.as_static().unwrap_or(8);
+                            let dh = attn.head_dim.clone();
 
-                            // 1. Q, K, V Projections (FusedGemm with no activation)
-                            let id_q = lowered.add_fused_gemm(b * s, d, d, vec![], deps.clone());
-                            let id_k = lowered.add_fused_gemm(b * s, d, d, vec![], deps.clone());
-                            let id_v = lowered.add_fused_gemm(b * s, d, d, vec![], deps);
+                            // 1. Q, K, V Projections
+                            let id_q = lowered.add_fused_gemm(d.clone(), d.clone(), d.clone(), vec![], deps.clone());
+                            let id_k = lowered.add_fused_gemm(d.clone(), d.clone(), d.clone(), vec![], deps.clone());
+                            let id_v = lowered.add_fused_gemm(d.clone(), d.clone(), d.clone(), vec![], deps);
 
                             // 2. Q @ K^T (Scaled Dot Product)
                             // Tracea doesn't have transpose yet, assuming K is pre-transposed or we handle it in emitter later.
                             // For IR lowering, we emit Gemm(Q, K, dh)
-                            let id_qk = lowered.add_gemm(b * h * s, s, dh, vec![id_q, id_k]);
+                            let id_qk = lowered.add_gemm(b * h_val * s, s, dh.clone(), vec![id_q, id_k]);
 
                             // 3. Softmax
                             let id_sm = lowered.add_softmax(-1, vec![id_qk]);
 
                             // 4. (Softmax @ V)
-                            let id_out = lowered.add_gemm(b * h * s, dh, s, vec![id_sm, id_v]);
+                            let id_out = lowered.add_gemm(b * h_val * s, dh, s, vec![id_sm, id_v]);
                             
                             id_out
                         }
@@ -332,7 +328,7 @@ mod tests {
     fn test_linear_lowering() {
         let mut graph = Graph::new();
         let id_in = graph.add_gemm(128, 128, 128, vec![]);
-        let id_lin = graph.add_linear(128, 64, true, vec![EpilogueOp::ReLU], vec![id_in]);
+        let id_lin = graph.add_linear(128, 128, 64, true, vec![EpilogueOp::ReLU], vec![id_in]);
         
         let lowered = graph.lower();
         assert_eq!(lowered.nodes.len(), 2);
@@ -340,7 +336,7 @@ mod tests {
         let node0 = &lowered.nodes[0];
         match &node0.op {
             Operation::Gemm(gemm) => {
-                assert_eq!(gemm.m.0, 128);
+                assert_eq!(gemm.m.as_static().unwrap(), 128);
             },
             _ => panic!("Node 0 should be Gemm"),
         }
@@ -348,8 +344,8 @@ mod tests {
         let node1 = &lowered.nodes[1];
         match node1.op {
             Operation::FusedGemm(ref fused) => {
-                assert_eq!(fused.base.n.0, 64);
-                assert_eq!(fused.base.k.0, 128);
+                assert_eq!(fused.base.n.as_static().unwrap(), 64);
+                assert_eq!(fused.base.k.as_static().unwrap(), 128);
                 assert_eq!(fused.epilogue.len(), 1);
             },
             _ => panic!("Node 1 should be FusedGemm"),
@@ -391,9 +387,9 @@ mod tests {
         let last_node = &fused.nodes[4];
         match last_node.op {
             Operation::FusedAttention(ref attn) => {
-                assert_eq!(attn.s, 128);
-                assert_eq!(attn.h, 8);
-                assert_eq!(attn.dh, 64);
+                assert_eq!(attn.s.as_static().unwrap(), 128);
+                assert_eq!(attn.h.as_static().unwrap(), 8);
+                assert_eq!(attn.dh.as_static().unwrap(), 64);
             },
             _ => panic!("Last node should be FusedAttention"),
         }

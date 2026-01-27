@@ -24,6 +24,8 @@ pub type HipModuleGetFunction = unsafe extern "system" fn(*mut *mut c_void, *mut
 pub type HipModuleLaunchKernel = unsafe extern "system" fn(*mut c_void, u32, u32, u32, u32, u32, u32, u32, *mut c_void, *mut *mut c_void, *mut *mut c_void) -> i32;
 #[allow(non_snake_case)]
 pub type HipDeviceSynchronize = unsafe extern "system" fn() -> i32;
+#[allow(non_snake_case)]
+pub type HipModuleUnload = unsafe extern "system" fn(*mut c_void) -> i32;
 
 pub struct RocmDriverApi {
     pub lib: &'static Library,
@@ -38,6 +40,7 @@ pub struct RocmDriverApi {
     pub hipModuleGetFunction: Symbol<'static, HipModuleGetFunction>,
     pub hipModuleLaunchKernel: Symbol<'static, HipModuleLaunchKernel>,
     pub hipDeviceSynchronize: Symbol<'static, HipDeviceSynchronize>,
+    pub hipModuleUnload: Symbol<'static, HipModuleUnload>,
 }
 
 static mut ROCM_DRIVER_API: Option<RocmDriverApi> = None;
@@ -64,9 +67,10 @@ impl RocmDriverApi {
                 let get_func = lib_ref.get(b"hipModuleGetFunction");
                 let launch = lib_ref.get(b"hipModuleLaunchKernel");
                 let sync = lib_ref.get(b"hipDeviceSynchronize");
+                let unload = lib_ref.get(b"hipModuleUnload");
                 
-                if let (Ok(count), Ok(attr), Ok(props), Ok(m), Ok(f), Ok(h), Ok(d), Ok(l), Ok(gf), Ok(launch), Ok(sync)) = 
-                   (get_count, get_attr, get_props, malloc, free, h2d, d2d, load, get_func, launch, sync) {
+                if let (Ok(count), Ok(attr), Ok(props), Ok(m), Ok(f), Ok(h), Ok(d), Ok(l), Ok(gf), Ok(launch), Ok(sync), Ok(unload)) = 
+                   (get_count, get_attr, get_props, malloc, free, h2d, d2d, load, get_func, launch, sync, unload) {
                     ROCM_DRIVER_API = Some(RocmDriverApi {
                         lib: lib_ref,
                         hipGetDeviceCount: count,
@@ -80,6 +84,7 @@ impl RocmDriverApi {
                         hipModuleGetFunction: gf,
                         hipModuleLaunchKernel: launch,
                         hipDeviceSynchronize: sync,
+                        hipModuleUnload: unload,
                     });
                     return ROCM_DRIVER_API.as_ref();
                 }

@@ -1,26 +1,53 @@
 use serde::{Serialize, Deserialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
-pub struct Dim(pub u32);
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Hash)]
+pub enum DimExpr {
+    Static(u32),
+    Symbol(String),
+}
+
+impl From<u32> for DimExpr {
+    fn from(v: u32) -> Self {
+        DimExpr::Static(v)
+    }
+}
+
+impl std::fmt::Display for DimExpr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DimExpr::Static(v) => write!(f, "{}", v),
+            DimExpr::Symbol(s) => write!(f, "{}", s),
+        }
+    }
+}
+
+impl DimExpr {
+    pub fn as_static(&self) -> Option<u32> {
+        match self {
+            DimExpr::Static(v) => Some(*v),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Scalar(pub f32);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GemmOp {
-    pub m: Dim,
-    pub n: Dim,
-    pub k: Dim,
+    pub m: DimExpr,
+    pub n: DimExpr,
+    pub k: DimExpr,
     pub alpha: Scalar,
     pub beta: Scalar,
 }
 
 impl GemmOp {
-    pub fn new(m: u32, n: u32, k: u32) -> Self {
+    pub fn new<M: Into<DimExpr>, N: Into<DimExpr>, K: Into<DimExpr>>(m: M, n: N, k: K) -> Self {
         Self {
-            m: Dim(m),
-            n: Dim(n),
-            k: Dim(k),
+            m: m.into(),
+            n: n.into(),
+            k: k.into(),
             alpha: Scalar(1.0),
             beta: Scalar(0.0),
         }
@@ -63,17 +90,18 @@ impl FusedGemmOp {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct LinearOp {
-    pub in_features: Dim,
-    pub out_features: Dim,
+    pub batch_size: DimExpr,
+    pub in_features: DimExpr,
+    pub out_features: DimExpr,
     pub bias: bool,
-    pub activation: Vec<EpilogueOp>, // Supports multiple epilogues (e.g. Bias + Gelu)
+    pub activation: Vec<EpilogueOp>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct AttentionOp {
-    pub embed_dim: Dim,
-    pub num_heads: Dim,
-    pub head_dim: Dim,
+    pub embed_dim: DimExpr,
+    pub num_heads: DimExpr,
+    pub head_dim: DimExpr,
     pub causal: bool,
 }
 
@@ -91,11 +119,11 @@ pub struct SoftmaxOp {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct FusedAttentionOp {
-    pub b: u32,
-    pub s: u32,
-    pub d: u32,
-    pub h: u32,
-    pub dh: u32,
+    pub b: DimExpr,
+    pub s: DimExpr,
+    pub d: DimExpr,
+    pub h: DimExpr,
+    pub dh: DimExpr,
     pub causal: bool,
     pub scale_inv_sqrt_d: bool,
 }

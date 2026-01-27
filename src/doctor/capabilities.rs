@@ -16,6 +16,10 @@ pub struct BackendCapabilities {
     // CPU specific
     pub simd_width_bits: u32,       // 128/256/512
     pub core_count: u32,
+
+    // Real-time Metrics (Phase 4)
+    pub current_occupancy: Option<f32>,
+    pub register_pressure: Option<u32>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

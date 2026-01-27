@@ -16,22 +16,24 @@ cp target/release/libtracea.so tracea.so   # Linux
 ```
 
 ### 2. Project Structure
-The codebase is organized into domain-specific modules:
+Tracea follows a strict layered architecture:
 
-- **src/kernels/**: Optimized kernel implementations.
-    - `attention/`: FlashAttention-2 logic (CUDA, ROCm, Metal).
-    - `gemm/`: General Matrix Multiplication.
-- **src/bindings/**: Language bindings.
-    - `python.rs`: PyO3 exports.
-    - `c_bindings.rs`: C ABI exports.
-- **src/core/**: High-level IR and graph logic.
-- **src/optimizer/**: Bayesian auto-tuner and benchmarks.
+- **src/core/**: IR definitions, TTG types, and fundamental shapes.
+- **src/semantic/**: Tiling patterns and Semantic IR abstractions.
+- **src/policy/**: Policy Engine for strategy planning.
+- **src/runtime/**: TTG Builder and Runtime Manager (buffer management).
+- **src/kernels/**: Multi-backend kernel implementations (CUDA, HIP, Metal, CPU).
+- **src/emitter/**: Code generation logic for various architectures.
+- **src/optimizer/**: Bayesian auto-tuner and Hero configurations.
+- **src/doctor/**: Environment diagnostics and hardware profiling.
 
-### 3. Adding a New Kernel
-1.  Create a new adapter in `src/kernels/<op>/<backend>_adapter.rs`.
-2.  Implement `TunableKernel` for the adapter.
-3.  Expose it in `src/bindings/python.rs`.
+### 3. Development Mode
+For Python development, use `maturin`:
+```bash
+cd tracea-python && maturin develop
+```
 
 ### 4. Testing
-- **Unit Tests**: `cargo test`
-- **Integration Tests**: `python tests/edge_case_fa2.py`
+- **Rust Unit Tests**: `cargo test`
+- **Benchmarks**: `cargo run --example gemm_bench`
+- **Tracea Doctor**: `cargo run --bin tracea-doctor`

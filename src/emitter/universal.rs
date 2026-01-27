@@ -18,7 +18,24 @@ impl UniversalEmitter {
             return crate::emitter::elementwise::generate_elementwise(&ir);
         }
         if let crate::emitter::traits::UnifiedOpType::Conv2d { .. } = ir.op_type {
+            #[cfg(feature = "vulkan")]
+            if self.backend == DeviceBackend::Vulkan {
+                return crate::emitter::vulkan::generate_vulkan_conv(&ir);
+            }
             return crate::emitter::conv::generate_conv(&ir);
+        }
+        if let crate::emitter::traits::UnifiedOpType::FusedAttention { .. } = ir.op_type {
+            return crate::emitter::attention::generate_attention(&ir, self.backend);
+        }
+        if let crate::emitter::traits::UnifiedOpType::Gemm { .. } = ir.op_type {
+            return crate::emitter::gemm::generate_gemm(&ir, self.backend);
+        }
+        if let crate::emitter::traits::UnifiedOpType::MatrixCore { .. } = ir.op_type {
+            #[cfg(feature = "vulkan")]
+            if self.backend == DeviceBackend::Vulkan {
+                return crate::emitter::vulkan::generate_vulkan_mma(&ir);
+            }
+            // CUDA/Metal fallbacks to Gemm or specialized emitters
         }
 
         match self.backend {

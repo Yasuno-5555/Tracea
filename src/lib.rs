@@ -30,6 +30,7 @@ pub mod runtime;
 pub mod backend;
 pub mod optimizer;
 pub mod doctor;
+pub mod policy;
 
 pub use crate::core::op::GemmOp;
 pub use crate::core::config::{PipelineConfig, SwizzleMode, SoftmaxGranularity, BarrierMode};

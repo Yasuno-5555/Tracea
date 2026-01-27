@@ -573,10 +573,10 @@ impl PyContext {
                     
                     // Crucial: Use op.dh (Head Dim) for Fa2Problem.d
                     let problem = Fa2Problem {
-                        b: op.b as usize,
-                        s: op.s as usize,
-                        h: op.h as usize,
-                        d: op.dh as usize, // Correct field
+                        b: op.b.as_static().unwrap_or(1) as usize,
+                        s: op.s.as_static().unwrap_or(1024) as usize,
+                        h: op.h.as_static().unwrap_or(8) as usize,
+                        d: op.dh.as_static().unwrap_or(128) as usize, 
                         is_causal: op.causal,
                     };
                     
@@ -750,6 +750,9 @@ impl PyTuner {
             has_specialized_units: true,
             compute_capability: Some((8, 6)),
             supported_intrinsic_shapes: vec![],
+            max_threadgroup_memory: 0,
+            preferred_tile_shape: [128, 128, 32],
+            simd_width: 32,
         };
         let tuner = AutoTuner::new(gpu);
         Self { inner: Arc::new(Mutex::new(tuner)) }

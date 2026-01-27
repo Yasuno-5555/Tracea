@@ -225,15 +225,20 @@ impl JITCompiler {
         use crate::emitter::traits::{UnifiedOpIR, UnifiedOpType};
         let ir = UnifiedOpIR {
             op_type: UnifiedOpType::FusedAttention {
-                b: op.b, s: op.s, d: op.d, h: op.h, dh: op.dh, causal: op.causal
+                b: op.b.as_static().unwrap_or(1), 
+                s: op.s.as_static().unwrap_or(128), 
+                d: op.d.as_static().unwrap_or(64), 
+                h: op.h.as_static().unwrap_or(8), 
+                dh: op.dh.as_static().unwrap_or(64), 
+                causal: op.causal
             },
             precison: "f16".to_string(),
-            tiling: crate::PipelineConfig::new(2, 64, 64, op.dh),
+            tiling: crate::PipelineConfig::new(2, 64, 64, op.dh.as_static().unwrap_or(64)),
             conv_magic_strategy: None,
         };
         
         let source = self.emitter.generate_from_ir(&ir);
-        let key = format!("fused_attn_dh{}_c{}_s{}", op.dh, op.causal, op.scale_inv_sqrt_d);
+        let key = format!("fused_attn_dh{}_c{}_s{}", op.dh.as_static().unwrap_or(64), op.causal, op.scale_inv_sqrt_d);
         
         let mut cache = self.kernel_cache.lock().map_err(|_| "Cache Lock Poisoned".to_string())?;
         if let Some(kernel) = cache.get(&key) {
