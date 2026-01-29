@@ -94,9 +94,10 @@ fn dummy_config() -> PipelineConfig {
         num_stages: 2, m_tile: 16, n_tile: 16, k_tile: 16,
         instruction: SpecializedInstruction::None,
         swizzle_mode: SwizzleMode::None,
-        quantization: QuantizationMode::None,
-        layout_policy: None,
-        epilogue: vec![],
+        intrinsic_shape: IntrinsicShape::None,
+        vectorize_epilogue: true,
+        ttg_enabled: false,
+        attention_variant: Default::default(),
         force_num_warps: None,
     }
 }

@@ -48,6 +48,10 @@ extern "C" __global__ void unified_gemm_kernel(const half* A, const half* B, flo
 }}
 "#, mt=mt, nt=nt, kt=kt)
             }
+            DeviceBackend::Metal => {
+                let emitter = crate::emitter::metal::MetalEmitter::detect();
+                emitter.generate_gemm(ir.tiling.clone())
+            }
             _ => "// GEMM not yet unified for this backend\n".to_string(),
         }
     } else {

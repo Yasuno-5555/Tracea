@@ -1,19 +1,12 @@
 use crate::core::ttg::LogicalID;
-use crate::runtime::DeviceBackend;
+// use crate::runtime::DeviceBackend; // Removed conflict
 use serde::{Deserialize, Serialize};
 
 // ===============================
 // Core Context & Decision Types
 // ===============================
 
-#[derive(Debug, Clone)]
-pub struct DeviceProfile {
-    pub backend: DeviceBackend,
-    pub max_threads_per_block: u32,
-    pub max_shared_memory: u32,
-    pub warp_size: u32,
-    pub arch_name: String,
-}
+pub use crate::core::device::{DeviceProfile, BackendType as DeviceBackend};
 
 #[derive(Debug, Clone)]
 pub struct ModelTopology {
@@ -28,14 +21,57 @@ pub enum TopologyKind {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OperatorTopology {
-    pub op_id: u64,
-    pub name: String,
-    pub op_type: String, // "Gemm", "Attention", etc.
-    pub m: u32,
-    pub n: u32,
-    pub k: u32,
-    pub kind: TopologyKind,
+pub enum OperatorTopology {
+    Gemm {
+        op_id: u64,
+        name: String,
+        m: u32,
+        n: u32,
+        k: u32,
+        kind: TopologyKind,
+    },
+    Attention {
+        op_id: u64,
+        name: String,
+        b: u32, 
+        s: u32, 
+        h: u32, 
+        d: u32,
+    },
+    // For Fusion Testing
+    Conv2d {
+        op_id: u64,
+        name: String,
+        n: u32, c: u32, h: u32, w: u32,
+        k: u32,
+    },
+    Relu {
+        op_id: u64,
+        name: String,
+    },
+    Elementwise {
+        op_id: u64,
+        name: String,
+        kind: String, // "Add", "Mul"
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GraphTopology {
+    pub operators: Vec<OperatorTopology>,
+    pub dependencies: Vec<(u64, u64)>, // (producer, consumer)
+}
+
+impl OperatorTopology {
+    pub fn op_id(&self) -> u64 {
+        match self {
+            OperatorTopology::Gemm { op_id, .. } => *op_id,
+            OperatorTopology::Attention { op_id, .. } => *op_id,
+            OperatorTopology::Conv2d { op_id, .. } => *op_id,
+            OperatorTopology::Relu { op_id, .. } => *op_id,
+            OperatorTopology::Elementwise { op_id, .. } => *op_id,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -50,6 +86,12 @@ pub struct PolicyContext<'a> {
     pub model: &'a ModelTopology,
     pub operators: &'a [OperatorTopology],
     pub history: &'a ExecutionHistory,
+}
+
+#[derive(Debug, Clone)]
+pub struct GraphContext<'a> {
+    pub device: &'a DeviceProfile,
+    pub graph: &'a GraphTopology,
 }
 
 #[derive(Debug, Clone)]
@@ -88,11 +130,37 @@ pub enum ActivityPattern {
 }
 
 #[derive(Debug, Clone)]
-pub struct TilePolicy {
-    pub operator_id: u64,
-    pub tile_shape: [u32; 3], // [M, N, K]
-    pub tiling_kind: TilingKind,
-    pub activity_pattern: ActivityPattern,
+pub enum TilePolicy {
+    Gemm {
+        operator_id: u64,
+        tile_shape: [u32; 3], // [M, N, K]
+        tiling_kind: TilingKind,
+        activity_pattern: ActivityPattern,
+        variant: crate::core::config::GemmVariant,
+    },
+    Attention {
+        operator_id: u64,
+        qk_tile: (u32, u32), // (M_Tile, N_Tile) e.g. (64, 64)
+        v_tile: (u32, u32),  // (M_Tile, K_Tile) e.g. (64, 32)
+        variant: crate::core::config::AttentionVariant,
+    },
+    Conv {
+        operator_id: u64,
+    },
+    Elementwise {
+        operator_id: u64,
+    },
+}
+
+impl TilePolicy {
+    pub fn operator_id(&self) -> u64 {
+        match self {
+            TilePolicy::Gemm { operator_id, .. } => *operator_id,
+            TilePolicy::Attention { operator_id, .. } => *operator_id,
+            TilePolicy::Conv { operator_id, .. } => *operator_id,
+            TilePolicy::Elementwise { operator_id, .. } => *operator_id,
+        }
+    }
 }
 
 // ===============================
@@ -129,10 +197,17 @@ pub struct BackendExecHint {
     pub use_async_copy: bool,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct MemoryAliasPolicy {
+    pub output_offset: Option<usize>, // Offset in shared memory pool
+    pub workspace_offset: Option<usize>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ExecPolicy {
     pub operator_id: u64,
     pub execution_order: ExecutionOrder,
     pub kernel_binding: KernelBindingPolicy,
     pub backend_hint: BackendExecHint,
+    pub memory_alias_hint: MemoryAliasPolicy,
 }

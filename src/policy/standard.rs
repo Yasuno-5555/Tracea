@@ -1,61 +1,67 @@
 use crate::policy::engine::{PolicyEngine, PolicyFeedback};
 use crate::policy::types::*;
-use crate::runtime::DeviceBackend;
+use std::collections::HashMap;
 
 pub struct StandardPolicyEngine {
-    // History storage placeholder
+    history: HashMap<u64, (crate::core::tuning::TuningKey, crate::core::config::GemmVariant)>,
 }
 
 impl StandardPolicyEngine {
     pub fn new() -> Self {
-        Self {}
-    }
-
-    fn choose_tile_shape(&self, device: &DeviceProfile, op: &OperatorTopology) -> [u32; 3] {
-        match device.backend {
-            DeviceBackend::Metal => {
-                // Threadgroup Memory priority (e.g. 32KB limit)
-                // [32, 64, 1] is a safe default for Metal
-                [32, 64, 1]
-            },
-            DeviceBackend::Cuda => {
-                // TensorCore occupancy priority
-                // Ampere/Hopper usually like 64x128 or 128x128. 
-                // KT must be at least 16 for MMA.
-                [64, 128, 16]
-            },
-            DeviceBackend::Rocm => {
-                // MI300 Wave64 preference
-                [64, 64, 1]
-            },
-            _ => [32, 32, 1]
+        Self {
+            history: HashMap::new(),
         }
     }
 
-    fn choose_tiling_kind(&self, op: &OperatorTopology) -> TilingKind {
-        match &op.kind {
-            TopologyKind::LowRank { r } => {
-                 TilingKind::LowRank { r: *r, tile_m: 64, tile_n: 64 }
-            }
-            TopologyKind::Dense => {
-                match op.op_type.as_str() {
-                    "Attention" => TilingKind::Dense,
-                    "Gemm" => TilingKind::Dense,
-                    "LowRankMlp" => TilingKind::LowRank { r: 64, tile_m: 64, tile_n: 64 }, 
-                    _ => TilingKind::Dense,
-                }
-            }
+    fn choose_tile_shape(&self, device: &DeviceProfile, _op: &OperatorTopology) -> [u32; 3] {
+        // ... (Keep existing logic)
+        if device.has_tensor_cores && device.local_memory_size >= 48 * 1024 {
+            [64, 128, 16] 
+        } else if device.simd_width == 32 { 
+            [32, 64, 1] 
+        } else if device.simd_width == 64 {
+            [64, 64, 1]
+        } else {
+            [32, 32, 1]
         }
     }
 
-    fn choose_execution_order(&self, _device: &DeviceProfile) -> ExecutionOrder {
-        // Default to DiagonalWavefront for better concurrency in pipelines
-        ExecutionOrder::DiagonalWavefront
+
+    fn select_gemm_variant(&self, device: &DeviceProfile, op: &OperatorTopology) -> crate::core::config::GemmVariant {
+        use crate::core::config::GemmVariant;
+        use crate::core::cost::CostModel;
+        use crate::core::tuning::TuningCache;
+
+        // 1. Check Tuning Cache (Autotuning)
+        if let Some(variant) = TuningCache::get_best_variant(op, device) {
+            return variant;
+        }
+
+        // 2. Cost Model Estimation
+        let mut best_variant = GemmVariant::Naive;
+        let mut min_latency = f32::MAX;
+        let variants = [GemmVariant::Naive, GemmVariant::Tiled, GemmVariant::Simd];
+        
+        for &variant in &variants {
+            if variant == GemmVariant::Simd && !device.has_tensor_cores { continue; }
+            if variant == GemmVariant::Tiled && device.local_memory_size == 0 { continue; }
+            
+            let latency = CostModel::estimate_gemm_latency(op, variant, device);
+            if latency < min_latency {
+                min_latency = latency;
+                best_variant = variant;
+            }
+        }
+        best_variant
     }
 
-    fn choose_activity_pattern(&self, op: &OperatorTopology) -> ActivityPattern {
-        // Can read op annotations or use random for testing
-        ActivityPattern::AllActive
+    // Helper for Attention Variant Selection
+    fn select_attention_variant(&self, d: u32, device: &DeviceProfile) -> crate::core::config::AttentionVariant {
+        if device.has_tensor_cores && d % 8 == 0 {
+             crate::core::config::AttentionVariant::SimdQK
+        } else {
+             crate::core::config::AttentionVariant::Naive
+        }
     }
 }
 
@@ -66,47 +72,80 @@ impl PolicyEngine for StandardPolicyEngine {
 
         for op in ctx.operators {
             // 1. Tile Policy
-            let tile_shape = self.choose_tile_shape(ctx.device, op);
-            let tiling_kind = self.choose_tiling_kind(op);
-            let activity_pattern = self.choose_activity_pattern(op);
+            let tile_policy = match op {
+                OperatorTopology::Gemm { op_id, name: _, m: _, n: _, k: _, kind } => {
+                     let tile_shape = self.choose_tile_shape(ctx.device, op);
+                     let variant = self.select_gemm_variant(ctx.device, op);
+                     
+                     // Record decision for feedback loop
+                     if let Some(key) = crate::core::tuning::TuningCache::make_key(op, ctx.device) {
+                         self.history.insert(*op_id, (key, variant));
+                     }
+
+                     let tiling_kind = match kind {
+                         TopologyKind::LowRank { r } => TilingKind::LowRank { r: *r, tile_m: 64, tile_n: 64 },
+                         TopologyKind::Dense => TilingKind::Dense,
+                     };
+                     
+                     TilePolicy::Gemm {
+                         operator_id: *op_id,
+                         tile_shape,
+                         tiling_kind,
+                         activity_pattern: ActivityPattern::AllActive,
+                         variant,
+                     }
+                },
+                OperatorTopology::Attention { op_id, b: _, s: _, h: _, d, name: _ } => {
+                     // Attention Logic
+                     // Select variant based on Policy
+                     let variant = self.select_attention_variant(*d, ctx.device);
+                     
+                     TilePolicy::Attention {
+                         operator_id: *op_id,
+                         qk_tile: (64, 64),
+                         v_tile: (64, 32),
+                         variant,
+                     }
+                },
+                OperatorTopology::Conv2d { op_id, .. } => {
+                     TilePolicy::Conv { operator_id: *op_id }
+                },
+                OperatorTopology::Relu { op_id, .. } | OperatorTopology::Elementwise { op_id, .. } => {
+                     TilePolicy::Elementwise { operator_id: *op_id }
+                },
+            };
             
-            tile_policies.push(TilePolicy {
-                operator_id: op.op_id,
-                tile_shape,
-                tiling_kind,
-                activity_pattern,
-            });
+            tile_policies.push(tile_policy);
 
             // 2. Exec Policy
-            let execution_order = self.choose_execution_order(ctx.device);
+            let execution_order = ExecutionOrder::DiagonalWavefront;
             
             // Backend Hint Logic
-            let backend_hint = match ctx.device.backend {
-                DeviceBackend::Cuda => BackendExecHint {
-                    preferred_block_dim: (160, 1, 1), // 5 warps (1 Prod + 4 Cons)
+            let high_throughput = ctx.device.has_tensor_cores && ctx.device.local_memory_size >= 49152;
+            
+            let backend_hint = if high_throughput {
+                BackendExecHint {
+                    preferred_block_dim: (160, 1, 1), // 5 warps (optimized for specific high-end GPU)
                     max_registers_per_thread: Some(255), 
                     use_async_copy: true,
-                },
-                DeviceBackend::Metal => BackendExecHint {
-                    preferred_block_dim: (128, 1, 1), // SIMDGROUP size align
-                    max_registers_per_thread: None,
-                    use_async_copy: false,
-                },
-                _ => BackendExecHint {
-                    preferred_block_dim: (64, 1, 1),
+                }
+            } else {
+                 BackendExecHint {
+                    preferred_block_dim: (128, 1, 1), // 4 SIMDgroups/Warps (Safe default for Metal/AMD)
                     max_registers_per_thread: None,
                     use_async_copy: false,
                 }
             };
-
+            
             exec_policies.push(ExecPolicy {
-                operator_id: op.op_id,
+                operator_id: op.op_id(),
                 execution_order,
                 kernel_binding: KernelBindingPolicy { 
                     kernel_kind: KernelKind::Generic, 
                     fuse_with: vec![] 
                 },
                 backend_hint,
+                memory_alias_hint: MemoryAliasPolicy::default(),
             });
         }
 
@@ -120,7 +159,194 @@ impl PolicyEngine for StandardPolicyEngine {
         }
     }
 
-    fn update(&mut self, _feedback: &PolicyFeedback) {
-        // Simple no-op or logging for Phase B
+    fn update(&mut self, feedback: &PolicyFeedback) {
+        use crate::core::tuning::TuningCache;
+        // Phase D-2: Autotuning Hook
+        // If execution was successful and we have history, update the cache.
+        if feedback.error_msg.is_none() {
+            if let Some((key, variant)) = self.history.get(&feedback.operator_id) {
+                // In a full system, we would compare feedback.latency_us vs best known.
+                // Here we essentially enforce: "If it ran, cache it."
+                TuningCache::update_entry(key.clone(), *variant);
+            }
+        }
+    }
+
+    fn propose_graph(&mut self, ctx: &GraphContext) -> PolicyDecision {
+        use crate::policy::scheduler::StandardScheduler;
+        StandardScheduler::schedule(self, ctx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::policy::types::*;
+    // use crate::runtime::DeviceBackend; // Removed to avoid conflict with types::DeviceBackend
+
+    #[test]
+    fn test_policy_attention_selection() {
+        let engine = StandardPolicyEngine::new();
+        
+        // Update struct literal to match core::DeviceProfile
+        let metal_device = DeviceProfile {
+            backend: DeviceBackend::Metal,
+            name: "Apple M1".to_string(),
+            max_threads_per_block: 1024,
+            local_memory_size: 32768,
+            simd_width: 32,
+            has_tensor_cores: true,
+            has_fp16_storage: true,
+            texture_alignment: 256,
+        };
+
+        // Case 1: Multiple of 8 (e.g., 64) -> SimdQK
+        let v1 = engine.select_attention_variant(64, &metal_device);
+        assert_eq!(v1, crate::core::config::AttentionVariant::SimdQK);
+
+        // Case 2: Non-multiple of 8 (e.g., 33) -> Naive
+        let v2 = engine.select_attention_variant(33, &metal_device);
+        assert_eq!(v2, crate::core::config::AttentionVariant::Naive);
+        
+        // Case 3: CUDA -> Naive (Default)
+        let cuda_device = DeviceProfile {
+            backend: DeviceBackend::Cuda,
+            name: "SM80".to_string(),
+            max_threads_per_block: 1024,
+            local_memory_size: 49152,
+            simd_width: 32,
+            has_tensor_cores: true,
+            has_fp16_storage: true,
+            texture_alignment: 512,
+        };
+        let v3 = engine.select_attention_variant(64, &cuda_device);
+        // Phase B-2: Policy should select SimdQK for any capable device (including CUDA)
+        assert_eq!(v3, crate::core::config::AttentionVariant::SimdQK);
+    }
+
+    #[test]
+    fn test_policy_gemm_selection() {
+        let engine = StandardPolicyEngine::new();
+        
+        // Mock Device: High End (Tensor Cores + Large Mem)
+        let device_high = DeviceProfile {
+            backend: DeviceBackend::Cuda,
+            name: "H100".to_string(),
+            max_threads_per_block: 1024,
+            simd_width: 32,
+            local_memory_size: 64 * 1024,
+            has_tensor_cores: true,
+            has_fp16_storage: true,
+            texture_alignment: 512,
+        };
+        
+        // Mock Device: Metal (Tensor Cores but Small Mem per block)
+        let device_metal = DeviceProfile {
+            backend: DeviceBackend::Metal,
+            name: "M1".to_string(),
+            max_threads_per_block: 1024,
+            simd_width: 32,
+            local_memory_size: 32 * 1024,
+            has_tensor_cores: true,
+            has_fp16_storage: true,
+            texture_alignment: 256,
+        };
+
+        // Mock Op
+        let op = OperatorTopology::Gemm {
+            op_id: 1, name: "gemm".into(),
+            m: 1024, n: 1024, k: 1024,
+            kind: TopologyKind::Dense
+        };
+
+        // Case 1: High End -> Simd Variant (Efficiency 0.85 vs Tiled 0.40)
+        let v1 = engine.select_gemm_variant(&device_high, &op);
+        assert_eq!(v1, crate::core::config::GemmVariant::Simd);
+
+        // Case 2: Metal -> Simd Variant (Has TC)
+        let v2 = engine.select_gemm_variant(&device_metal, &op);
+        assert_eq!(v2, crate::core::config::GemmVariant::Simd);
+        
+        // Case 3: Old GPU (No TC)
+        let device_old = DeviceProfile {
+            backend: DeviceBackend::Cuda,
+            name: "GTX 1080".to_string(),
+            max_threads_per_block: 1024,
+            simd_width: 32,
+            local_memory_size: 48 * 1024,
+            has_tensor_cores: false, // No TC
+            has_fp16_storage: true,
+            texture_alignment: 256,
+        };
+        // Should select Tiled (shared mem > 0), Simd is filtered out
+        let v3 = engine.select_gemm_variant(&device_old, &op);
+        assert_eq!(v3, crate::core::config::GemmVariant::Tiled);
+    }
+    
+    #[test]
+    fn test_autotuning_feedback() {
+        use crate::policy::engine::{PolicyFeedback};
+        use crate::core::tuning::TuningCache;
+        
+        // 1. Setup
+        let mut engine = StandardPolicyEngine::new();
+        let device = DeviceProfile {
+            name: "AutoTuneGPU".to_string(), // Unique name for test key
+            backend: crate::policy::types::DeviceBackend::Cuda,
+            max_threads_per_block: 1024,
+            simd_width: 32,
+            local_memory_size: 48 * 1024,
+            has_tensor_cores: true,
+            has_fp16_storage: true,
+            texture_alignment: 256,
+        };
+        
+        let op_id = 100;
+        let op = OperatorTopology::Gemm {
+            op_id, name: "gemm_tune".into(),
+            m: 512, n: 512, k: 512,
+            kind: TopologyKind::Dense
+        };
+        
+        let ctx = PolicyContext {
+            device: &device,
+            model: &ModelTopology { layer_count: 0 },
+            operators: std::slice::from_ref(&op),
+            history: &ExecutionHistory { last_latency_us: None },
+        };
+        
+        // 2. Propose (Should pick Simd via CostModel)
+        let decision = engine.propose(&ctx);
+        let variant = match decision.tile_policies[0] {
+             TilePolicy::Gemm { variant, .. } => variant,
+             _ => panic!("Wrong policy type"),
+        };
+        assert_eq!(variant, crate::core::config::GemmVariant::Simd);
+        
+        // 3. Feedback (Simulate successful run)
+        let feedback = PolicyFeedback {
+            operator_id: op_id,
+            latency_us: 100.0,
+            error_msg: None,
+        };
+        engine.update(&feedback);
+        
+        // 4. Verify Cache
+        let cached = TuningCache::get_best_variant(&op, &device);
+        assert_eq!(cached, Some(crate::core::config::GemmVariant::Simd));
+        
+        // 5. Override Cache (Simulate manual update or learning)
+        // We use internal update_entry to force a different variant to see if it's respected
+        if let Some(key) = TuningCache::make_key(&op, &device) {
+             TuningCache::update_entry(key, crate::core::config::GemmVariant::Tiled);
+        }
+        
+        // 6. Propose Again (Should pick Tiled from Cache)
+        let decision2 = engine.propose(&ctx);
+        let variant2 = match decision2.tile_policies[0] {
+             TilePolicy::Gemm { variant, .. } => variant,
+             _ => panic!("Wrong policy type"),
+        };
+        assert_eq!(variant2, crate::core::config::GemmVariant::Tiled);
     }
 }

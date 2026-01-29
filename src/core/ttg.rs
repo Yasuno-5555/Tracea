@@ -17,4 +17,5 @@ pub struct TTGLayout {
     pub l1_map: Vec<u32>,
     pub l2_table: Vec<TileMetadata>,
     pub num_active_tiles: u32,
+    pub variant: Option<crate::core::config::GemmVariant>, // Propagated decision
 }

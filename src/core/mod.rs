@@ -12,4 +12,6 @@ pub mod graph;
 pub mod cache;
 pub mod tuning;
 pub mod backend;
+pub mod device;
 pub mod ttg;
+pub mod cost;

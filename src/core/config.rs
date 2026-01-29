@@ -107,15 +107,56 @@ impl QuantizationMode {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
-pub enum SpecializedInstruction {
+pub enum AttentionVariant {
     #[default]
-    None,
-    CudaMMA,
-    RocmMFMA,
-    MetalSimdGroup,
-    Avx2,
-    Avx512,
-    Neon,
+    Naive,      // Golden Reference (Tiled Loop, Scalar/Vector fallback)
+    SimdQ,      // Simdgroup for Q (Experimental)
+    SimdQK,     // Simdgroup for QK, Naive for PV (Step 1)
+    SimdFull,   // Simdgroup for QK and PV
+}
+
+impl AttentionVariant {
+    pub fn to_f32(self) -> f32 {
+        match self {
+            Self::Naive => 0.0,
+            Self::SimdQ => 1.0,
+            Self::SimdQK => 2.0,
+            Self::SimdFull => 3.0,
+        }
+    }
+    pub fn from_f32(val: f32) -> Self {
+        match val as u32 {
+            1 => Self::SimdQ,
+            2 => Self::SimdQK,
+            3 => Self::SimdFull,
+            _ => Self::Naive,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
+pub enum GemmVariant {
+    #[default]
+    Naive,      // Simple loop-based
+    Tiled,      // Shared memory tiling
+    Simd,       // Simdgroup/Warp-level Optimization (TensorCore/AMX)
+}
+
+impl GemmVariant {
+    pub fn to_f32(self) -> f32 {
+        match self {
+            Self::Naive => 0.0,
+            Self::Tiled => 1.0,
+            Self::Simd => 2.0,
+        }
+    }
+    pub fn from_f32(val: f32) -> Self {
+        match val as u32 {
+            1 => Self::Tiled,
+            2 => Self::Simd,
+            _ => Self::Naive,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
@@ -148,6 +189,18 @@ impl IntrinsicShape {
             Self::None => 1,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
+pub enum SpecializedInstruction {
+    #[default]
+    None,
+    CudaMMA,
+    RocmMFMA,
+    MetalSimdGroup,
+    Avx2,
+    Avx512,
+    Neon,
 }
 
 impl SpecializedInstruction {
@@ -238,6 +291,8 @@ pub struct PipelineConfig {
     pub intrinsic_shape: IntrinsicShape,
     pub vectorize_epilogue: bool,
     pub ttg_enabled: bool,
+    pub attention_variant: AttentionVariant,
+    pub gemm_variant: GemmVariant,
 }
 
 impl PipelineConfig {
@@ -263,11 +318,18 @@ impl PipelineConfig {
             intrinsic_shape: IntrinsicShape::None,
             vectorize_epilogue: true,
             ttg_enabled: false,
+            attention_variant: AttentionVariant::Naive,
+            gemm_variant: GemmVariant::Naive,
         }
     }
 
     pub fn with_warps(mut self, nw: u32) -> Self {
         self.force_num_warps = Some(nw);
+        self
+    }
+
+    pub fn with_gemm_variant(mut self, v: GemmVariant) -> Self {
+        self.gemm_variant = v;
         self
     }
 
@@ -293,6 +355,8 @@ impl PipelineConfig {
             self.softmax_granularity.to_f32(),
             if self.vectorize_epilogue { 1.0 } else { 0.0 },
             if self.ttg_enabled { 1.0 } else { 0.0 },
+            self.attention_variant.to_f32(),
+            self.gemm_variant.to_f32(),
         ]
     }
 
@@ -318,6 +382,8 @@ impl PipelineConfig {
             intrinsic_shape: IntrinsicShape::None,
             vectorize_epilogue: vec.get(14).map(|&v| v > 0.5).unwrap_or(true),
             ttg_enabled: vec.get(15).map(|&v| v > 0.5).unwrap_or(false),
+            attention_variant: vec.get(16).map(|&v| AttentionVariant::from_f32(v)).unwrap_or(AttentionVariant::Naive),
+            gemm_variant: vec.get(17).map(|&v| GemmVariant::from_f32(v)).unwrap_or(GemmVariant::Naive),
         }
     }
 

@@ -31,6 +31,10 @@ gpu-allocator = { version = "0.26", optional = true }
 bytemuck = "1.14"
 shaderc = { version = "0.8", optional = true }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+metal = "0.29"
+objc = { version = "0.2", optional = true }
+
 [build-dependencies]
 cc = "1.0"
 bindgen = "0.69"

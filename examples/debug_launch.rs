@@ -28,6 +28,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         quantization: QuantizationMode::None,
         epilogue: vec![],
         force_num_warps: Some(4),
+        intrinsic_shape: IntrinsicShape::None,
+        vectorize_epilogue: true,
+        ttg_enabled: false,
+        attention_variant: Default::default(),
     };
     let emitter = FlashAttentionEmitter::new(config);
     // H=1, D=64, Causal=false

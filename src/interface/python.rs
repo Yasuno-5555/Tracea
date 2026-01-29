@@ -28,6 +28,7 @@ pub struct PyContext {
 fn get_kernel_arg(obj: &Bound<'_, PyAny>) -> PyResult<KernelArg> {
     if let Ok(buf) = obj.extract::<PyDeviceBufferU16>() { return Ok(KernelArg::Buffer(buf.id)); }
     if let Ok(buf) = obj.extract::<PyDeviceBufferF32>() { return Ok(KernelArg::Buffer(buf.id)); }
+    if let Ok(buf) = obj.extract::<PyDeviceBufferF16>() { return Ok(KernelArg::Buffer(buf.id)); }
     if let Ok(ptr_obj) = obj.call_method0("data_ptr") {
         let ptr = ptr_obj.extract::<usize>()?;
         return Ok(KernelArg::Usize(ptr));
@@ -92,9 +93,30 @@ impl PyContext {
         Ok(Self { runtime })
     }
 
+
     pub fn synchronize(&self) -> PyResult<()> {
         self.runtime.synchronize();
         Ok(())
+    }
+
+    pub fn alloc_f32(&self, size: usize) -> PyResult<PyDeviceBufferF32> {
+        #[cfg(target_os = "macos")]
+        let backend = DeviceBackend::Metal;
+        #[cfg(not(target_os = "macos"))]
+        let backend = DeviceBackend::Cuda; 
+        
+        let id = self.runtime.alloc_f32(size, backend).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))?;
+        Ok(PyDeviceBufferF32 { id, runtime: self.runtime.clone() })
+    }
+
+    pub fn alloc_f16(&self, size: usize) -> PyResult<PyDeviceBufferF16> {
+        #[cfg(target_os = "macos")]
+        let backend = DeviceBackend::Metal;
+        #[cfg(not(target_os = "macos"))]
+        let backend = DeviceBackend::Cuda; 
+        
+        let id = self.runtime.alloc_f16(size, backend).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))?;
+        Ok(PyDeviceBufferF16 { id, runtime: self.runtime.clone() })
     }
 
     #[pyo3(signature = (q, k, v, o, b_in, h_in, s_in, d_in, dh_in, causal=false, scale_sqrt=true, m_tile=None, n_tile=None, stages=None, warps=None, softmax_mode=None))]
@@ -150,19 +172,29 @@ impl PyContext {
         let final_config = if let Some(c) = user_config {
             c
         } else {
+            #[cfg(target_os = "macos")]
+            {
+                // Metal default config
+                let mut c = PipelineConfig::new(2, 32, 32, dh_in);
+                c.force_num_warps = Some(1); // 32 threads
+                c
+            }
+            #[cfg(not(target_os = "macos"))]
             match variant {
                 "fa2_cuda" => {
                     let adapter = Fa2Adapter::new(Arc::clone(&ctx.runtime), problem);
                     tune_kernel(&adapter, SearchMode::GridSearch)
                 },
                 "fa2_metal" => {
-                    // Fallback or specific Metal tuning
                     PipelineConfig::new(2, 64, 64, dh_in)
                 }
                 _ => PipelineConfig::new(2, 64, 64, dh_in)
             }
         };
 
+        #[cfg(target_os = "macos")]
+        let backend = DeviceBackend::Metal;
+        #[cfg(not(target_os = "macos"))]
         let backend = DeviceBackend::Cuda; 
         let emitter = UniversalEmitter::new(backend);
         let ir = UnifiedOpIR {
@@ -207,15 +239,20 @@ impl PyContext {
         let (smem_bytes, _, _, _, _, _) = FlashAttentionEmitter::calculate_smem_layout(&final_config, dh_in as usize);
         let scale_val = if scale_sqrt { 1.0 / (dh_in as f32).sqrt() } else { 1.0 };
 
+        // Pack FAParams struct for Metal: [b, h, s, d, scale]
+        // MSL: struct FAParams { uint b, h, s, d; float scale; };
+        let mut params_bytes = Vec::with_capacity(20);
+        params_bytes.extend_from_slice(&(b_in as u32).to_ne_bytes());
+        params_bytes.extend_from_slice(&(h_in as u32).to_ne_bytes());
+        params_bytes.extend_from_slice(&(s_in as u32).to_ne_bytes());
+        params_bytes.extend_from_slice(&(dh_in as u32).to_ne_bytes());
+        params_bytes.extend_from_slice(&scale_val.to_ne_bytes());
+
         ctx.runtime.launch(
             kernel_id, grid, block, smem_bytes as u32,
             vec![
                 arg_q, arg_k, arg_v, arg_o,
-                KernelArg::Usize(b_in as usize),
-                KernelArg::Usize(h_in as usize),
-                KernelArg::Usize(s_in as usize),
-                KernelArg::Usize(dh_in as usize),
-                KernelArg::Float(scale_val)
+                KernelArg::Bytes(params_bytes)
             ]
         ).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Launch Error: {}", e)))?;
 
@@ -253,7 +290,10 @@ impl PyContext {
         let (epilogue_ops, epilogue_args) = parse_epilogue(epilogue, bias, residual)?;
         config.epilogue = epilogue_ops;
 
-        let backend = DeviceBackend::Cuda; // Force CUDA for now as requested
+        #[cfg(target_os = "macos")]
+        let (backend, kernel_name) = (DeviceBackend::Metal, "gemm_metal_kernel");
+        #[cfg(not(target_os = "macos"))]
+        let (backend, kernel_name) = (DeviceBackend::Cuda, "gemm_mma_kernel");
         let emitter = UniversalEmitter::new(backend);
         let ir = UnifiedOpIR {
             op_type: UnifiedOpType::Gemm { m, n, k },
@@ -264,7 +304,7 @@ impl PyContext {
         
         let source = emitter.generate(ir);
         
-        let kernel_id = match ctx.runtime.compile(&source, "gemm_mma_kernel", backend) {
+        let kernel_id = match ctx.runtime.compile(&source, kernel_name, backend) {
             Ok(id) => id,
             Err(e) => return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("GEMM Compile Error: {}", e))),
         };
@@ -332,6 +372,9 @@ impl PyContext {
         let (epilogue_ops, epilogue_args) = parse_epilogue(epilogue, bias, residual)?;
         config.epilogue = epilogue_ops;
 
+        #[cfg(target_os = "macos")]
+        let backend = DeviceBackend::Metal;
+        #[cfg(not(target_os = "macos"))]
         let backend = DeviceBackend::Cuda; 
         let emitter = UniversalEmitter::new(backend);
         
@@ -420,6 +463,9 @@ impl PyContext {
         let mut final_config = config.clone();
         final_config.epilogue = epilogue_ops;
 
+        #[cfg(target_os = "macos")]
+        let backend = DeviceBackend::Metal;
+        #[cfg(not(target_os = "macos"))]
         let backend = DeviceBackend::Cuda; 
         let emitter = UniversalEmitter::new(backend);
         
@@ -542,6 +588,7 @@ impl PyContext {
              if let Ok(val) = bound.extract::<usize>() { k_args.push(KernelArg::Usize(val)); continue; }
              if let Ok(buf) = bound.extract::<PyDeviceBufferU16>() { k_args.push(KernelArg::Buffer(buf.id)); continue; }
              if let Ok(buf) = bound.extract::<PyDeviceBufferF32>() { k_args.push(KernelArg::Buffer(buf.id)); continue; }
+             if let Ok(buf) = bound.extract::<PyDeviceBufferF16>() { k_args.push(KernelArg::Buffer(buf.id)); continue; }
              
              if let Ok(ptr_obj) = bound.call_method0("data_ptr") {
                  let ptr = ptr_obj.extract::<usize>()?;
@@ -555,6 +602,9 @@ impl PyContext {
     
     // Add compile_custom for benchmark
     pub fn compile_custom(&self, source: String, name: String) -> PyResult<u64> {
+         #[cfg(target_os = "macos")]
+         let backend = DeviceBackend::Metal;
+         #[cfg(not(target_os = "macos"))]
          let backend = DeviceBackend::Cuda;
          let id = self.runtime.compile(&source, &name, backend).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))?;
          Ok(id.0)
@@ -580,10 +630,14 @@ impl PyContext {
                         is_causal: op.causal,
                     };
                     
-                    let adapter = Fa2Adapter::new(Arc::clone(&self.runtime), problem);
-                    let best = tune_kernel(&adapter, SearchMode::GridSearch); // Use GridSearch for now
-                    
-                    println!("[Tracea] Node {} Best Config: {:?}", node.id, best);
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        let adapter = Fa2Adapter::new(Arc::clone(&self.runtime), problem);
+                        let best = tune_kernel(&adapter, SearchMode::GridSearch); 
+                        println!("[Tracea] Node {} Best Config: {:?}", node.id, best);
+                    }
+                    #[cfg(target_os = "macos")]
+                    println!("[Tracea] Node {} (Metal) - Tuning skipped", node.id);
                 },
                 _ => {
                     // Skip others for FA2 demo focus
@@ -592,6 +646,47 @@ impl PyContext {
         }
         
         Ok(())
+    }
+
+    /// Execute a graph using Policy-driven scheduling.
+    /// This is the Python entry point for the "Universal Compute OS".
+    /// 
+    /// # Arguments
+    /// * `graph_json` - JSON string representing GraphTopology
+    /// * `backend` - Target backend: "cuda", "metal", or "cpu"
+    /// 
+    /// # Returns
+    /// Dict mapping op_id to output buffer id
+    #[pyo3(signature = (graph_json, backend="metal"))]
+    pub fn execute_graph(&self, py: Python<'_>, graph_json: String, backend: &str) -> PyResult<pyo3::Py<pyo3::types::PyDict>> {
+        use crate::policy::types::GraphTopology;
+        use std::collections::HashMap;
+        
+        // Parse graph from JSON
+        let graph: GraphTopology = serde_json::from_str(&graph_json)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("Invalid graph JSON: {}", e)))?;
+        
+        // Resolve backend
+        let backend = match backend.to_lowercase().as_str() {
+            "cuda" => DeviceBackend::Cuda,
+            "metal" => DeviceBackend::Metal,
+            "rocm" => DeviceBackend::Rocm,
+            "cpu" => DeviceBackend::Cpu,
+            _ => return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("Unknown backend: {}", backend))),
+        };
+        
+        // Execute graph
+        let input_buffers: HashMap<u64, crate::runtime::manager::BufferId> = HashMap::new();
+        let output_buffers = self.runtime.execute_graph(&graph, &input_buffers, backend)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))?;
+        
+        // Convert to Python dict
+        let dict = pyo3::types::PyDict::new(py);
+        for (op_id, buf_id) in output_buffers {
+            dict.set_item(op_id, buf_id.0)?;
+        }
+        
+        Ok(dict.into())
     }
 }
 
@@ -613,6 +708,44 @@ impl PyDeviceBufferF32 {
         })
     }
     pub fn data_ptr(&self) -> usize { self.id.0 as usize }
+
+    pub fn copy_from_bytes(&self, data: &[u8]) -> PyResult<()> {
+        // Safe to treat as u8 copy
+        self.runtime.copy_to_device(self.id, data).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))
+    }
+
+    pub fn to_bytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
+        let data = self.runtime.read_buffer(self.id).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))?;
+        Ok(pyo3::types::PyBytes::new_bound(py, &data))
+    }
+}
+
+#[pyclass]
+#[derive(Clone)]
+pub struct PyDeviceBufferF16 {
+    pub id: crate::runtime::manager::BufferId,
+    pub runtime: Arc<RuntimeManager>,
+}
+#[pymethods]
+impl PyDeviceBufferF16 {
+     #[staticmethod]
+     pub fn unsafe_from_ptr(ptr: usize, _size_bytes: usize, ctx: &PyContext) -> PyResult<Self> {
+        let id = ctx.runtime.register_external_ptr(ptr as u64).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))?;
+        Ok(Self { 
+            id, 
+            runtime: ctx.runtime.clone() 
+        })
+    }
+    pub fn data_ptr(&self) -> usize { self.id.0 as usize }
+
+    pub fn copy_from_bytes(&self, data: &[u8]) -> PyResult<()> {
+        self.runtime.copy_to_device(self.id, data).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))
+    }
+
+    pub fn to_bytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
+        let data = self.runtime.read_buffer(self.id).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))?;
+        Ok(pyo3::types::PyBytes::new_bound(py, &data))
+    }
 }
 
 #[pyclass]

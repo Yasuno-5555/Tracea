@@ -50,6 +50,7 @@ impl TTGBuilder {
             l1_map,
             l2_table,
             num_active_tiles: num_tiles,
+            variant: None,
         }
     }
 
@@ -82,6 +83,7 @@ impl TTGBuilder {
             l1_map,
             l2_table: l2_table.clone(), // Clone to satisfy struct (or we could structure differently)
             num_active_tiles: l2_table.len() as u32,
+            variant: None,
         }
     }
 
@@ -116,37 +118,88 @@ impl TTGBuilder {
             l1_map,
             l2_table: l2_table.clone(),
             num_active_tiles: l2_table.len() as u32,
+            variant: None,
         }
     }
 
     /// Creates a TTG layout driven by a Policy decision.
     pub fn from_policy(op: &crate::policy::types::OperatorTopology, policy: &crate::policy::types::TilePolicy) -> TTGLayout {
-        let m = op.m;
-        let n = op.n;
-        let k = op.k;
-        let mt = policy.tile_shape[0];
-        let nt = policy.tile_shape[1];
-        let kt = policy.tile_shape[2];
+        use crate::policy::types::{OperatorTopology, TilePolicy};
         
-        match policy.activity_pattern {
-            crate::policy::types::ActivityPattern::AllActive => {
-                Self::from_dense(m, n, k, mt, nt, kt)
+        match (op, policy) {
+            (OperatorTopology::Gemm { m, n, k, .. }, TilePolicy::Gemm { tile_shape, activity_pattern, tiling_kind, variant, .. }) => {
+                let mt = tile_shape[0];
+                let nt = tile_shape[1];
+                let kt = tile_shape[2];
+                
+                let mut layout = match activity_pattern {
+                     crate::policy::types::ActivityPattern::AllActive => {
+                         Self::from_dense(*m, *n, *k, mt, nt, kt)
+                     },
+                     crate::policy::types::ActivityPattern::DiagonalOnly => {
+                         Self::from_diagonal(*m, *n, *k, mt, nt, kt)
+                     },
+                     crate::policy::types::ActivityPattern::RandomDrop { keep_ratio } => {
+                         Self::from_random(*m, *n, *k, mt, nt, kt, *keep_ratio as f64)
+                     },
+                     _ => {
+                         // Fallback to tiling_kind if activity_pattern doesn't match
+                         match tiling_kind {
+                             crate::policy::types::TilingKind::LowRank { r, .. } => {
+                                 Self::from_low_rank(*m, *n, *k, *r, mt, nt, kt)
+                             },
+                             _ => Self::from_dense(*m, *n, *k, mt, nt, kt)
+                         }
+                     }
+                };
+                layout.variant = Some(*variant);
+                layout
             },
-            crate::policy::types::ActivityPattern::DiagonalOnly => {
-                Self::from_diagonal(m, n, k, mt, nt, kt)
-            },
-            crate::policy::types::ActivityPattern::RandomDrop { keep_ratio } => {
-                Self::from_random(m, n, k, mt, nt, kt, keep_ratio as f64)
-            },
-            _ => {
-                // Fallback to tiling_kind if activity_pattern doesn't match
-                match &policy.tiling_kind {
-                    crate::policy::types::TilingKind::LowRank { r, .. } => {
-                        Self::from_low_rank(m, n, k, *r, mt, nt, kt)
-                    },
-                    _ => Self::from_dense(m, n, k, mt, nt, kt)
+            (OperatorTopology::Attention { b, s, h, d, .. }, TilePolicy::Attention { qk_tile, .. }) => {
+                // Metal Attention Logic
+                // Naive Mapping: 1 Tile = 1 Threadgroup processing (BlockM, Head, Batch)
+                // Grid: (S/BlockM, H, B)
+                let mt = qk_tile.0; // e.g. 64
+                // let nt = qk_tile.1; // e.g. 64 (KV Block Size)
+                
+                let grid_m = (s + mt - 1) / mt;
+                let num_tiles = grid_m * h * b;
+                
+                let mut l1_map = Vec::with_capacity(num_tiles as usize);
+                let mut l2_table = Vec::with_capacity(num_tiles as usize);
+                
+                // Construct linear layout
+                for i in 0..num_tiles {
+                     l1_map.push(i);
+                     
+                     // Decode i back to (s_idx, h_idx, b_idx)
+                     // i = b * (H*S_grid) + h * S_grid + s_idx
+                     let s_grid_dim = grid_m;
+                     let h_grid_dim = h;
+                     
+                     let temp = i;
+                     let s_idx = temp % s_grid_dim;
+                     let rem = temp / s_grid_dim;
+                     let h_idx = rem % h_grid_dim;
+                     let b_idx = rem / h_grid_dim;
+                     
+                     l2_table.push(TileMetadata {
+                         region_m: s_idx, 
+                         region_n: h_idx, // Encode Head in Region N?
+                         k_start: b_idx,  // Encode Batch in K Start?
+                         k_end: *d,       // Head Dim in K End?
+                         role: 0,
+                     });
                 }
-            }
+                
+                TTGLayout {
+                    l1_map,
+                    l2_table,
+                    num_active_tiles: num_tiles,
+                    variant: None, // Attention variants are handled via PipelineConfig directly usually?
+                }
+            },
+            _ => panic!("Mismatching Policy and Operator Topology Types!"),
         }
     }
 
@@ -174,5 +227,59 @@ mod tests {
         for meta in &layout.l2_table {
             assert!((meta.role & 0x2) != 0); // Check low-rank bit
         }
+    }
+
+    #[test]
+    fn test_ttg_attention() {
+        use crate::policy::types::{OperatorTopology, TilePolicy};
+        
+        let op = OperatorTopology::Attention {
+            op_id: 1,
+            name: "Attention".to_string(),
+            b: 2,
+            s: 128,
+            h: 4,
+            d: 64,
+        };
+        
+        let policy = TilePolicy::Attention {
+            operator_id: 1,
+            qk_tile: (64, 64),
+            v_tile: (64, 32),
+            variant: crate::core::config::AttentionVariant::Naive,
+        };
+        
+        let layout = TTGBuilder::from_policy(&op, &policy);
+        
+        // Grid M = 128/64 = 2.
+        // H = 4.
+        // B = 2.
+        // Total Tiles = 2 * 4 * 2 = 16.
+        assert_eq!(layout.num_active_tiles, 16);
+        assert_eq!(layout.l1_map.len(), 16);
+        assert_eq!(layout.l2_table.len(), 16);
+        
+        // Verify mapping of last tile
+        // Linear Index 15.
+        // 15 = 1*(4*2) + 3*(2) + 1  => b=1, h=3, s=1
+        // Formula used in builder: i = b * (H*S_grid) + h * S_grid + s_idx? 
+        // Or reverse? 
+        // Builder Code:
+        // let s_idx = i % s_grid;
+        // let rem = i / s_grid;
+        // let h_idx = rem % h;
+        // let b_idx = rem / h;
+        //
+        // 15:
+        // s_idx = 15 % 2 = 1.
+        // rem = 7.
+        // h_idx = 7 % 4 = 3.
+        // b_idx = 7 / 4 = 1.
+        // Matches: b=1, h=3, s=1.
+        
+        let last_meta = &layout.l2_table[15];
+        assert_eq!(last_meta.region_m, 1); // s_idx
+        assert_eq!(last_meta.region_n, 3); // h_idx
+        assert_eq!(last_meta.k_start, 1);  // b_idx
     }
 }

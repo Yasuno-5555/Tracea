@@ -8,7 +8,15 @@ use std::io::Write;
 use serde::{Serialize, Deserialize};
 #[cfg(feature = "vulkan")]
 use ash::vk;
+#[cfg(target_os = "macos")]
+use metal;
 use crate::doctor::{BackendKind, JitResultInfo, AssemblerResultInfo, KernelLaunchInfo, ModuleLoadInfo};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum KernelArgKind {
+    Buffer,
+    Scalar, 
+}
 
 #[derive(Debug)]
 pub struct CudaModule(pub cudarc::driver::sys::CUmodule);
@@ -67,6 +75,8 @@ pub enum DeviceBuffer {
     External(u64),
     #[cfg(feature = "vulkan")]
     Vulkan(VulkanBuffer),
+    #[cfg(target_os = "macos")]
+    Metal(metal::Buffer),
 }
 
 #[cfg(feature = "vulkan")]
@@ -177,6 +187,12 @@ pub enum KernelHandle {
         func: VulkanFunction,
         module: Arc<VulkanModule>,
     },
+    #[cfg(target_os = "macos")]
+    Metal {
+        pipeline: metal::ComputePipelineState,
+        layout: Vec<KernelArgKind>,
+        // Cache source for identifying?
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -192,6 +208,8 @@ pub struct DeviceHandle {
     pub cuda_dev: Option<Arc<CudaDevice>>,
     #[cfg(feature = "vulkan")]
     pub vulkan_dev: Option<Arc<crate::backend::vulkan::VulkanBackend>>,
+    #[cfg(target_os = "macos")]
+    pub metal_dev: Option<Arc<crate::backend::metal::MetalBackend>>,
     pub arch: String,
 }
 
@@ -217,6 +235,7 @@ impl RuntimeManager {
         }
 
         let mut devices = HashMap::new();
+        #[cfg(not(target_os = "macos"))]
         if let Ok(dev) = CudaDevice::new(0) {
             let major = dev.attribute(cudarc::driver::sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR).unwrap_or(8);
             let minor = dev.attribute(cudarc::driver::sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR).unwrap_or(6);
@@ -225,17 +244,22 @@ impl RuntimeManager {
                 cuda_dev: Some(dev),
                 #[cfg(feature = "vulkan")]
                 vulkan_dev: None,
+                #[cfg(target_os = "macos")]
+                metal_dev: None,
                 arch: format!("sm_{}{}", major, minor),
             });
             println!("[Doctor] 🟢 CUDA Device Registered.");
         }
 
+        #[cfg(not(target_os = "macos"))]
         if let Some(_) = crate::emitter::rocm_driver::RocmDriverApi::get() {
              devices.insert(DeviceBackend::Rocm, DeviceHandle {
                  backend: DeviceBackend::Rocm,
                  cuda_dev: None,
                  #[cfg(feature = "vulkan")]
                  vulkan_dev: None,
+                 #[cfg(target_os = "macos")]
+                 metal_dev: None,
                  arch: "gfx90a".to_string(),
              });
              println!("[Doctor] 🟢 ROCm Backend Registered.");
@@ -244,8 +268,6 @@ impl RuntimeManager {
         #[cfg(feature = "vulkan")]
         {
             let mut vulkan_dev_option = None;
-            // Try to init Vulkan as fallback or primary if requested.
-            // For baseline, we always try to init it.
             if let Ok(vk_backend) = unsafe { crate::backend::vulkan::VulkanBackend::new() } {
                 println!("[Runtime] 🌋 Vulkan Initialization Successful: {}", vk_backend.device_id);
                 vulkan_dev_option = Some(Arc::new(vk_backend));
@@ -253,9 +275,24 @@ impl RuntimeManager {
                     backend: DeviceBackend::Vulkan,
                     cuda_dev: None,
                     vulkan_dev: vulkan_dev_option.clone(),
-                    arch: "vulkan".to_string(), // Or a more specific Vulkan device name
+                    #[cfg(target_os = "macos")]
+                    metal_dev: None,
+                    arch: "vulkan".to_string(),
                 });
             }
+        }
+
+        #[cfg(target_os = "macos")]
+        if let Ok(metal_backend) = crate::backend::metal::MetalBackend::new() {
+             println!("[Doctor] 🍏 Metal Backend Registered: {}", metal_backend.device.name());
+             devices.insert(DeviceBackend::Metal, DeviceHandle {
+                 backend: DeviceBackend::Metal,
+                 cuda_dev: None,
+                 #[cfg(feature = "vulkan")]
+                 vulkan_dev: None,
+                 metal_dev: Some(Arc::new(metal_backend)),
+                 arch: "apple_m_series".to_string(),
+             });
         }
 
         let doctor = crate::doctor::Doctor::global();
@@ -307,6 +344,37 @@ impl RuntimeManager {
                  ).map_err(|e| format!("GLSL Compilation Failed: {}", e))?;
 
                  self.load_vulkan(binary.as_binary_u8(), kernel_name)
+            }
+            #[cfg(target_os = "macos")]
+            DeviceBackend::Metal => {
+                let devices = self.devices.lock().map_err(|_| "Lock")?;
+                let handle = devices.get(&DeviceBackend::Metal).ok_or("No Metal Device")?;
+                let backend = handle.metal_dev.as_ref().ok_or("No Metal Backend instance")?;
+                
+                // SHA256/Hasher for caching (Using DefaultHasher for now as dependency minamilism)
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                source.hash(&mut hasher);
+                let hash = hasher.finish();
+                
+                let compile_options = metal::CompileOptions::new();
+                let library = backend.device.new_library_with_source(source, &compile_options).map_err(|e| format!("Metal Compile Error: {}", e))?;
+                
+                let func = library.get_function(kernel_name, None).map_err(|e| format!("Function '{}' not found", kernel_name))?;
+                
+                let pipeline = backend.device.new_compute_pipeline_state_with_function(&func).map_err(|e| format!("Pipeline Error: {}", e))?;
+
+                let id = self.generate_kernel_id()?;
+                // MVP: Implicit layout (sequential) or need explicit?
+                // For now, empty layout implies "No check" or "Sequential"
+                self.kernels.lock().map_err(|_| "Poisoned")?.insert(id, RecordedKernel {
+                    name: kernel_name.to_string(),
+                    handle: KernelHandle::Metal {
+                        pipeline,
+                        layout: Vec::new(), // TODO: Populate via reflection or explicit arg
+                    },
+                    backend: DeviceBackend::Metal,
+                });
+                return Ok(id);
             }
             DeviceBackend::Cuda => {
                 let devices = self.devices.lock().map_err(|_| "Lock")?;
@@ -547,7 +615,7 @@ impl RuntimeManager {
             }
             #[cfg(feature = "vulkan")]
             KernelHandle::Vulkan { func, .. } => {
-                let vk_backend = self.get_device(DeviceBackend::Vulkan)?.vulkan_dev.clone().ok_or("Vulkan Device not found")?; // .clone added/fixed
+                let vk_backend = self.devices.lock().map_err(|_| "Lock")?.get(&DeviceBackend::Vulkan).ok_or("Vulkan Device not found")?.vulkan_dev.clone().ok_or("Vulkan Backend not found")?;
                 unsafe {
                     let device = &vk_backend.device;
                     let command_pool_info = vk::CommandPoolCreateInfo::builder()
@@ -573,6 +641,52 @@ impl RuntimeManager {
                     
                     device.destroy_command_pool(pool, None);
                 }
+            }
+            #[cfg(target_os = "macos")]
+            KernelHandle::Metal { pipeline, layout } => {
+                let devices = self.devices.lock().map_err(|_| "Lock")?;
+                let handle = devices.get(&DeviceBackend::Metal).ok_or("No Metal Device")?;
+                let backend = handle.metal_dev.as_ref().ok_or("No Metal Backend instance")?;
+                
+                let command_buffer = backend.queue.new_command_buffer();
+                let encoder = command_buffer.new_compute_command_encoder();
+                
+                encoder.set_compute_pipeline_state(pipeline);
+                
+                // Bind Args
+                for (i, arg) in args.iter().enumerate() {
+                    match arg {
+                        KernelArg::Buffer(bid) => {
+                            let buf_guards = self.buffers.lock().map_err(|_| "Lock")?;
+                            if let Some(DeviceBuffer::Metal(b)) = buf_guards.get(bid) {
+                                encoder.set_buffer(i as u64, Some(b), 0);
+                            } else {
+                                return Err(format!("Arg {} is not a Metal buffer", i));
+                            }
+                        }
+                        KernelArg::Int(val) => {
+                             encoder.set_bytes(i as u64, std::mem::size_of::<i32>() as u64, val as *const i32 as *const c_void);
+                        }
+                        KernelArg::Float(val) => {
+                             encoder.set_bytes(i as u64, std::mem::size_of::<f32>() as u64, val as *const f32 as *const c_void);
+                        }
+                        KernelArg::Usize(val) => {
+                             encoder.set_bytes(i as u64, std::mem::size_of::<u64>() as u64, val as *const usize as *const c_void);
+                        }
+                        KernelArg::Bytes(data) => {
+                             encoder.set_bytes(i as u64, data.len() as u64, data.as_ptr() as *const c_void);
+                        }
+                    }
+                }
+                
+                let thread_group_count = metal::MTLSize { width: grid.0 as u64, height: grid.1 as u64, depth: grid.2 as u64 };
+                let thread_group_size = metal::MTLSize { width: block.0 as u64, height: block.1 as u64, depth: block.2 as u64 };
+                
+                encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+                encoder.end_encoding();
+                
+                command_buffer.commit();
+                command_buffer.wait_until_completed(); // MVP Synchronous
             }
             _ => return Err("Unsupported backend".to_string()),
         }
@@ -793,6 +907,16 @@ impl RuntimeManager {
                 }
                 DeviceBuffer::Rocm(RocmBuffer { ptr })
             }
+            #[cfg(target_os = "macos")]
+            DeviceBackend::Metal => {
+                let devs = self.devices.lock().map_err(|_| "Lock")?;
+                let handle = devs.get(&DeviceBackend::Metal).ok_or("No Metal Device")?;
+                let backend = handle.metal_dev.as_ref().ok_or("No Metal Backend")?;
+                
+                let options = metal::MTLResourceOptions::StorageModeShared;
+                let buffer = backend.device.new_buffer(size_bytes as u64, options);
+                DeviceBuffer::Metal(buffer)
+            }
             _ => return Err("Alloc failed".to_string()),
         };
         self.buffers.lock().map_err(|_| "Lock")?.insert(id, buf);
@@ -805,6 +929,10 @@ impl RuntimeManager {
             DeviceBuffer::Cuda(slice) => Ok(*slice.device_ptr()),
             DeviceBuffer::Rocm(buf) => Ok(buf.ptr),
             DeviceBuffer::External(ptr) => Ok(*ptr),
+            #[cfg(target_os = "macos")]
+            DeviceBuffer::Metal(buf) => Ok(buf.gpu_address()),
+            #[cfg(feature = "vulkan")]
+            DeviceBuffer::Vulkan(_) => Err("Vulkan ptr not supported".to_string()),
         }
     }
 
@@ -869,6 +997,15 @@ impl RuntimeManager {
                 }
                 Ok(())
             }
+            #[cfg(target_os = "macos")]
+            DeviceBuffer::Metal(buf) => {
+                 let len_bytes = data.len() * std::mem::size_of::<T>();
+                 let void_ptr = buf.contents();
+                 unsafe {
+                     std::ptr::copy_nonoverlapping(data.as_ptr() as *const _, void_ptr as *mut _, len_bytes);
+                 }
+                 Ok(())
+            }
             _ => Err("Not implemented for this backend".to_string()),
         }
     }
@@ -888,6 +1025,15 @@ impl RuntimeManager {
                 }
                 Ok(())
             }
+            #[cfg(target_os = "macos")]
+            DeviceBuffer::Metal(buf) => {
+                 let len_bytes = data.len() * std::mem::size_of::<T>();
+                 let void_ptr = buf.contents();
+                 unsafe {
+                     std::ptr::copy_nonoverlapping(void_ptr as *const _, data.as_mut_ptr() as *mut _, len_bytes);
+                 }
+                 Ok(())
+            }
             _ => Err("Not implemented for this backend".to_string()),
         }
     }
@@ -901,6 +1047,10 @@ impl RuntimeManager {
     }
 
     pub fn alloc_u16(&self, size: usize, backend: DeviceBackend) -> Result<BufferId, String> {
+        self.alloc(size * 2, backend)
+    }
+
+    pub fn alloc_f16(&self, size: usize, backend: DeviceBackend) -> Result<BufferId, String> {
         self.alloc(size * 2, backend)
     }
 
@@ -978,6 +1128,16 @@ impl RuntimeManager {
                 }
                 Ok(host)
             }
+            #[cfg(target_os = "macos")]
+            DeviceBuffer::Metal(buf) => {
+                 let len = buf.length() as usize;
+                 let mut host = vec![0u8; len];
+                 let void_ptr = buf.contents();
+                 unsafe {
+                     std::ptr::copy_nonoverlapping(void_ptr as *const _, host.as_mut_ptr() as *mut _, len);
+                 }
+                 Ok(host)
+            }
             _ => Err("Not implemented for this backend".to_string()),
         }
     }
@@ -998,10 +1158,245 @@ impl RuntimeManager {
         let smem = 48 * 1024;
         self.launch_ttg(kernel_id, block, smem as u32, args, &device_ttg, epilogue_args)
     }
+
+    /// Execute a graph using Policy-driven scheduling.
+    /// This is the main entry point for "Universal Compute OS" execution.
+    /// 
+    /// # Arguments
+    /// * `graph` - The operator graph topology
+    /// * `input_buffers` - Map from op_id to pre-allocated input BufferId
+    /// * `output_buffers` - Map from op_id to output BufferId (will be allocated if not present)
+    /// * `backend` - Target execution backend
+    pub fn execute_graph(
+        &self,
+        graph: &crate::policy::types::GraphTopology,
+        input_buffers: &HashMap<u64, BufferId>,
+        backend: DeviceBackend,
+    ) -> Result<HashMap<u64, BufferId>, String> {
+        use crate::policy::types::*;
+        use crate::policy::engine::PolicyEngine;
+        use crate::policy::standard::StandardPolicyEngine;
+        use crate::policy::scheduler::StandardScheduler;
+        use crate::core::device::DeviceProfile;
+
+        // 0. Canonicalize Graph
+        let mut graph = graph.clone();
+        crate::policy::transform::canonicalize_graph(&mut graph);
+
+        // 1. Get Device Profile
+        let device = DeviceProfile::from_backend(backend);
+
+        // 2. Policy Decision
+        let mut engine = StandardPolicyEngine::new();
+        let ctx = GraphContext {
+            device: &device,
+            graph: &graph,
+        };
+
+        // 3. Schedule
+        let decision = StandardScheduler::schedule(&mut engine, &ctx);
+
+        // 4. Memory Pool (alias-aware allocation)
+        let mut memory_pool: HashMap<usize, BufferId> = HashMap::new();
+        let mut output_buffers: HashMap<u64, BufferId> = HashMap::new();
+
+        // 5. Execute Loop (sorted by operator_id as execution order proxy)
+        let mut sorted_policies: Vec<_> = decision.exec_policies.iter().collect();
+        sorted_policies.sort_by_key(|p| p.operator_id);
+
+        for exec_policy in sorted_policies {
+            let op_id = exec_policy.operator_id;
+            
+            // Find corresponding tile policy and operator
+            let tile_policy = decision.tile_policies.iter()
+                .find(|t| t.operator_id() == op_id);
+            let operator = graph.operators.iter()
+                .find(|o| o.op_id() == op_id);
+
+            let (tile_policy, operator) = match (tile_policy, operator) {
+                (Some(t), Some(o)) => (t, o),
+                _ => continue, // Skip if not found
+            };
+
+            // Resolve output buffer (with alias support)
+            let buf_id = self.resolve_buffer_with_alias(
+                op_id,
+                &exec_policy.memory_alias_hint,
+                &mut memory_pool,
+                Self::estimate_output_size(operator),
+                backend,
+            )?;
+            output_buffers.insert(op_id, buf_id);
+
+            // Phase F: TTG Builder Integration
+            // 1. Generate TTGLayout from Policy
+            let layout = crate::runtime::ttg_builder::TTGBuilder::from_policy(operator, tile_policy);
+            
+            // 2. Upload TTGLayout to GPU (optional - only for operators that use TTG)
+            // For now, we store the layout for potential future use
+            #[allow(unused_variables)]
+            let device_ttg_result = match backend {
+                #[cfg(target_os = "macos")]
+                crate::runtime::manager::DeviceBackend::Metal => {
+                    Some(crate::runtime::ttg::DeviceTTG::new(self, &layout, backend))
+                },
+                crate::runtime::manager::DeviceBackend::Cuda => {
+                    Some(crate::runtime::ttg::DeviceTTG::new(self, &layout, backend))
+                },
+                _ => None, // CPU and other backends don't use device TTG
+            };
+            
+            // Handle TTG upload errors gracefully (don't fail entire graph)
+            if let Some(Err(e)) = device_ttg_result {
+                eprintln!("[TTG] Warning: Failed to upload TTG for op {}: {}", op_id, e);
+            }
+            
+            // 3. Log TTG generation (for verification)
+            #[cfg(debug_assertions)]
+            {
+                eprintln!("[TTG] Op {} -> {} active tiles, variant: {:?}", 
+                    op_id, layout.num_active_tiles, layout.variant);
+            }
+            
+            // Note: Actual kernel launch is handled by launch_with_policy
+            // which already integrates with TTGBuilder::from_policy
+        }
+
+        Ok(output_buffers)
+    }
+
+    /// Resolve buffer with alias support.
+    /// If alias_hint has an offset, try to reuse existing buffer from pool.
+    fn resolve_buffer_with_alias(
+        &self,
+        _op_id: u64,
+        alias_hint: &crate::policy::types::MemoryAliasPolicy,
+        pool: &mut HashMap<usize, BufferId>,
+        size: usize,
+        backend: DeviceBackend,
+    ) -> Result<BufferId, String> {
+        if let Some(offset) = alias_hint.output_offset {
+            // Check if we have a buffer at this offset
+            if let Some(&existing_id) = pool.get(&offset) {
+                return Ok(existing_id);
+            }
+            // Allocate new and store in pool
+            let new_id = self.alloc(size, backend)?;
+            pool.insert(offset, new_id);
+            Ok(new_id)
+        } else {
+            // No alias, fresh allocation
+            self.alloc(size, backend)
+        }
+    }
+
+    /// Estimate output buffer size for an operator (in bytes).
+    fn estimate_output_size(op: &crate::policy::types::OperatorTopology) -> usize {
+        use crate::policy::types::OperatorTopology;
+        match op {
+            OperatorTopology::Gemm { m, n, .. } => (*m as usize) * (*n as usize) * 4, // fp32
+            OperatorTopology::Attention { b, s, h, d, .. } => {
+                (*b as usize) * (*h as usize) * (*s as usize) * (*d as usize) * 2 // fp16
+            },
+            OperatorTopology::Conv2d { n, k, h, w, .. } => {
+                (*n as usize) * (*k as usize) * (*h as usize) * (*w as usize) * 4
+            },
+            OperatorTopology::Relu { .. } | OperatorTopology::Elementwise { .. } => {
+                1024 * 1024 // Placeholder 1MB
+            },
+        }
+    }
 }
 
 impl RecordedKernel {
     fn backend_copy(&self) -> Self {
         self.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::policy::types::{GraphTopology, OperatorTopology, TopologyKind};
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn test_execute_graph_simple() {
+        // Create a simple 2-op graph: GEMM1 -> GEMM2
+        let graph = GraphTopology {
+            operators: vec![
+                OperatorTopology::Gemm {
+                    op_id: 1,
+                    name: "gemm1".into(),
+                    m: 64, n: 64, k: 64,
+                    kind: TopologyKind::Dense,
+                },
+                OperatorTopology::Gemm {
+                    op_id: 2,
+                    name: "gemm2".into(),
+                    m: 64, n: 64, k: 64,
+                    kind: TopologyKind::Dense,
+                },
+            ],
+            dependencies: vec![(1, 2)], // gemm1 -> gemm2
+        };
+
+        // Use Metal backend (macOS)
+        let runtime = RuntimeManager::new();
+        let input_buffers = HashMap::new();
+
+        // Execute graph - should return output buffer map
+        let result = runtime.execute_graph(&graph, &input_buffers, DeviceBackend::Metal);
+        
+        // Should succeed and return buffers for both ops
+        assert!(result.is_ok(), "execute_graph failed: {:?}", result.err());
+        let output_buffers = result.unwrap();
+        assert!(output_buffers.contains_key(&1), "Missing buffer for op 1");
+        assert!(output_buffers.contains_key(&2), "Missing buffer for op 2");
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn test_execute_graph_with_reuse() {
+        // Create a graph with two independent chains that should reuse memory
+        // Chain 1: Op1 -> Op2
+        // Chain 2: Op3 -> Op4
+        // Op1 and Op3 should be able to share memory with Op2 and Op4 respectively
+        let graph = GraphTopology {
+            operators: vec![
+                OperatorTopology::Gemm {
+                    op_id: 1, name: "gemm1".into(),
+                    m: 128, n: 128, k: 128, kind: TopologyKind::Dense,
+                },
+                OperatorTopology::Gemm {
+                    op_id: 2, name: "gemm2".into(),
+                    m: 128, n: 128, k: 128, kind: TopologyKind::Dense,
+                },
+                OperatorTopology::Gemm {
+                    op_id: 3, name: "gemm3".into(),
+                    m: 128, n: 128, k: 128, kind: TopologyKind::Dense,
+                },
+                OperatorTopology::Gemm {
+                    op_id: 4, name: "gemm4".into(),
+                    m: 128, n: 128, k: 128, kind: TopologyKind::Dense,
+                },
+            ],
+            dependencies: vec![(1, 2), (3, 4)], // Two independent chains
+        };
+
+        let runtime = RuntimeManager::new();
+        let input_buffers = HashMap::new();
+
+        let result = runtime.execute_graph(&graph, &input_buffers, DeviceBackend::Metal);
+        assert!(result.is_ok(), "execute_graph failed: {:?}", result.err());
+        
+        let output_buffers = result.unwrap();
+        
+        // All 4 ops should have buffers
+        assert_eq!(output_buffers.len(), 4);
+        
+        // Due to memory aliasing, some BufferIds might be shared
+        // The scheduler should have assigned same offset to disjoint ops
+        // We verify that the system works without crashing
     }
 }

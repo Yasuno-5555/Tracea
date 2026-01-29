@@ -12,6 +12,7 @@ pub fn get_capabilities() -> TraceaCapabilities {
     backends.push(detect_cpu());
 
     // 2. CUDA
+    #[cfg(not(target_os = "macos"))]
     if let Some(cuda_cap) = detect_cuda() {
         backends.push(cuda_cap);
     }
@@ -48,14 +49,18 @@ fn detect_cpu() -> BackendCapabilities {
         .map(|n| n.get())
         .unwrap_or(1) as u32;
 
-    let simd_width_bits = if cfg!(any(target_arch = "x86", target_arch = "x86_64")) {
-         if is_x86_feature_detected!("avx512f") { 512 }
-         else if is_x86_feature_detected!("avx2") { 256 }
-         else if is_x86_feature_detected!("sse2") { 128 }
-         else { 0 }
-    } else {
-        // Fallback for non-x86 (e.g. ARM Neon is 128)
-        128 
+    let simd_width_bits = {
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        {
+             if is_x86_feature_detected!("avx512f") { 512 }
+             else if is_x86_feature_detected!("avx2") { 256 }
+             else if is_x86_feature_detected!("sse2") { 128 }
+             else { 0 }
+        }
+        #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+        {
+            128
+        }
     };
 
     // L2 cache approximation or lookup is hard without external crate. 

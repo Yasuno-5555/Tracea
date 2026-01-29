@@ -10,6 +10,7 @@ use core::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
 /// CPU GEMM with Register Blocking and Optimized Packing
 /// This version attempts to reach matrixmultiply levels of performance.
 
+#[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
 unsafe fn micro_kernel_generic<const K_UNROLL: usize, const PF_DIST: usize, const MICRO_M: usize>(
     a: &[f32], // Packed A: [mr x k]
@@ -178,6 +179,19 @@ unsafe fn micro_kernel_generic<const K_UNROLL: usize, const PF_DIST: usize, cons
     write_c(3, c30, c31);
     if MICRO_M >= 5 { write_c(4, c40, c41); }
     if MICRO_M >= 6 { write_c(5, c50, c51); }
+    if MICRO_M >= 6 { write_c(5, c50, c51); }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+unsafe fn micro_kernel_generic<const K_UNROLL: usize, const PF_DIST: usize, const MICRO_M: usize>(
+    _a: &[f32],
+    _b: &[f32],
+    _c: &mut [f32],
+    _k: usize,
+    _stride_c: usize,
+    _mr: usize,
+) {
+    unimplemented!("AVX2 optimization not supported on non-x86 architecture");
 }
 
 #[macro_export]

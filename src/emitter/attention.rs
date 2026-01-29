@@ -57,6 +57,9 @@ void main() {{
 }}
 "#)
             }
+            DeviceBackend::Metal => {
+                crate::emitter::metal::generate_metal_attention(ir)
+            }
             _ => "// Attention not yet unified for this backend\n".to_string(),
         }
     } else {
