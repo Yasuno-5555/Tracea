@@ -4,7 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 use crate::core::config::PipelineConfig;
 
-#[derive(Serialize, Deserialize, Hash, PartialEq, Eq, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct CacheKey {
     pub backend: crate::runtime::manager::DeviceBackend,
     pub gpu: String,
@@ -71,6 +71,7 @@ impl TuningCache {
                 crate::core::op::EpilogueOp::SiLU => "silu".to_string(),
                 crate::core::op::EpilogueOp::ResidualAdd { .. } => "residual".to_string(),
                 crate::core::op::EpilogueOp::BiasAddSiLU { .. } => "bias_silu".to_string(),
+                crate::core::op::EpilogueOp::BatchNorm { .. } => "batchnorm".to_string(),
             }
         }).collect();
         let epi_str = normalized_epilogue.join(",");

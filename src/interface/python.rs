@@ -309,7 +309,7 @@ impl PyContext {
         
         let emitter = UniversalEmitter::new(backend);
         let ir = UnifiedOpIR {
-            op_type: UnifiedOpType::Gemm { m, n, k, batch: 1 },
+            op_type: UnifiedOpType::Gemm { m, n, k, batch: 1, epilogue: config.epilogue.clone() },
             precison: "f16".to_string(),
             tiling: config.clone(),
             conv_magic_strategy: None,
@@ -403,6 +403,7 @@ impl PyContext {
                 pad: pad as usize,
                 dilation: dilation as usize,
                 layout: crate::core::config::LayoutPolicy::NHWC,
+                epilogue: config.epilogue.clone(),
             },
             precison: "f16".to_string(),
             tiling: config.clone(),

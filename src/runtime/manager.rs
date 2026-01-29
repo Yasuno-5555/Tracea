@@ -953,6 +953,9 @@ impl RuntimeManager {
     }
 
     pub fn get_device_ptr(&self, id: BufferId) -> Result<u64, String> {
+        if id == BufferId(0) {
+            return Ok(0);
+        }
         let bufs = self.buffers.lock().map_err(|_| "Lock")?;
         match bufs.get(&id).ok_or("No buffer")? {
             DeviceBuffer::Cuda(slice) => Ok(*slice.device_ptr()),
@@ -1459,6 +1462,33 @@ impl RuntimeManager {
                         args.push(KernelArg::Buffer(inputs[1]));
                     }
                     args.push(KernelArg::Buffer(buf_id));
+
+                    // Epilogue Buffers
+                    if let OperatorTopology::Gemm { epilogue, .. } = operator {
+                        for op in epilogue {
+                            match op {
+                                crate::core::op::EpilogueOp::BatchNorm { gamma_id, beta_id, mean_id, var_id, .. } => {
+                                    let g_buf = input_buffers.get(gamma_id).or(output_buffers.get(gamma_id)).cloned().unwrap_or(BufferId(0));
+                                    let b_buf = input_buffers.get(beta_id).or(output_buffers.get(beta_id)).cloned().unwrap_or(BufferId(0));
+                                    let m_buf = input_buffers.get(mean_id).or(output_buffers.get(mean_id)).cloned().unwrap_or(BufferId(0));
+                                    let v_buf = input_buffers.get(var_id).or(output_buffers.get(var_id)).cloned().unwrap_or(BufferId(0));
+                                    args.push(KernelArg::Buffer(g_buf));
+                                    args.push(KernelArg::Buffer(b_buf));
+                                    args.push(KernelArg::Buffer(m_buf));
+                                    args.push(KernelArg::Buffer(v_buf));
+                                }
+                                crate::core::op::EpilogueOp::ResidualAdd { residual_ptr } => {
+                                    let res_buf = input_buffers.get(&(*residual_ptr as u64)).or(output_buffers.get(&(*residual_ptr as u64))).cloned().unwrap_or(BufferId(0));
+                                    args.push(KernelArg::Buffer(res_buf));
+                                }
+                                crate::core::op::EpilogueOp::BiasAdd { bias_ptr } => {
+                                    let b_buf = input_buffers.get(&(*bias_ptr as u64)).or(output_buffers.get(&(*bias_ptr as u64))).cloned().unwrap_or(BufferId(0));
+                                    args.push(KernelArg::Buffer(b_buf));
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
                 },
                 OperatorTopology::Attention { d, .. } => {
                     let inputs = self.get_op_inputs(op_id, &graph, input_buffers, &output_buffers);
@@ -1480,15 +1510,49 @@ impl RuntimeManager {
                     // Output
                     args.push(KernelArg::Buffer(buf_id));
                     
-                    // Params
                     let h_out = (h + 2 * padding - 1 * (r - 1) - 1) / stride + 1;
                     let w_out = (w + 2 * padding - 1 * (s - 1) - 1) / stride + 1;
-                    
+
                     let params = MetalConvParams {
                         batch: *n, h_in: *h, w_in: *w, c_in: *c, k_out: *k,
                         h_out, w_out, r_sz: *r, s_sz: *s,
                         stride: *stride, pad: *padding, dilation: 1,
                     };
+                    
+                    // Epilogue Buffers
+                    let epilogue = match operator {
+                        OperatorTopology::Conv2d { epilogue, .. } => epilogue,
+                        _ => &vec![],
+                    };
+                    
+                    for op in epilogue {
+                        match op {
+                            crate::core::op::EpilogueOp::BatchNorm { gamma_id, beta_id, mean_id, var_id, .. } => {
+                                let g_buf = input_buffers.get(gamma_id).or(output_buffers.get(gamma_id)).cloned().unwrap_or(BufferId(0));
+                                let b_buf = input_buffers.get(beta_id).or(output_buffers.get(beta_id)).cloned().unwrap_or(BufferId(0));
+                                let m_buf = input_buffers.get(mean_id).or(output_buffers.get(mean_id)).cloned().unwrap_or(BufferId(0));
+                                let v_buf = input_buffers.get(var_id).or(output_buffers.get(var_id)).cloned().unwrap_or(BufferId(0));
+                                args.push(KernelArg::Buffer(g_buf));
+                                args.push(KernelArg::Buffer(b_buf));
+                                args.push(KernelArg::Buffer(m_buf));
+                                args.push(KernelArg::Buffer(v_buf));
+                            }
+                            crate::core::op::EpilogueOp::ResidualAdd { residual_ptr } => {
+                                let res_buf = input_buffers.get(&(*residual_ptr as u64)).or(output_buffers.get(&(*residual_ptr as u64))).cloned().unwrap_or(BufferId(0));
+                                args.push(KernelArg::Buffer(res_buf));
+                            }
+                            crate::core::op::EpilogueOp::BiasAdd { bias_ptr } => {
+                                let b_buf = input_buffers.get(&(*bias_ptr as u64)).or(output_buffers.get(&(*bias_ptr as u64))).cloned().unwrap_or(BufferId(0));
+                                args.push(KernelArg::Buffer(b_buf));
+                            }
+                             crate::core::op::EpilogueOp::BiasAddSiLU { bias_ptr } => {
+                                let b_buf = input_buffers.get(&(*bias_ptr as u64)).or(output_buffers.get(&(*bias_ptr as u64))).cloned().unwrap_or(BufferId(0));
+                                args.push(KernelArg::Buffer(b_buf));
+                            }
+                            _ => {}
+                        }
+                    }
+
                     // MetalConvParams struct has r_sz, s_sz. In kernel: rs_sz = p.r_sz * p.s_sz?
                     // Check kernel logic:
                     // uint rs_sz = p.r_sz * p.s_sz; -> No, p.r_sz should be R? 
@@ -1542,6 +1606,30 @@ impl RuntimeManager {
                         args.push(KernelArg::Buffer(buf));
                     }
                     args.push(KernelArg::Buffer(buf_id));
+
+                    // Epilogue Buffers
+                    if let OperatorTopology::Linear { epilogue, .. } = operator {
+                        for op in epilogue {
+                            match op {
+                                crate::core::op::EpilogueOp::BatchNorm { gamma_id, beta_id, mean_id, var_id, .. } => {
+                                    let g_buf = input_buffers.get(gamma_id).or(output_buffers.get(gamma_id)).cloned().unwrap_or(BufferId(0));
+                                    let b_buf = input_buffers.get(beta_id).or(output_buffers.get(beta_id)).cloned().unwrap_or(BufferId(0));
+                                    let m_buf = input_buffers.get(mean_id).or(output_buffers.get(mean_id)).cloned().unwrap_or(BufferId(0));
+                                    let v_buf = input_buffers.get(var_id).or(output_buffers.get(var_id)).cloned().unwrap_or(BufferId(0));
+                                    args.push(KernelArg::Buffer(g_buf));
+                                    args.push(KernelArg::Buffer(b_buf));
+                                    args.push(KernelArg::Buffer(m_buf));
+                                    args.push(KernelArg::Buffer(v_buf));
+                                }
+                                crate::core::op::EpilogueOp::ResidualAdd { residual_ptr } => {
+                                    let res_buf = input_buffers.get(&(*residual_ptr as u64)).or(output_buffers.get(&(*residual_ptr as u64))).cloned().unwrap_or(BufferId(0));
+                                    args.push(KernelArg::Buffer(res_buf));
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+
                     args.push(KernelArg::Int(*m as i32));
                     args.push(KernelArg::Int(*n as i32));
                     args.push(KernelArg::Int(*k as i32));
@@ -1668,13 +1756,17 @@ mod tests {
                     name: "gemm1".into(),
                     m: 64, n: 64, k: 64, batch: 1,
                     kind: TopologyKind::Dense,
+                    epilogue: vec![],
                 },
+
                 OperatorTopology::Gemm {
                     op_id: 2,
                     name: "gemm2".into(),
                     m: 64, n: 64, k: 64, batch: 1,
                     kind: TopologyKind::Dense,
+                    epilogue: vec![],
                 },
+
             ],
             dependencies: vec![(1, 2)], // gemm1 -> gemm2
         };
@@ -1705,19 +1797,27 @@ mod tests {
                 OperatorTopology::Gemm {
                     op_id: 1, name: "gemm1".into(),
                     m: 128, n: 128, k: 128, batch: 1, kind: TopologyKind::Dense,
+                    epilogue: vec![],
                 },
+
                 OperatorTopology::Gemm {
                     op_id: 2, name: "gemm2".into(),
                     m: 128, n: 128, k: 128, batch: 1, kind: TopologyKind::Dense,
+                    epilogue: vec![],
                 },
+
                 OperatorTopology::Gemm {
                     op_id: 3, name: "gemm3".into(),
                     m: 128, n: 128, k: 128, batch: 1, kind: TopologyKind::Dense,
+                    epilogue: vec![],
                 },
+
                 OperatorTopology::Gemm {
                     op_id: 4, name: "gemm4".into(),
                     m: 128, n: 128, k: 128, batch: 1, kind: TopologyKind::Dense,
+                    epilogue: vec![],
                 },
+
             ],
             dependencies: vec![(1, 2), (3, 4)], // Two independent chains
         };

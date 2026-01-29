@@ -172,7 +172,7 @@ impl PolicyEngine for StandardPolicyEngine {
         for op in ctx.operators {
             // 1. Tile Policy
             let tile_policy = match op {
-                OperatorTopology::Gemm { op_id, name: _, m: _, n: _, k: _, batch: _, kind } => {
+                OperatorTopology::Gemm { op_id, name: _, m: _, n: _, k: _, batch: _, kind, epilogue: _ } => {
                      let tile_shape = self.choose_tile_shape(ctx.device, op);
                      let variant = self.select_gemm_variant(ctx.device, op);
                      
@@ -378,8 +378,10 @@ mod tests {
         let op = OperatorTopology::Gemm {
             op_id: 1, name: "gemm".into(),
             m: 1024, n: 1024, k: 1024, batch: 1,
-            kind: TopologyKind::Dense
+            kind: TopologyKind::Dense,
+            epilogue: vec![],
         };
+
 
         // Case 1: High End -> Simd Variant (Efficiency 0.85 vs Tiled 0.40)
         let v1 = engine.select_gemm_variant(&device_high, &op);
@@ -430,8 +432,10 @@ mod tests {
         let op = OperatorTopology::Gemm {
             op_id, name: "gemm_tune".into(),
             m: 512, n: 512, k: 512, batch: 1,
-            kind: TopologyKind::Dense
+            kind: TopologyKind::Dense,
+            epilogue: vec![],
         };
+
         
         let ctx = PolicyContext {
             device: &device,

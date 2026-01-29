@@ -590,7 +590,8 @@ impl AutoTuner {
                 name: problem.name.clone(),
                 n: problem.shape.m as u32 / (problem.shape.n as u32),
                 h: 0, w: 0, c: 0, k: 0, 
-                r: 0, s: 0, stride: 0, padding: 0 
+                r: 0, s: 0, stride: 0, padding: 0,
+                epilogue: vec![],
              },
             _ => OperatorTopology::Gemm { 
                 op_id: 0,
@@ -600,6 +601,7 @@ impl AutoTuner {
                 k: problem.shape.k as u32,
                 batch: 1,
                 kind: crate::policy::types::TopologyKind::Dense,
+                epilogue: vec![],
             },
         };
 

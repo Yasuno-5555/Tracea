@@ -17,7 +17,7 @@ pub fn magic_u32(n: u32) -> (u32, u32) {
 }
 
 pub fn generate_conv(ir: &UnifiedOpIR) -> String {
-    if let UnifiedOpType::Conv2d { n: batch, h: h_in, w: w_in, c: c_in, k: k_out, r, s, stride, pad, dilation, layout: _ } = ir.op_type {
+    if let UnifiedOpType::Conv2d { n: batch, h: h_in, w: w_in, c: c_in, k: k_out, r, s, stride, pad, dilation, layout: _, epilogue: _ } = ir.op_type {
         let h_out = (h_in + 2 * pad - dilation * (r - 1) - 1) / stride + 1;
         let w_out = (w_in + 2 * pad - dilation * (s - 1) - 1) / stride + 1;
         

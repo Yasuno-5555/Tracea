@@ -35,6 +35,7 @@ pub enum UnifiedOpType {
         n: u32,
         k: u32,
         batch: u32,
+        epilogue: Vec<crate::core::op::EpilogueOp>,
     },
     FusedAttention {
         b: u32,

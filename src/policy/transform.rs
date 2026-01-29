@@ -79,7 +79,9 @@ pub fn expand_attention(graph: &mut GraphTopology) {
                     m: s, n: s, k: d,
                     batch: b * h,
                     kind: crate::policy::types::TopologyKind::Dense,
+                    epilogue: vec![],
                 });
+
                 new_dependencies.push((q_id, qk_id));
                 new_dependencies.push((k_id, qk_id));
 
@@ -100,7 +102,9 @@ pub fn expand_attention(graph: &mut GraphTopology) {
                     m: s, n: d, k: s,
                     batch: b * h,
                     kind: crate::policy::types::TopologyKind::Dense,
+                    epilogue: vec![],
                 });
+
                 new_dependencies.push((sm_id, op_id));
                 new_dependencies.push((v_id, op_id));
             },

@@ -54,7 +54,7 @@ impl GemmOp {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum EpilogueOp {
     None,
     BiasAdd { bias_ptr: usize },
@@ -97,8 +97,9 @@ impl FusedGemmOp {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LinearOp {
+
     pub batch_size: DimExpr,
     pub in_features: DimExpr,
     pub out_features: DimExpr,
@@ -114,7 +115,7 @@ pub struct AttentionOp {
     pub causal: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum NNOp {
     Linear(LinearOp),
     Attention(AttentionOp),

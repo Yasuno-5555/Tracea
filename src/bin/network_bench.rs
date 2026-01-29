@@ -34,7 +34,7 @@ fn run_resnet18_benchmark(runtime: &RuntimeManager, backend: DeviceBackend) {
     operators.push(OperatorTopology::Conv2d {
         op_id: op_id_counter, name: "stem_conv".into(),
         n: 1, c: 3, h: 224, w: 224, k: 64,
-        r: 7, s: 7, stride: 4, padding: 3,
+        r: 7, s: 7, stride: 4, padding: 3, epilogue: vec![],
     });
     dependencies.push((input_id, op_id_counter));
     let mut current_id = op_id_counter;
@@ -80,7 +80,7 @@ fn run_resnet18_benchmark(runtime: &RuntimeManager, backend: DeviceBackend) {
             operators.push(OperatorTopology::Conv2d {
                 op_id: op_id_counter, name: format!("layer_{}_block_{}_conv1", out_c, i),
                 n: 1, c: block_in_c, h: block_size, w: block_size, k: *out_c,
-                r: 3, s: 3, stride: block_stride, padding: 1,
+                r: 3, s: 3, stride: block_stride, padding: 1, epilogue: vec![],
             });
             dependencies.push((current_id, op_id_counter));
             current_id = op_id_counter;
@@ -108,7 +108,7 @@ fn run_resnet18_benchmark(runtime: &RuntimeManager, backend: DeviceBackend) {
             operators.push(OperatorTopology::Conv2d {
                 op_id: op_id_counter, name: format!("layer_{}_block_{}_conv2", out_c, i),
                 n: 1, c: *out_c, h: out_size, w: out_size, k: *out_c,
-                r: 3, s: 3, stride: 1, padding: 1,
+                r: 3, s: 3, stride: 1, padding: 1, epilogue: vec![],
             });
             dependencies.push((current_id, op_id_counter));
             current_id = op_id_counter;
@@ -130,7 +130,7 @@ fn run_resnet18_benchmark(runtime: &RuntimeManager, backend: DeviceBackend) {
                 operators.push(OperatorTopology::Conv2d {
                     op_id: op_id_counter, name: format!("layer_{}_block_{}_shortcut_conv", out_c, i),
                     n: 1, c: block_in_c, h: block_size, w: block_size, k: *out_c,
-                    r: 1, s: 1, stride: block_stride, padding: 0,
+                    r: 1, s: 1, stride: block_stride, padding: 0, epilogue: vec![],
                 });
                 dependencies.push((shortcut_id, op_id_counter));
                 current_id = op_id_counter;
@@ -185,7 +185,9 @@ fn run_resnet18_benchmark(runtime: &RuntimeManager, backend: DeviceBackend) {
     operators.push(OperatorTopology::Linear {
         op_id: op_id_counter, name: "fc".into(),
         batch: 1, m: 1, n: 1000, k: 512,
+        epilogue: vec![],
     });
+
     dependencies.push((current_id, op_id_counter));
     op_id_counter += 1;
 
@@ -225,16 +227,24 @@ fn run_downsample_test(runtime: &RuntimeManager, backend: DeviceBackend) {
     operators.push(OperatorTopology::Conv2d {
         op_id: 2, name: "main_conv".into(),
         n: 1, c: 64, h: 14, w: 14, k: 128,
-        r: 3, s: 3, stride: 2, padding: 1,
+        r: 3, s: 3, stride: 2, padding: 1, epilogue: vec![],
     });
     dependencies.push((1, 2));
 
     // 2. BN
+    operators.push(OperatorTopology::Input { op_id: 301, name: "main_bn_gamma".into() });
+    operators.push(OperatorTopology::Input { op_id: 302, name: "main_bn_beta".into() });
+    operators.push(OperatorTopology::Input { op_id: 303, name: "main_bn_mean".into() });
+    operators.push(OperatorTopology::Input { op_id: 304, name: "main_bn_var".into() });
     operators.push(OperatorTopology::BatchNorm {
         op_id: 3, name: "main_bn".into(),
         n: 1, c: 128, h: 7, w: 7, epsilon: 1e-5, momentum: 0.1,
     });
     dependencies.push((2, 3));
+    dependencies.push((301, 3));
+    dependencies.push((302, 3));
+    dependencies.push((303, 3));
+    dependencies.push((304, 3));
 
     // 3. ReLU
     operators.push(OperatorTopology::Relu {
@@ -247,16 +257,24 @@ fn run_downsample_test(runtime: &RuntimeManager, backend: DeviceBackend) {
     operators.push(OperatorTopology::Conv2d {
         op_id: 5, name: "shortcut_conv".into(),
         n: 1, c: 64, h: 14, w: 14, k: 128,
-        r: 1, s: 1, stride: 2, padding: 0,
+        r: 1, s: 1, stride: 2, padding: 0, epilogue: vec![],
     });
     dependencies.push((1, 5));
 
     // 5. BN
+    operators.push(OperatorTopology::Input { op_id: 601, name: "shortcut_bn_gamma".into() });
+    operators.push(OperatorTopology::Input { op_id: 602, name: "shortcut_bn_beta".into() });
+    operators.push(OperatorTopology::Input { op_id: 603, name: "shortcut_bn_mean".into() });
+    operators.push(OperatorTopology::Input { op_id: 604, name: "shortcut_bn_var".into() });
     operators.push(OperatorTopology::BatchNorm {
         op_id: 6, name: "shortcut_bn".into(),
         n: 1, c: 128, h: 7, w: 7, epsilon: 1e-5, momentum: 0.1,
     });
     dependencies.push((5, 6));
+    dependencies.push((601, 6));
+    dependencies.push((602, 6));
+    dependencies.push((603, 6));
+    dependencies.push((604, 6));
 
     // === Join ===
     // 6. Add
@@ -278,6 +296,17 @@ fn run_downsample_test(runtime: &RuntimeManager, backend: DeviceBackend) {
 
     let mut inputs = HashMap::new();
     inputs.insert(1, runtime.alloc(1*64*14*14*2, backend).unwrap()); // FP16
+    
+    // BatchNorm weights
+    inputs.insert(301, runtime.alloc(128*4, backend).unwrap());
+    inputs.insert(302, runtime.alloc(128*4, backend).unwrap());
+    inputs.insert(303, runtime.alloc(128*4, backend).unwrap());
+    inputs.insert(304, runtime.alloc(128*4, backend).unwrap());
+    
+    inputs.insert(601, runtime.alloc(128*4, backend).unwrap());
+    inputs.insert(602, runtime.alloc(128*4, backend).unwrap());
+    inputs.insert(603, runtime.alloc(128*4, backend).unwrap());
+    inputs.insert(604, runtime.alloc(128*4, backend).unwrap());
 
     println!("[Benchmark] Running Downsample warmup...");
     let result = runtime.execute_graph(&graph, &inputs, backend);
@@ -316,7 +345,9 @@ fn run_head_test(runtime: &RuntimeManager, backend: DeviceBackend) {
     operators.push(OperatorTopology::Linear {
         op_id: 3, name: "fc".into(),
         batch: 1, m: 1, n: 1000, k: 512,
+        epilogue: vec![],
     });
+
     dependencies.push((2, 3));
     dependencies.push((102, 3));
 
@@ -386,7 +417,7 @@ fn run_resnet_block(runtime: &RuntimeManager, backend: DeviceBackend) {
     operators.push(OperatorTopology::Conv2d {
         op_id: 2, name: "conv1".into(),
         n: 1, c: 32, h: 64, w: 64, k: 32,
-        r: 3, s: 3, stride: 1, padding: 1,
+        r: 3, s: 3, stride: 1, padding: 1, epilogue: vec![],
     });
     dependencies.push((1, 2));
     dependencies.push((102, 2));
@@ -449,7 +480,7 @@ fn run_fork_join_test(runtime: &RuntimeManager, backend: DeviceBackend) {
     operators.push(OperatorTopology::Conv2d {
         op_id: 2, name: "conv".into(),
         n: 1, c: 32, h: 64, w: 64, k: 32,
-        r: 3, s: 3, stride: 1, padding: 1,
+        r: 3, s: 3, stride: 1, padding: 1, epilogue: vec![],
     });
     dependencies.push((1, 2));
     dependencies.push((102, 2));

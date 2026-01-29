@@ -162,12 +162,16 @@ mod tests {
             op_id: 1,
             name: "Conv1".to_string(),
             n: 1, c: 32, h: 64, w: 64, k: 32,
+            r: 3, s: 3, stride: 1, padding: 1,
+            epilogue: vec![],
         };
         
         let relu_op = OperatorTopology::Relu {
             op_id: 2,
             name: "Relu1".to_string(),
+            n: 1 * 32 * 64 * 64,
         };
+
         
         let graph = GraphTopology {
             operators: vec![conv_op, relu_op],
@@ -196,15 +200,16 @@ mod tests {
         // Chain 1: Op 1 -> Op 2
         // Tensor 1 (Op 1 out) used by Op 2.
         let op1 = OperatorTopology::Gemm {
-            op_id: 1, name: "gemm1".into(), m: 102, n: 102, k: 102, batch: 1, kind: TopologyKind::Dense
+            op_id: 1, name: "gemm1".into(), m: 102, n: 102, k: 102, batch: 1, kind: TopologyKind::Dense, epilogue: vec![]
         };
-        let op2 = OperatorTopology::Relu { op_id: 2, name: "relu1".into() };
+        let op2 = OperatorTopology::Relu { op_id: 2, name: "relu1".into(), n: 102 * 102 };
 
         // Chain 2: Op 3 -> Op 4 (Disjoint from Chain 1 time-wise if scheduled seq)
         let op3 = OperatorTopology::Gemm {
-            op_id: 3, name: "gemm2".into(), m: 102, n: 102, k: 102, batch: 1, kind: TopologyKind::Dense
+            op_id: 3, name: "gemm2".into(), m: 102, n: 102, k: 102, batch: 1, kind: TopologyKind::Dense, epilogue: vec![]
         };
-        let op4 = OperatorTopology::Relu { op_id: 4, name: "relu2".into() };
+        let op4 = OperatorTopology::Relu { op_id: 4, name: "relu2".into(), n: 102 * 102 };
+
 
         let graph = GraphTopology {
             operators: vec![op1, op2, op3, op4],

@@ -150,7 +150,7 @@ impl MicroBenchmark for NVRTCBenchmark {
     fn validate_config(&self, config: &PipelineConfig) -> bool {
          let emitter = crate::emitter::universal::UniversalEmitter::new(self.backend);
          let ir = crate::emitter::traits::UnifiedOpIR {
-             op_type: crate::emitter::traits::UnifiedOpType::Gemm { m: self.m, n: self.n, k: self.k, batch: 1 },
+             op_type: crate::emitter::traits::UnifiedOpType::Gemm { m: self.m, n: self.n, k: self.k, batch: 1, epilogue: vec![] },
              precison: "f16".to_string(),
              tiling: config.clone(),
              conv_magic_strategy: None,
@@ -231,7 +231,7 @@ impl MicroBenchmark for NVRTCBenchmark {
     fn measure(&self, config: &PipelineConfig) -> BenchmarkResult {
         let emitter = crate::emitter::universal::UniversalEmitter::new(self.backend);
         let ir = crate::emitter::traits::UnifiedOpIR {
-            op_type: crate::emitter::traits::UnifiedOpType::Gemm { m: self.m, n: self.n, k: self.k, batch: 1 },
+            op_type: crate::emitter::traits::UnifiedOpType::Gemm { m: self.m, n: self.n, k: self.k, batch: 1, epilogue: vec![] },
             precison: "f16".to_string(),
             tiling: config.clone(),
             conv_magic_strategy: None,
@@ -677,7 +677,9 @@ impl Conv2dBenchmark for NVRTCConvBenchmark {
                 pad: self.problem.pad,
                 dilation: self.problem.dilation,
                 layout: LayoutPolicy::NHWC,
+                epilogue: vec![],
             },
+
             precison: "f16".to_string(),
             tiling: config.base.clone(),
             conv_magic_strategy: Some(config.magic_strategy),
@@ -715,7 +717,9 @@ impl Conv2dBenchmark for NVRTCConvBenchmark {
                 pad: self.problem.pad,
                 dilation: self.problem.dilation,
                 layout: LayoutPolicy::NHWC,
+                epilogue: vec![],
             },
+
             precison: "f16".to_string(),
             tiling: config.base.clone(),
             conv_magic_strategy: Some(config.magic_strategy),
