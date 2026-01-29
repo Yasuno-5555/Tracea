@@ -1,0 +1,43 @@
+[package]
+name = "tracea"
+version = "0.1.0"
+edition = "2018"
+
+[lib]
+name = "tracea"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["python"]
+python = ["dep:pyo3"]
+cpp = []
+vulkan = ["dep:ash", "dep:gpu-allocator", "dep:shaderc"]
+
+[dependencies]
+pyo3 = { version = "0.21.0", features = ["extension-module"], optional = true } # Ensure "extension-module" is enabled for building .pyd
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+cudarc = { version = "=0.12.0", features = ["driver", "nvrtc", "cuda-12000"] }
+libloading = "0.8"
+rand = "0.8"
+rand_distr = "0.4"
+half = { version = "2.4", features = ["rand_distr"] }
+chrono = "0.4.43"
+rayon = "1.10"
+wide = "0.7"
+matrixmultiply = "0.3"
+ash = { version = "0.37", optional = true }
+gpu-allocator = { version = "0.26", optional = true }
+bytemuck = "1.14"
+shaderc = { version = "0.8", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+metal = "0.29"
+objc = { version = "0.2", optional = true }
+
+[build-dependencies]
+cc = "1.0"
+bindgen = "0.69"
+
+[dev-dependencies]
+ndarray = "0.15"

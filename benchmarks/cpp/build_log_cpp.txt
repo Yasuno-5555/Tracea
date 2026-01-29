@@ -1,0 +1,19 @@
+
+E:\Projects\Tracea\benchmarks\cpp>setlocal
+
+E:\Projects\Tracea\benchmarks\cpp>where cl.exe  1>nul 2>nul 
+
+E:\Projects\Tracea\benchmarks\cpp>if 1 NEQ 0 (
+echo [Build] cl.exe not found. Initializing VS 2022 Environment...  
+ call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat" 
+) 
+[Build] cl.exe not found. Initializing VS 2022 Environment...
+**********************************************************************
+** Visual Studio 2022 Developer Command Prompt v17.14.23
+** Copyright (c) 2025 Microsoft Corporation
+**********************************************************************
+[vcvarsall.bat] Environment initialized for: 'x64'
+Building latency_bench...
+latency_bench.cu
+tmpxft_00004030_00000000-7_latency_bench.cudafe1.cpp
+LINK : fatal error LNK1181: 入力ファイル 'tracea.lib' を開けません。
