@@ -147,7 +147,8 @@ impl TunableKernel for CudaGemmAdapter {
             op_type: UnifiedOpType::Gemm { 
                 m: self.problem.m as u32,
                 n: self.problem.n as u32,
-                k: self.problem.k as u32 
+                k: self.problem.k as u32,
+                batch: 1
             },
             precison: "f16".to_string(),
             tiling: cfg.clone(),

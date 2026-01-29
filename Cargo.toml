@@ -41,3 +41,12 @@ bindgen = "0.69"
 
 [dev-dependencies]
 ndarray = "0.15"
+criterion = "0.5"
+
+[[bench]]
+name = "metal_attention"
+harness = false
+
+[[bench]]
+name = "metal_gemm"
+harness = false

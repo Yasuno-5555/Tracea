@@ -20,6 +20,7 @@ pub enum CpuArch {
 pub enum Device {
     Cuda(CudaArch),
     Cpu(CpuArch),
+    Metal,
 }
 
 impl Default for Device {

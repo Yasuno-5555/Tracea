@@ -34,6 +34,7 @@ pub enum UnifiedOpType {
         m: u32,
         n: u32,
         k: u32,
+        batch: u32,
     },
     FusedAttention {
         b: u32,
@@ -59,6 +60,7 @@ pub enum UnifiedOpType {
         pad: usize,
         dilation: usize,
         layout: crate::core::config::LayoutPolicy,
+        epilogue: Vec<crate::core::op::EpilogueOp>,
     },
     /// Unified Matrix-Multiply-Accumulate (Tensor Core / Cooperative Matrix)
     MatrixCore {
@@ -86,5 +88,32 @@ pub enum UnifiedOpType {
         n: u32,
         k: u32,
         r: u32,
+    },
+    Softmax {
+        axis: i32,
+        dim_size: usize,
+        stride: usize,
+        total_elements: usize,
+    },
+    BatchNorm {
+        n: usize,
+        c: usize,
+        h: usize,
+        w: usize,
+        epsilon: f32,
+        momentum: f32,
+    },
+    GlobalAveragePool {
+        n: usize,
+        c: usize,
+        h: usize,
+        w: usize,
+    },
+    Linear {
+        batch: usize,
+        m: usize,
+        n: usize,
+        k: usize,
+        epilogue: Vec<crate::core::op::EpilogueOp>,
     },
 }

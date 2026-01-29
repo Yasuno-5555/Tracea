@@ -66,6 +66,15 @@ pub enum EpilogueOp {
     ResidualAdd { residual_ptr: usize },
     /// Combined Bias + SiLU: (x + bias) / (1 + exp(-(x + bias)))
     BiasAddSiLU { bias_ptr: usize },
+    /// BatchNorm: (x - mean) * rsqrt(var + eps) * gamma + beta
+    BatchNorm {
+        op_id: u64,
+        gamma_id: u64,
+        beta_id: u64,
+        mean_id: u64,
+        var_id: u64,
+        epsilon: f32,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)] // Cannot derive PartialEq, Eq, Hash due to Scalar(f32) in GemmOp

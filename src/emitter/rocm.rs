@@ -199,6 +199,15 @@ impl Emitter for ROCMEmitter {
             UnifiedOpType::LowRankMlp { .. } => {
                 panic!("LowRankMlp not supported on ROCm yet.");
             }
+            UnifiedOpType::Softmax { .. } => {
+                "// ROCm Softmax not yet implemented in Unified Emitter\n".to_string()
+            }
+            UnifiedOpType::BatchNorm { .. } => {
+                "// ROCm BatchNorm not yet implemented in Unified Emitter\n".to_string()
+            }
+            UnifiedOpType::GlobalAveragePool { .. } | UnifiedOpType::Linear { .. } => {
+                "// ROCm GlobalAveragePool/Linear not yet implemented\n".to_string()
+            }
         }
     }
 }

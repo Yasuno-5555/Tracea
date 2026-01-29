@@ -94,6 +94,27 @@ impl HardwareProfile {
             simd_width: 32,
         }
     }
+
+    pub fn apple_m1() -> Self {
+        Self {
+            name: "Apple M1".to_string(),
+            backend: DeviceBackend::Metal,
+            shared_memory_per_block: 32 * 1024,
+            max_registers_per_thread: 128,
+            registers_per_sm: 0, 
+            max_registers_per_block: 0,
+            max_warps_per_sm: 32, // Metal Threadgroups
+            wavefront_size: 32,
+            max_blocks_per_sm: 16,
+            shared_memory_per_sm: 32 * 1024,
+            has_specialized_units: true,
+            compute_capability: None,
+            supported_intrinsic_shapes: vec![crate::core::config::IntrinsicShape::None],
+            max_threadgroup_memory: 32 * 1024,
+            preferred_tile_shape: [64, 64, 32],
+            simd_width: 32,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -107,6 +128,40 @@ pub enum PruningReason {
 }
 
 impl HardwareProfile {
+    pub fn to_device(&self) -> crate::core::backend::Device {
+        use crate::core::backend::{Device, CudaArch, CpuArch};
+        match self.backend {
+            DeviceBackend::Cuda => {
+                 let arch = match self.name.as_str() {
+                     n if n.contains("RTX 30") => CudaArch::Ampere,
+                     n if n.contains("RTX 40") => CudaArch::Ada,
+                     _ => CudaArch::Unknown,
+                 };
+                 Device::Cuda(arch)
+            }
+            DeviceBackend::Metal => Device::Metal,
+            _ => Device::Cpu(CpuArch::Scalar),
+        }
+    }
+
+    pub fn to_device_profile(&self) -> crate::core::device::DeviceProfile {
+        crate::core::device::DeviceProfile {
+            backend: match self.backend {
+                DeviceBackend::Cuda => crate::core::device::BackendType::Cuda,
+                DeviceBackend::Metal => crate::core::device::BackendType::Metal,
+                DeviceBackend::Rocm => crate::core::device::BackendType::Rocm,
+                _ => crate::core::device::BackendType::Cpu,
+            },
+            name: self.name.clone(),
+            max_threads_per_block: 1024, // simplified
+            simd_width: self.simd_width,
+            local_memory_size: self.shared_memory_per_block,
+            has_tensor_cores: self.has_specialized_units,
+            has_fp16_storage: true,
+            texture_alignment: 256,
+        }
+    }
+
     pub fn check_feasibility(&self, config: &PipelineConfig, problem: &ProblemDescriptor) -> Result<(), PruningReason> {
         // 1. Shared Memory Check
         let policy = PolicyFactory::derive(problem);
@@ -164,7 +219,7 @@ impl HardwareProfile {
 
         let regs_per_block = (warps_per_block * self.wavefront_size) * est_regs;
         
-        let blocks_by_regs = if regs_per_block > 0 {
+        let blocks_by_regs = if self.registers_per_sm > 0 && regs_per_block > 0 {
             self.registers_per_sm / regs_per_block
         } else {
             self.max_blocks_per_sm
@@ -329,10 +384,13 @@ impl GaussianProcess {
         v
     }
     
-    fn roofline_prior(&self, m: u32, n: u32, k: u32, config: &PipelineConfig, _gpu: &HardwareProfile) -> f32 {
+    fn roofline_prior(&self, m: u32, n: u32, k: u32, config: &PipelineConfig, gpu: &HardwareProfile) -> f32 {
          let is_tc = config.instruction != crate::core::config::SpecializedInstruction::None;
-         let peak_tflops = if is_tc { 160.0 } else { 20.0 };
-         let mem_bw = 448.0; 
+         let (peak_tflops, mem_bw) = match gpu.backend {
+             DeviceBackend::Metal => (5.0, 68.0),
+             DeviceBackend::Rocm => (180.0, 1600.0),
+             _ => (if is_tc { 160.0 } else { 20.0 }, 448.0),
+         };
          let ops = 2.0 * m as f64 * n as f64 * k as f64;
          let bytes = (m as f64 * k as f64 + k as f64 * n as f64 + m as f64 * n as f64) * 2.0;
          let intensity = (ops / bytes) as f32;
@@ -416,11 +474,7 @@ pub struct AutoTuner {
 
 impl AutoTuner {
     pub fn new(gpu: HardwareProfile) -> Self {
-        let device = match gpu.backend {
-            DeviceBackend::Cuda => Device::Cuda(CudaArch::Ampere), // Assume Ampere for auto-detection if unknown
-            DeviceBackend::Rocm => Device::Cuda(CudaArch::Unknown), // Temporary
-            _ => Device::Cpu(CpuArch::Avx2),
-        };
+        let device = gpu.to_device();
 
         let hardware_id = match device {
             Device::Cpu(_) => get_cpu_id(),
@@ -431,6 +485,7 @@ impl AutoTuner {
                     gpu.name.clone()
                 }
             }
+            Device::Metal => gpu.name.clone(),
         };
 
         Self {
@@ -469,7 +524,7 @@ impl AutoTuner {
         let p = benchmark.problem();
         let layout = Layout::NHWC; // Assume NHWC
         
-        let problem = ProblemDescriptor::new_conv2d(p.batch, p.h_in, p.w_in, p.c_in, p.c_out, layout)
+        let problem = ProblemDescriptor::new_conv2d(p.batch, p.h_in, p.w_in, p.c_in, p.c_out, p.kernel_h, p.kernel_w, layout)
             .with_device(self.device);
         eprintln!("[Adapter] optimize_conv -> optimize_v2 for Conv2d {}", problem.name);
         
@@ -524,139 +579,56 @@ impl<'a, B: Conv2dBenchmark> MicroBenchmark for ConvBenchmarkAdapter<'a, B> {
 impl AutoTuner {
     
     pub fn optimize_v2<B: MicroBenchmark>(&mut self, benchmark: &B, problem: &ProblemDescriptor, iterations: usize, goal: OptimizationGoal) -> PipelineConfig {
-        let policy = PolicyFactory::derive(problem);
-        eprintln!("[Tracea] 🚀 Starting V2 Tuning for {} [layer_type={:?}]", problem.name, problem.layer_type);
-        let key = CacheKey {
-            backend: self.gpu.backend,
-            gpu: self.gpu.name.clone(),
-            m: problem.shape.m as u32,
-            n: problem.shape.n as u32,
-            k: problem.shape.k as u32,
-            dtype: "f16".to_string(), 
-            epilogue: vec![], // To be refined
-            env_version: "v3.1_forced".to_string(),
-            arch: match self.gpu.name.as_str() {
-                n if n.contains("RTX 30") => "Ampere".to_string(),
-                n if n.contains("RTX 40") => "Ada".to_string(),
-                _ => "Unknown".to_string(),
+        use crate::policy::standard::StandardPolicyEngine;
+        use crate::core::tuning::get_tuning_cache;
+        use crate::policy::types::OperatorTopology;
+        
+        let engine = StandardPolicyEngine::new();
+        let topology = match problem.layer_type {
+            LayerType::Conv2d(_) => OperatorTopology::Conv2d { 
+                op_id: 0,
+                name: problem.name.clone(),
+                n: problem.shape.m as u32 / (problem.shape.n as u32),
+                h: 0, w: 0, c: 0, k: 0, 
+                r: 0, s: 0, stride: 0, padding: 0 
+             },
+            _ => OperatorTopology::Gemm { 
+                op_id: 0,
+                name: problem.name.clone(), 
+                m: problem.shape.m as u32,
+                n: problem.shape.n as u32,
+                k: problem.shape.k as u32,
+                batch: 1,
+                kind: crate::policy::types::TopologyKind::Dense,
             },
-            op_fingerprint: Some(problem.name.clone()),
         };
-        let mut cache = TuningCache::new();
-        if let Some(config) = cache.get(&key) {
-            println!("[Tracea] 💎 Cache Hit! {:?}", key);
-            return config;
+
+        // 1. Generate Candidates
+        let device_profile = self.gpu.to_device_profile();
+        let candidates = match problem.layer_type {
+            LayerType::Conv2d(_) => engine.propose_conv_configs(&device_profile),
+            _ => engine.propose_gemm_configs(&device_profile),
+        };
+        
+        if candidates.is_empty() {
+            eprintln!("[Autotuner] ⚠️ No candidates proposed! Falling back to magic default.");
+            return PipelineConfig::new(2, 64, 64, 32);
         }
 
-        eprintln!("[Tracea] 🚀 Starting V2 Tuning for {} (Policy: {})", problem.name, "Derived");
+        eprintln!("[Autotuner] 🤖 Intelligence Phase I: Evaluator ready with {} candidates.", candidates.len());
 
-        let mut current_best_score = -1e9;
-        let mut best_config = None;
-        let mut trials_so_far = 0;
+        // 2. Delegate to God Cache
+        let cache = get_tuning_cache();
         
-        // 1. Hero Injection (Priority 0)
-        let heroes = policy.hero_configs();
-        eprintln!("[Tracea] 🦸 Found {} Hero Configs", heroes.len());
+        let best_config = cache.get_or_tune(&topology, &device_profile, candidates, |config| {
+             let result = benchmark.measure(config);
+             result.tflops
+        });
+
+        // Update stats
+        self.best_config = Some(best_config.clone());
         
-        for (idx, hero) in heroes.iter().enumerate() {
-            eprintln!("[Tracea] 🦸 Injecting Hero #{}: {} ({:?})", idx+1, hero.note, hero.scope);
-            if !benchmark.validate_config(&hero.config) {
-                eprintln!("[Tracea] ⚠️ Hero config failed validation! Skipping.");
-                continue;
-            }
-            
-            let res = benchmark.measure(&hero.config);
-            let score = self.calculate_score(&res, goal);
-            eprintln!("[Tracea] 🦸 Hero Result [hero=true]: {:.2} TFLOPS (Score: {:.2})", res.tflops, score);
-            
-            self.gp.observe(Observation { 
-                m: problem.shape.m as u32, n: problem.shape.n as u32, k: problem.shape.k as u32, 
-                config: hero.config.clone(), score 
-            }, &self.gpu);
-            
-            if score > current_best_score {
-                current_best_score = score;
-                best_config = Some(hero.config.clone());
-            }
-        }
-        
-        // 1.1 Structural Hero Injection (v3)
-        if let Some(v3_hero) = self.heroscope.get_hero(&self.hardware_id, problem.layer_type) {
-            eprintln!("[Tracea] 🏛️ Injecting Structural Hero (v3) for {}", self.hardware_id);
-            if benchmark.validate_config(&v3_hero) {
-                let res = benchmark.measure(&v3_hero);
-                let score = self.calculate_score(&res, goal);
-                eprintln!("[Tracea] 🏛️ Structural Hero Result: {:.2} TFLOPS", res.tflops);
-                
-                self.gp.observe(Observation { 
-                    m: problem.shape.m as u32, n: problem.shape.n as u32, k: problem.shape.k as u32, 
-                    config: v3_hero.clone(), score 
-                }, &self.gpu);
-                
-                if score > current_best_score {
-                    current_best_score = score;
-                    best_config = Some(v3_hero);
-                }
-            }
-        }
-        
-        if heroes.is_empty() {
-            // Initial Random if no heroes
-             let init = PipelineConfig::new(2, 128, 128, 32); 
-             // ...
-        }
-
-        // 2. Optimization Loop
-        for i in 0..iterations {
-            trials_so_far += 1;
-            eprintln!("[Tracea] 🔄 Iteration {}/{}", i + 1, iterations);
-            
-            // Context update
-            let ctx = TuningContext {
-                trials_so_far,
-                best_score: current_best_score,
-                variance: 0.0, // TODO: Get from GP
-            };
-            
-            let plan = policy.sampling_plan(&ctx);
-            
-            let acq = match plan {
-                SamplingPlan::Scout | SamplingPlan::Lightweight => AcquisitionFunction::Thompson,
-                SamplingPlan::Sniper | SamplingPlan::Balanced => AcquisitionFunction::UCB, // Or EI
-            };
-            
-            let candidate = self.propose_candidate(problem, &policy.search_space(), acq, &policy, current_best_score);
-            
-            if let Err(reason) = self.gpu.check_feasibility(&candidate, problem) {
-                eprintln!("[Tracea] 鉁 Pruned configuration {:?} - Reason: {:?}", candidate, reason);
-                self.stats.log_pruning(reason);
-                continue;
-            }
-
-            if !benchmark.validate_config(&candidate) {
-                continue;
-            }
-
-            let res = benchmark.measure(&candidate);
-            let score = self.calculate_score(&res, goal);
-            
-            println!("[Tracea] Testing {:>3}x{:>3}x{:>2} -> {:.2} TFLOPS (Score: {:.2})", 
-                candidate.m_tile, candidate.n_tile, candidate.k_tile, res.tflops, score);
-
-            self.gp.observe(Observation { 
-                m: problem.shape.m as u32, n: problem.shape.n as u32, k: problem.shape.k as u32, 
-                config: candidate.clone(), score 
-            }, &self.gpu);
-
-            if score > current_best_score {
-                current_best_score = score;
-                best_config = Some(candidate);
-            }
-        }
-        
-        let final_config = best_config.unwrap_or_else(|| PipelineConfig::new(2, 64, 64, 32));
-        cache.set(key, final_config.clone());
-        final_config
+        best_config
     }
     
     fn calculate_score(&self, res: &BenchmarkResult, goal: OptimizationGoal) -> f32 {

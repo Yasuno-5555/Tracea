@@ -58,6 +58,15 @@ pub enum KernelArg {
     Bytes(Vec<u8>),
 }
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct MetalConvParams {
+    pub batch: u32, pub h_in: u32, pub w_in: u32, pub c_in: u32, pub k_out: u32,
+    pub h_out: u32, pub w_out: u32, pub r_sz: u32, pub s_sz: u32,
+    pub stride: u32, pub pad: u32, pub dilation: u32,
+}
+
+#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DeviceBackend {
     Cuda,
@@ -355,6 +364,14 @@ impl RuntimeManager {
                 let mut hasher = std::collections::hash_map::DefaultHasher::new();
                 source.hash(&mut hasher);
                 let hash = hasher.finish();
+                let cache_key = format!("{}_{:x}", kernel_name, hash);
+
+                {
+                    let cache = self.source_cache.lock().map_err(|_| "Lock")?;
+                    if let Some(id) = cache.get(&cache_key) {
+                        return Ok(*id);
+                    }
+                }
                 
                 let compile_options = metal::CompileOptions::new();
                 let library = backend.device.new_library_with_source(source, &compile_options).map_err(|e| format!("Metal Compile Error: {}", e))?;
@@ -364,6 +381,7 @@ impl RuntimeManager {
                 let pipeline = backend.device.new_compute_pipeline_state_with_function(&func).map_err(|e| format!("Pipeline Error: {}", e))?;
 
                 let id = self.generate_kernel_id()?;
+                self.source_cache.lock().map_err(|_| "Lock")?.insert(cache_key, id);
                 // MVP: Implicit layout (sequential) or need explicit?
                 // For now, empty layout implies "No check" or "Sequential"
                 self.kernels.lock().map_err(|_| "Poisoned")?.insert(id, RecordedKernel {
@@ -686,7 +704,17 @@ impl RuntimeManager {
                 encoder.end_encoding();
                 
                 command_buffer.commit();
-                command_buffer.wait_until_completed(); // MVP Synchronous
+                
+                self.doctor.on_kernel_launch(crate::doctor::KernelLaunchInfo {
+                    backend: crate::doctor::BackendKind::Metal,
+                    kernel_name: recorded.name.clone(),
+                    return_code: 0,
+                    last_runtime_error: None,
+                    grid: (grid.0, grid.1, grid.2), 
+                    block: (block.0, block.1, block.2),
+                    smem,
+                });
+                command_buffer.wait_until_completed(); // Sync for accurate benchmarking
             }
             _ => return Err("Unsupported backend".to_string()),
         }
@@ -914,6 +942,7 @@ impl RuntimeManager {
                 let backend = handle.metal_dev.as_ref().ok_or("No Metal Backend")?;
                 
                 let options = metal::MTLResourceOptions::StorageModeShared;
+                println!("[Runtime] Metal Alloc: {} bytes", size_bytes);
                 let buffer = backend.device.new_buffer(size_bytes as u64, options);
                 DeviceBuffer::Metal(buffer)
             }
@@ -962,6 +991,15 @@ impl RuntimeManager {
                 unsafe { (api.hipDeviceSynchronize)(); }
             }
         }
+
+        #[cfg(target_os = "macos")]
+        if let Some(h) = devices.get(&DeviceBackend::Metal) {
+            if let Some(b) = &h.metal_dev {
+                let cb = b.queue.new_command_buffer();
+                cb.commit();
+                cb.wait_until_completed();
+            }
+        }
     }
 
     pub fn get_device(&self, backend: DeviceBackend) -> Result<DeviceHandle, String> {
@@ -1000,10 +1038,18 @@ impl RuntimeManager {
             #[cfg(target_os = "macos")]
             DeviceBuffer::Metal(buf) => {
                  let len_bytes = data.len() * std::mem::size_of::<T>();
+                 println!("[Runtime] Metal CopyToDevice: {} bytes, Buffer Length: {}", len_bytes, buf.length());
                  let void_ptr = buf.contents();
-                 unsafe {
-                     std::ptr::copy_nonoverlapping(data.as_ptr() as *const _, void_ptr as *mut _, len_bytes);
+                 if void_ptr.is_null() {
+                     return Err("Metal buffer contents() is NULL".to_string());
                  }
+                 let dst_slice = unsafe {
+                     std::slice::from_raw_parts_mut(void_ptr as *mut u8, len_bytes)
+                 };
+                 let src_slice = unsafe {
+                     std::slice::from_raw_parts(data.as_ptr() as *const u8, len_bytes)
+                 };
+                 dst_slice.copy_from_slice(src_slice);
                  Ok(())
             }
             _ => Err("Not implemented for this backend".to_string()),
@@ -1179,9 +1225,10 @@ impl RuntimeManager {
         use crate::policy::scheduler::StandardScheduler;
         use crate::core::device::DeviceProfile;
 
-        // 0. Canonicalize Graph
+        // 0. Canonicalize Graph & Optimize for Fusion
         let mut graph = graph.clone();
         crate::policy::transform::canonicalize_graph(&mut graph);
+        crate::core::optimizer::GraphOptimizer::optimize(&mut graph);
 
         // 1. Get Device Profile
         let device = DeviceProfile::from_backend(backend);
@@ -1217,6 +1264,16 @@ impl RuntimeManager {
                 (Some(t), Some(o)) => (t, o),
                 _ => continue, // Skip if not found
             };
+
+            // 0. Handle Input nodes (passthrough external buffers)
+            if let OperatorTopology::Input { op_id, .. } = operator {
+                if let Some(&buf) = input_buffers.get(op_id) {
+                    output_buffers.insert(*op_id, buf);
+                    continue;
+                } else {
+                    return Err(format!("Input node {} missing from external_inputs", op_id));
+                }
+            }
 
             // Resolve output buffer (with alias support)
             let buf_id = self.resolve_buffer_with_alias(
@@ -1258,11 +1315,289 @@ impl RuntimeManager {
                     op_id, layout.num_active_tiles, layout.variant);
             }
             
-            // Note: Actual kernel launch is handled by launch_with_policy
-            // which already integrates with TTGBuilder::from_policy
+            // 4. JIT Compilation
+            let ir = crate::emitter::traits::UnifiedOpIR {
+                op_type: match operator {
+                    OperatorTopology::Gemm { m, n, k, batch, epilogue, .. } => {
+                        crate::emitter::traits::UnifiedOpType::Gemm { 
+                            m: *m, n: *n, k: *k, batch: *batch,
+                            epilogue: epilogue.clone(),
+                        }
+                    },
+                    OperatorTopology::Attention { b, s, h, d, .. } => {
+                        crate::emitter::traits::UnifiedOpType::FusedAttention {
+                            b: *b, s: *s, d: *d, h: *h, dh: *d,
+                            causal: false, // Default
+                        }
+                    },
+                    OperatorTopology::Softmax { axis, .. } => {
+                        crate::emitter::traits::UnifiedOpType::Softmax { 
+                            axis: *axis,
+                            dim_size: 1024, 
+                            stride: 1,      
+                            total_elements: 1024 * 1024 
+                        }
+                    },
+                    OperatorTopology::Conv2d { n, c, h, w, k, r, s, stride, padding, epilogue, .. } => {
+                        crate::emitter::traits::UnifiedOpType::Conv2d {
+                            n: *n as usize, c: *c as usize, h: *h as usize, w: *w as usize, k: *k as usize,
+                            r: *r as usize, s: *s as usize, stride: *stride as usize, pad: *padding as usize,
+                            dilation: 1,
+                            layout: crate::core::config::LayoutPolicy::NHWC,
+                            epilogue: epilogue.clone(),
+                        }
+                    },
+                    OperatorTopology::BatchNorm { n, c, h, w, epsilon, momentum, .. } => {
+                        crate::emitter::traits::UnifiedOpType::BatchNorm {
+                            n: *n, c: *c, h: *h, w: *w, 
+                            epsilon: *epsilon, momentum: *momentum 
+                        }
+                    },
+                    OperatorTopology::Elementwise { kind, n, .. } => {
+                         let op_type = match kind.as_str() {
+                             "Add" => crate::core::op::ElementwiseType::Add,
+                             "Mul" => crate::core::op::ElementwiseType::Mul,
+                             _ => crate::core::op::ElementwiseType::Add, // Default/Fallback
+                         };
+                         crate::emitter::traits::UnifiedOpType::Elementwise { op_type, n: *n }
+                    },
+                    OperatorTopology::BatchNorm { n, c, h, w, epsilon, momentum, .. } => {
+                        crate::emitter::traits::UnifiedOpType::BatchNorm {
+                            n: *n, c: *c, h: *h, w: *w,
+                            epsilon: *epsilon, momentum: *momentum,
+                        }
+                    },
+                    OperatorTopology::GlobalAveragePool { n, c, h, w, .. } => {
+                        crate::emitter::traits::UnifiedOpType::GlobalAveragePool {
+                            n: *n, c: *c, h: *h, w: *w,
+                        }
+                    },
+                    OperatorTopology::Linear { batch, m, n, k, epilogue, .. } => {
+                        crate::emitter::traits::UnifiedOpType::Linear {
+                            batch: *batch, m: *m, n: *n, k: *k,
+                            epilogue: epilogue.clone(),
+                        }
+                    },
+                    _ => continue,
+                },
+                precison: "fp16".to_string(),
+                tiling: match tile_policy {
+                    crate::policy::types::TilePolicy::Gemm { tile_shape, variant, .. } => {
+                        crate::PipelineConfig {
+                            m_tile: tile_shape[0],
+                            n_tile: tile_shape[1],
+                            k_tile: tile_shape[2],
+                            gemm_variant: *variant,
+                            ..Default::default()
+                        }
+                    },
+                    crate::policy::types::TilePolicy::Attention { qk_tile, variant, .. } => {
+                        crate::PipelineConfig {
+                            m_tile: qk_tile.0,
+                            n_tile: qk_tile.1,
+                            k_tile: 64, // Default
+                            attention_variant: *variant,
+                            ..Default::default()
+                        }
+                    },
+                    _ => {
+                        let mut config = crate::PipelineConfig::default();
+                        config.m_tile = 64;
+                        config.n_tile = 64;
+                        config.k_tile = 32;
+                        config
+                    },
+                },
+                conv_magic_strategy: None,
+            };
+
+            use crate::emitter::traits::Emitter;
+            let (source, kernel_name) = match backend {
+                crate::runtime::manager::DeviceBackend::Metal => {
+                    let emitter = crate::emitter::metal::MetalEmitter::detect();
+                    let src = emitter.generate_from_ir(&ir);
+                    let name = match operator {
+                        OperatorTopology::Gemm { .. } => {
+                            match ir.tiling.gemm_variant {
+                                crate::core::config::GemmVariant::Tiled => "gemm_tiled_kernel",
+                                _ => "gemm_metal_kernel",
+                            }
+                        },
+                        OperatorTopology::Attention { .. } => "flash_attention_v2_kernel",
+                        OperatorTopology::Conv2d { .. } => "conv2d_implicit_gemm",
+                        OperatorTopology::BatchNorm { .. } => "batchnorm_forward",
+                        OperatorTopology::Elementwise { .. } => "elementwise_add", // Default name for multi-op kernel
+                        OperatorTopology::Relu { .. } => "elementwise_relu",
+                        OperatorTopology::GlobalAveragePool { .. } => "global_avg_pool_kernel",
+                        OperatorTopology::Linear { .. } => "linear_kernel",
+                        _ => "kernel_main",
+                    };
+                    (src, name)
+                },
+                crate::runtime::manager::DeviceBackend::Cuda => {
+                    let emitter = crate::emitter::cuda::CUDAEmitter::new();
+                    let src = emitter.generate_from_ir(&ir);
+                    let name = match operator {
+                        OperatorTopology::Gemm { .. } => "gemm_mma_kernel",
+                        OperatorTopology::Attention { .. } => "flash_attention_v2_kernel",
+                        _ => "kernel_main",
+                    };
+                    (src, name)
+                },
+                _ => return Err("Unsupported backend for JIT".into()),
+            };
+
+            let kernel_id = self.compile(&source, kernel_name, backend)?;
+
+            // 5. Actual Kernel Launch
+            let mut args = Vec::new();
+            match operator {
+                OperatorTopology::Gemm { .. } => {
+                    let inputs = self.get_op_inputs(op_id, &graph, input_buffers, &output_buffers);
+                    if inputs.len() >= 2 {
+                        args.push(KernelArg::Buffer(inputs[0]));
+                        args.push(KernelArg::Buffer(inputs[1]));
+                    }
+                    args.push(KernelArg::Buffer(buf_id));
+                },
+                OperatorTopology::Attention { d, .. } => {
+                    let inputs = self.get_op_inputs(op_id, &graph, input_buffers, &output_buffers);
+                    if inputs.len() >= 3 {
+                        args.push(KernelArg::Buffer(inputs[0]));
+                        args.push(KernelArg::Buffer(inputs[1]));
+                        args.push(KernelArg::Buffer(inputs[2]));
+                    }
+                    args.push(KernelArg::Buffer(buf_id));
+                    args.push(KernelArg::Float(1.0 / (*d as f32).sqrt()));
+                },
+                OperatorTopology::Conv2d { n, h, w, c, k, r, s, stride, padding, .. } => {
+                    let inputs = self.get_op_inputs(op_id, &graph, input_buffers, &output_buffers);
+                    // Input, Weight
+                    if inputs.len() >= 2 {
+                         args.push(KernelArg::Buffer(inputs[0]));
+                         args.push(KernelArg::Buffer(inputs[1]));
+                    }
+                    // Output
+                    args.push(KernelArg::Buffer(buf_id));
+                    
+                    // Params
+                    let h_out = (h + 2 * padding - 1 * (r - 1) - 1) / stride + 1;
+                    let w_out = (w + 2 * padding - 1 * (s - 1) - 1) / stride + 1;
+                    
+                    let params = MetalConvParams {
+                        batch: *n, h_in: *h, w_in: *w, c_in: *c, k_out: *k,
+                        h_out, w_out, r_sz: *r, s_sz: *s,
+                        stride: *stride, pad: *padding, dilation: 1,
+                    };
+                    // MetalConvParams struct has r_sz, s_sz. In kernel: rs_sz = p.r_sz * p.s_sz?
+                    // Check kernel logic:
+                    // uint rs_sz = p.r_sz * p.s_sz; -> No, p.r_sz should be R? 
+                    // Let's recheck metal.rs logic.
+                    // "uint rs_sz = p.r_sz * p.s_sz;" (L439). So p.r_sz is R.
+                    // Correction:
+                    let params = MetalConvParams {
+                        batch: *n, h_in: *h, w_in: *w, c_in: *c, k_out: *k,
+                        h_out, w_out, r_sz: *r, s_sz: *s,
+                        stride: *stride, pad: *padding, dilation: 1,
+                    };
+
+                    // Serialize struct to bytes
+                    let mut bytes = Vec::new();
+                    let ptr = &params as *const MetalConvParams as *const u8;
+                    let len = std::mem::size_of::<MetalConvParams>();
+                    unsafe {
+                        bytes.extend_from_slice(std::slice::from_raw_parts(ptr, len));
+                    }
+                    args.push(KernelArg::Bytes(bytes));
+                },
+                OperatorTopology::BatchNorm { epsilon, .. } => {
+                    let inputs = self.get_op_inputs(op_id, &graph, input_buffers, &output_buffers);
+                    // Input, Gamma, Beta, Mean, Var
+                    for buf in inputs {
+                        args.push(KernelArg::Buffer(buf));
+                    }
+                    // Output
+                    args.push(KernelArg::Buffer(buf_id));
+                    // Epsilon
+                    args.push(KernelArg::Float(*epsilon));
+                },
+                OperatorTopology::Elementwise { n, .. } | OperatorTopology::Relu { n, .. } => {
+                    let inputs = self.get_op_inputs(op_id, &graph, input_buffers, &output_buffers);
+                    for buf in inputs {
+                        args.push(KernelArg::Buffer(buf));
+                    }
+                    args.push(KernelArg::Buffer(buf_id));
+                    args.push(KernelArg::Int(*n as i32));
+                },
+                OperatorTopology::GlobalAveragePool { .. } => {
+                    let inputs = self.get_op_inputs(op_id, &graph, input_buffers, &output_buffers);
+                    for buf in inputs {
+                        args.push(KernelArg::Buffer(buf));
+                    }
+                    args.push(KernelArg::Buffer(buf_id));
+                },
+                OperatorTopology::Linear { m, n, k, batch, .. } => {
+                    let inputs = self.get_op_inputs(op_id, &graph, input_buffers, &output_buffers);
+                    for buf in inputs {
+                        args.push(KernelArg::Buffer(buf));
+                    }
+                    args.push(KernelArg::Buffer(buf_id));
+                    args.push(KernelArg::Int(*m as i32));
+                    args.push(KernelArg::Int(*n as i32));
+                    args.push(KernelArg::Int(*k as i32));
+                    args.push(KernelArg::Int(*batch as i32));
+                },
+                _ => {}
+            }
+
+            if !args.is_empty() {
+                self.launch_with_policy(
+                    kernel_id,
+                    args,
+                    operator,
+                    tile_policy,
+                    exec_policy,
+                    vec![], // epilogue_args
+                    backend,
+                )?;
+            }
         }
 
         Ok(output_buffers)
+    }
+
+    /// Helper to gather input buffers for an operator based on graph dependencies.
+    fn get_op_inputs(
+        &self,
+        op_id: u64,
+        graph: &crate::policy::types::GraphTopology,
+        external_inputs: &HashMap<u64, BufferId>,
+        internal_outputs: &HashMap<u64, BufferId>,
+    ) -> Vec<BufferId> {
+        // 1. Find all producers for this op
+        let mut producers: Vec<u64> = graph.dependencies.iter()
+            .filter(|(_, consumer)| *consumer == op_id)
+            .map(|(producer, _)| *producer)
+            .collect();
+        
+        // Ensure deterministic order (by producer ID if needed, or by original graph order)
+        producers.sort();
+
+        let mut inputs = Vec::new();
+        for p_id in producers {
+            if let Some(&buf) = internal_outputs.get(&p_id) {
+                inputs.push(buf);
+            }
+        }
+
+        // 2. If no producers, check external inputs (using op_id as key for simplicity)
+        if inputs.is_empty() {
+            if let Some(&buf) = external_inputs.get(&op_id) {
+                 inputs.push(buf);
+            }
+        }
+
+        inputs
     }
 
     /// Resolve buffer with alias support.
@@ -1294,16 +1629,19 @@ impl RuntimeManager {
     fn estimate_output_size(op: &crate::policy::types::OperatorTopology) -> usize {
         use crate::policy::types::OperatorTopology;
         match op {
-            OperatorTopology::Gemm { m, n, .. } => (*m as usize) * (*n as usize) * 4, // fp32
+            OperatorTopology::Gemm { m, n, batch, .. } => (*m as usize) * (*n as usize) * (*batch as usize) * 4, // fp32
             OperatorTopology::Attention { b, s, h, d, .. } => {
                 (*b as usize) * (*h as usize) * (*s as usize) * (*d as usize) * 2 // fp16
             },
             OperatorTopology::Conv2d { n, k, h, w, .. } => {
                 (*n as usize) * (*k as usize) * (*h as usize) * (*w as usize) * 4
             },
-            OperatorTopology::Relu { .. } | OperatorTopology::Elementwise { .. } => {
+            OperatorTopology::Relu { .. } | OperatorTopology::Elementwise { .. } | OperatorTopology::Input { .. } | OperatorTopology::Softmax { .. } | OperatorTopology::BatchNorm { .. } | OperatorTopology::GlobalAveragePool { .. } => {
                 1024 * 1024 // Placeholder 1MB
             },
+            OperatorTopology::Linear { m, n, batch, .. } => {
+                (*m as usize) * (*n as usize) * (*batch as usize) * 4
+            }
         }
     }
 }
@@ -1328,13 +1666,13 @@ mod tests {
                 OperatorTopology::Gemm {
                     op_id: 1,
                     name: "gemm1".into(),
-                    m: 64, n: 64, k: 64,
+                    m: 64, n: 64, k: 64, batch: 1,
                     kind: TopologyKind::Dense,
                 },
                 OperatorTopology::Gemm {
                     op_id: 2,
                     name: "gemm2".into(),
-                    m: 64, n: 64, k: 64,
+                    m: 64, n: 64, k: 64, batch: 1,
                     kind: TopologyKind::Dense,
                 },
             ],
@@ -1366,19 +1704,19 @@ mod tests {
             operators: vec![
                 OperatorTopology::Gemm {
                     op_id: 1, name: "gemm1".into(),
-                    m: 128, n: 128, k: 128, kind: TopologyKind::Dense,
+                    m: 128, n: 128, k: 128, batch: 1, kind: TopologyKind::Dense,
                 },
                 OperatorTopology::Gemm {
                     op_id: 2, name: "gemm2".into(),
-                    m: 128, n: 128, k: 128, kind: TopologyKind::Dense,
+                    m: 128, n: 128, k: 128, batch: 1, kind: TopologyKind::Dense,
                 },
                 OperatorTopology::Gemm {
                     op_id: 3, name: "gemm3".into(),
-                    m: 128, n: 128, k: 128, kind: TopologyKind::Dense,
+                    m: 128, n: 128, k: 128, batch: 1, kind: TopologyKind::Dense,
                 },
                 OperatorTopology::Gemm {
                     op_id: 4, name: "gemm4".into(),
-                    m: 128, n: 128, k: 128, kind: TopologyKind::Dense,
+                    m: 128, n: 128, k: 128, batch: 1, kind: TopologyKind::Dense,
                 },
             ],
             dependencies: vec![(1, 2), (3, 4)], // Two independent chains

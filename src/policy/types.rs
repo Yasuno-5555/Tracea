@@ -28,7 +28,9 @@ pub enum OperatorTopology {
         m: u32,
         n: u32,
         k: u32,
+        batch: u32,
         kind: TopologyKind,
+        epilogue: Vec<crate::core::op::EpilogueOp>,
     },
     Attention {
         op_id: u64,
@@ -44,15 +46,46 @@ pub enum OperatorTopology {
         name: String,
         n: u32, c: u32, h: u32, w: u32,
         k: u32,
+        r: u32, s: u32, stride: u32, padding: u32,
+        epilogue: Vec<crate::core::op::EpilogueOp>, // Added for fusion
     },
     Relu {
         op_id: u64,
         name: String,
+        n: usize,
     },
     Elementwise {
         op_id: u64,
         name: String,
         kind: String, // "Add", "Mul"
+        n: usize,
+    },
+    Input {
+        op_id: u64,
+        name: String,
+    },
+    Softmax {
+        op_id: u64,
+        name: String,
+        axis: i32,
+    },
+    BatchNorm {
+        op_id: u64,
+        name: String,
+        n: usize, c: usize, h: usize, w: usize,
+        epsilon: f32, momentum: f32,
+    },
+    GlobalAveragePool {
+        op_id: u64,
+        name: String,
+        n: usize, c: usize, h: usize, w: usize,
+    },
+    Linear {
+        op_id: u64,
+        name: String,
+        batch: usize,
+        m: usize, n: usize, k: usize, // M=1 for typical inference
+        epilogue: Vec<crate::core::op::EpilogueOp>, // Added for fusion
     },
 }
 
@@ -70,6 +103,11 @@ impl OperatorTopology {
             OperatorTopology::Conv2d { op_id, .. } => *op_id,
             OperatorTopology::Relu { op_id, .. } => *op_id,
             OperatorTopology::Elementwise { op_id, .. } => *op_id,
+            OperatorTopology::Input { op_id, .. } => *op_id,
+            OperatorTopology::Softmax { op_id, .. } => *op_id,
+            OperatorTopology::BatchNorm { op_id, .. } => *op_id,
+            OperatorTopology::GlobalAveragePool { op_id, .. } => *op_id,
+            OperatorTopology::Linear { op_id, .. } => *op_id,
         }
     }
 }
@@ -150,6 +188,9 @@ pub enum TilePolicy {
     Elementwise {
         operator_id: u64,
     },
+    BatchNorm {
+        operator_id: u64,
+    },
 }
 
 impl TilePolicy {
@@ -159,6 +200,7 @@ impl TilePolicy {
             TilePolicy::Attention { operator_id, .. } => *operator_id,
             TilePolicy::Conv { operator_id, .. } => *operator_id,
             TilePolicy::Elementwise { operator_id, .. } => *operator_id,
+            TilePolicy::BatchNorm { operator_id, .. } => *operator_id,
         }
     }
 }

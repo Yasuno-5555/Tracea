@@ -101,18 +101,18 @@ impl ProblemDescriptor {
         }
     }
     
-    pub fn new_conv2d(batch: usize, h: usize, w: usize, c: usize, k: usize, layout: Layout) -> Self {
+    pub fn new_conv2d(batch: usize, h: usize, w: usize, c: usize, k: usize, r: usize, s: usize, layout: Layout) -> Self {
          Self {
             device: Device::default(),
             layer_type: LayerType::Conv2d(layout),
             shape: Shape {
                 m: batch * h * w,
                 n: k,
-                k: c, 
+                k: c * r * s, 
                 batch,
             },
             asm_params: AsmParams::default(),
-            name: format!("Conv2d_B{}_{:?}", batch, layout),
+            name: format!("Conv2d_B{}_H{}x{}_C{}_K{}_R{}x{}_{:?}", batch, h, w, c, k, r, s, layout),
         }
     }
 

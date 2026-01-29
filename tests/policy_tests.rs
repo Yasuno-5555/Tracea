@@ -1,17 +1,20 @@
 use tracea::policy::types::*;
 use tracea::policy::standard::StandardPolicyEngine;
 use tracea::policy::engine::PolicyEngine;
-use tracea::runtime::DeviceBackend;
+use tracea::core::device::BackendType;
 
 #[test]
 fn test_policy_cuda_defaults() {
     let mut engine = StandardPolicyEngine::new();
     let device = DeviceProfile {
-        backend: DeviceBackend::Cuda,
+        backend: BackendType::Cuda,
+        name: "sm_80".to_string(),
         max_threads_per_block: 1024,
-        max_shared_memory: 49152,
-        warp_size: 32,
-        arch_name: "sm_80".to_string(),
+        local_memory_size: 49152,
+        simd_width: 32,
+        has_tensor_cores: true,
+        has_fp16_storage: true,
+        texture_alignment: 512,
     };
     let model = ModelTopology { layer_count: 1 };
     let op = OperatorTopology::Gemm {
@@ -20,6 +23,7 @@ fn test_policy_cuda_defaults() {
         m: 1024,
         n: 1024,
         k: 1024,
+        batch: 1,
         kind: TopologyKind::Dense,
     };
     let history = ExecutionHistory { last_latency_us: None };
@@ -32,11 +36,8 @@ fn test_policy_cuda_defaults() {
 
     let decision = engine.propose(&ctx);
     assert_eq!(decision.tile_policies.len(), 1);
-    // CUDA default: [64, 128, 16] (Corrected from 1 in original test which was 16 in code)
-    // Actually standard.rs says [64, 128, 16]. The test had 1. Logic changed or test was wrong?
-    // standard.rs: [64, 128, 16]
-    // Original test: [64, 128, 1] -> This implies test was out of sync or I misread.
-    // I will use [64, 128, 16] as per standard.rs code I saw.
+    
+    // CUDA default with has_tensor_cores: [64, 128, 16]
     match &decision.tile_policies[0] {
         TilePolicy::Gemm { tile_shape, .. } => {
              assert_eq!(*tile_shape, [64, 128, 16]);
@@ -49,11 +50,14 @@ fn test_policy_cuda_defaults() {
 fn test_policy_metal_defaults() {
     let mut engine = StandardPolicyEngine::new();
     let device = DeviceProfile {
-        backend: DeviceBackend::Metal, 
+        backend: BackendType::Metal, 
+        name: "m1".to_string(),
         max_threads_per_block: 1024,
-        max_shared_memory: 32768,
-        warp_size: 32,
-        arch_name: "m1".to_string(),
+        local_memory_size: 32768,
+        simd_width: 32,
+        has_tensor_cores: true,
+        has_fp16_storage: true,
+        texture_alignment: 256,
     };
     let model = ModelTopology { layer_count: 1 };
     let op = OperatorTopology::Gemm {
@@ -62,6 +66,7 @@ fn test_policy_metal_defaults() {
         m: 1024,
         n: 1024,
         k: 1024,
+        batch: 1,
         kind: TopologyKind::Dense,
     };
     let history = ExecutionHistory { last_latency_us: None };
@@ -74,7 +79,11 @@ fn test_policy_metal_defaults() {
 
     let decision = engine.propose(&ctx);
     assert_eq!(decision.tile_policies.len(), 1);
-    // Metal default: [32, 64, 1]
+    
+    // Metal default with has_tensor_cores && local_mem >= 48k? No, M1 has 32k in this mock.
+    // Standard logic says:
+    // [64, 128, 16] if TC && local_mem >= 48k
+    // [32, 64, 1] if simd_width == 32 (Metal default)
     match &decision.tile_policies[0] {
         TilePolicy::Gemm { tile_shape, .. } => {
              assert_eq!(*tile_shape, [32, 64, 1]);

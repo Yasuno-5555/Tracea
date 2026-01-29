@@ -196,8 +196,84 @@ impl TTGBuilder {
                     l1_map,
                     l2_table,
                     num_active_tiles: num_tiles,
-                    variant: None, // Attention variants are handled via PipelineConfig directly usually?
+                    variant: None,
                 }
+            },
+            (OperatorTopology::Elementwise { .. } | OperatorTopology::Relu { .. } | OperatorTopology::BatchNorm { .. }, _) => {
+                // Parallelize elementwise ops over 1D blocks
+                let total = match op {
+                    OperatorTopology::BatchNorm { n, c, h, w, .. } => (*n * *c * *h * *w) as u32,
+                    OperatorTopology::Relu { n, .. } => *n as u32,
+                    OperatorTopology::Elementwise { n, .. } => *n as u32,
+                    _ => 1024,
+                };
+                
+                let tile_s = 1024; // 1D Tile
+                let grid_s = (total + tile_s - 1) / tile_s;
+                
+                let mut l1_map = Vec::with_capacity(grid_s as usize);
+                let mut l2_table = Vec::with_capacity(grid_s as usize);
+                for i in 0..grid_s {
+                    l1_map.push(i);
+                    l2_table.push(TileMetadata { region_m: i, region_n: 0, k_start: 0, k_end: 0, role: 0 });
+                }
+                TTGLayout {
+                    l1_map, l2_table, num_active_tiles: grid_s, variant: None
+                }
+            },
+            (OperatorTopology::Softmax { .. }, _) => {
+                TTGLayout {
+                    l1_map: vec![0],
+                    l2_table: vec![TileMetadata { region_m: 0, region_n: 0, k_start: 0, k_end: 0, role: 0 }],
+                    num_active_tiles: 1,
+                    variant: None,
+                }
+            },
+            (OperatorTopology::GlobalAveragePool { n: _, c, h: _, w: _, .. }, _) => {
+                // Partition by Channel
+                let mut l1_map = Vec::with_capacity(*c);
+                let mut l2_table = Vec::with_capacity(*c);
+                for i in 0..*c {
+                    l1_map.push(i as u32);
+                    l2_table.push(TileMetadata { region_m: i as u32, region_n: 0, k_start: 0, k_end: 0, role: 0 });
+                }
+                TTGLayout {
+                    l1_map, l2_table, num_active_tiles: *c as u32, variant: None
+                }
+            },
+            (OperatorTopology::Linear { batch, m, n, k, .. }, _) => {
+                // Same as Gemm
+                let mt = 32; let nt = 32;
+                let m_grid = (*m + mt - 1) / mt;
+                let n_grid = (*n + nt - 1) / nt;
+                let num_tiles = m_grid * n_grid * *batch;
+                let mut l1_map = Vec::with_capacity(num_tiles);
+                let mut l2_table = Vec::with_capacity(num_tiles);
+                for b in 0..*batch {
+                    for i in 0..m_grid {
+                        for j in 0..n_grid {
+                            l1_map.push((b * m_grid * n_grid + i * n_grid + j) as u32);
+                            l2_table.push(TileMetadata {
+                                region_m: i as u32,
+                                region_n: j as u32,
+                                k_start: b as u32,
+                                k_end: 0,
+                                role: 0,
+                            });
+                        }
+                    }
+                }
+                TTGLayout {
+                    l1_map, l2_table, num_active_tiles: num_tiles as u32, variant: None
+                }
+            },
+            (OperatorTopology::Conv2d { n, k, h, w, r, s, stride, padding, .. }, _) => {
+                // Implicit GEMM Mapping: M = N*H_out*W_out, N = K
+                let h_out = (*h + 2 * padding - *r) / *stride + 1;
+                let w_out = (*w + 2 * padding - *s) / *stride + 1;
+                let m = (*n as u32) * (h_out as u32) * (w_out as u32);
+                let n_out = *k as u32;
+                Self::from_dense(m, n_out, 32, 64, 64, 32)
             },
             _ => panic!("Mismatching Policy and Operator Topology Types!"),
         }

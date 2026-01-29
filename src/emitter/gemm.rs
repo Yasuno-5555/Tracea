@@ -1,8 +1,8 @@
-use crate::emitter::traits::{UnifiedOpIR, UnifiedOpType};
+use crate::emitter::traits::{UnifiedOpIR, UnifiedOpType, Emitter};
 use crate::runtime::manager::DeviceBackend;
 
 pub fn generate_gemm(ir: &UnifiedOpIR, backend: DeviceBackend) -> String {
-    if let UnifiedOpType::Gemm { m, n, k } = ir.op_type {
+    if let UnifiedOpType::Gemm { m, n, k, .. } = ir.op_type {
         let mt = ir.tiling.m_tile;
         let nt = ir.tiling.n_tile;
         let kt = ir.tiling.k_tile;
@@ -50,7 +50,7 @@ extern "C" __global__ void unified_gemm_kernel(const half* A, const half* B, flo
             }
             DeviceBackend::Metal => {
                 let emitter = crate::emitter::metal::MetalEmitter::detect();
-                emitter.generate_gemm(ir.tiling.clone())
+                emitter.generate_from_ir(ir)
             }
             _ => "// GEMM not yet unified for this backend\n".to_string(),
         }

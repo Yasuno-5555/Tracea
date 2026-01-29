@@ -196,13 +196,13 @@ mod tests {
         // Chain 1: Op 1 -> Op 2
         // Tensor 1 (Op 1 out) used by Op 2.
         let op1 = OperatorTopology::Gemm {
-            op_id: 1, name: "gemm1".into(), m: 102, n: 102, k: 102, kind: TopologyKind::Dense
+            op_id: 1, name: "gemm1".into(), m: 102, n: 102, k: 102, batch: 1, kind: TopologyKind::Dense
         };
         let op2 = OperatorTopology::Relu { op_id: 2, name: "relu1".into() };
 
         // Chain 2: Op 3 -> Op 4 (Disjoint from Chain 1 time-wise if scheduled seq)
         let op3 = OperatorTopology::Gemm {
-            op_id: 3, name: "gemm2".into(), m: 102, n: 102, k: 102, kind: TopologyKind::Dense
+            op_id: 3, name: "gemm2".into(), m: 102, n: 102, k: 102, batch: 1, kind: TopologyKind::Dense
         };
         let op4 = OperatorTopology::Relu { op_id: 4, name: "relu2".into() };
 

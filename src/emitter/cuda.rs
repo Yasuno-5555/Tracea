@@ -361,7 +361,7 @@ impl Emitter for CUDAEmitter {
                 let emitter = FlashAttentionEmitter::new(ir.tiling.clone());
                 emitter.generate_kernel(*h as usize, *dh as usize, *causal)
             }
-            UnifiedOpType::Gemm { m, n, k } => self.generate_gemm(*m, *n, *k, &ir.tiling),
+            UnifiedOpType::Gemm { m, n, k, .. } => self.generate_gemm(*m, *n, *k, &ir.tiling),
             UnifiedOpType::Elementwise { .. } => {
                 panic!("Elementwise Ops should be handled by UniversalEmitter.");
             }
@@ -391,6 +391,15 @@ extern "C" __global__ void matrix_core_kernel(const half* a, const half* b, floa
             }
             UnifiedOpType::LowRankMlp { .. } => {
                 crate::emitter::cuda_low_rank::generate_low_rank_mlp(ir)
+            }
+            UnifiedOpType::Softmax { .. } => {
+                "// CUDA Softmax not yet implemented in Unified Emitter\n".to_string()
+            }
+            UnifiedOpType::BatchNorm { .. } => {
+                "// CUDA BatchNorm not yet implemented in Unified Emitter\n".to_string()
+            }
+            UnifiedOpType::GlobalAveragePool { .. } | UnifiedOpType::Linear { .. } => {
+                "// CUDA GlobalAveragePool/Linear not yet implemented\n".to_string()
             }
         }
     }

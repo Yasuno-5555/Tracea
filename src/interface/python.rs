@@ -10,6 +10,7 @@ use crate::core::config::PipelineConfig;
 use crate::core::config::LayoutPolicy;
 use crate::core::op::EpilogueOp;
 use crate::core::config::SoftmaxGranularity;
+use crate::core::config::{GemmVariant, AttentionVariant};
 use std::collections::HashMap;
 use crate::core::tuning::{tune_kernel, SearchMode, TunableKernel};
 use crate::kernels::gemm::cpu_adapter::{GemmAdapter, GemmProblem};
@@ -119,7 +120,7 @@ impl PyContext {
         Ok(PyDeviceBufferF16 { id, runtime: self.runtime.clone() })
     }
 
-    #[pyo3(signature = (q, k, v, o, b_in, h_in, s_in, d_in, dh_in, causal=false, scale_sqrt=true, m_tile=None, n_tile=None, stages=None, warps=None, softmax_mode=None))]
+    #[pyo3(signature = (q, k, v, o, b_in, h_in, s_in, d_in, dh_in, causal=false, scale_sqrt=true, m_tile=None, n_tile=None, stages=None, warps=None, softmax_mode=None, variant=None))]
     pub fn attention(
         &self,
         q: &Bound<'_, PyAny>,
@@ -134,6 +135,7 @@ impl PyContext {
         stages: Option<u32>,
         warps: Option<u32>,
         softmax_mode: Option<String>,
+        variant: Option<u32>,
     ) -> PyResult<u64> {
         let ctx = self;
         let mut request_ctx = crate::doctor::KernelRequestContext {
@@ -142,8 +144,14 @@ impl PyContext {
             allow_fallback: true,
         };
 
-        let decision = crate::doctor::plan_kernel("fa2", request_ctx);
-        let variant = decision.selected_variant.unwrap_or("fa2_cuda");
+        let decision = if let Some(v_idx) = variant {
+            // If explicit variant is passed, we skip Doctor and just set it in PipelineConfig later
+            crate::doctor::plan_kernel("fa2", request_ctx) // dummy
+        } else {
+            crate::doctor::plan_kernel("fa2", request_ctx)
+        };
+        
+        let variant_str = decision.selected_variant.unwrap_or("fa2_cuda");
 
         let problem = Fa2Problem {
             b: b_in as usize,
@@ -164,6 +172,14 @@ impl PyContext {
                     _ => SoftmaxGranularity::PerTile, // Fallback/Auto
                 };
             }
+            if let Some(v_idx) = variant {
+                c.attention_variant = match v_idx {
+                    2 => AttentionVariant::SimdQK,
+                    3 => AttentionVariant::SimdFull,
+                    4 => AttentionVariant::FlashV2,
+                    _ => AttentionVariant::Naive,
+                };
+            }
             Some(c)
         } else {
             None
@@ -180,7 +196,7 @@ impl PyContext {
                 c
             }
             #[cfg(not(target_os = "macos"))]
-            match variant {
+            match variant_str {
                 "fa2_cuda" => {
                     let adapter = Fa2Adapter::new(Arc::clone(&ctx.runtime), problem);
                     tune_kernel(&adapter, SearchMode::GridSearch)
@@ -259,7 +275,7 @@ impl PyContext {
         Ok(kernel_id.0)
     }
 
-    #[pyo3(signature = (a, b, c, m, n, k, m_tile=None, n_tile=None, k_tile=None, epilogue=None, bias=None, residual=None))]
+    #[pyo3(signature = (a, b, c, m, n, k, m_tile=None, n_tile=None, k_tile=None, epilogue=None, bias=None, residual=None, variant=None))]
     pub fn gemm(
         &self,
         a: &Bound<'_, PyAny>,
@@ -272,31 +288,28 @@ impl PyContext {
         epilogue: Option<String>,
         bias: Option<&Bound<'_, PyAny>>,
         residual: Option<&Bound<'_, PyAny>>,
+        variant: Option<u32>,
     ) -> PyResult<u64> {
         let ctx = self;
         
-        // Planning (Stub for now, use CPU or CUDA based on runtime backend?)
-        // The UniversalEmitter handles backend dispatch? 
-        // No, UniversalEmitter takes a backend enum.
-        // But PyContext holds RuntimeManager which has a backend.
-        // We know it's CUDA or CPU.
-        // For now, assume CUDA for testing.
-        
-        let mut config = PipelineConfig::new(2, m_tile.unwrap_or(64), n_tile.unwrap_or(64), k_tile.unwrap_or(16));
-        config.m_tile = m_tile.unwrap_or(64);
-        config.n_tile = n_tile.unwrap_or(64);
-        config.k_tile = k_tile.unwrap_or(16);
+        let mut config = PipelineConfig::new(2, m_tile.unwrap_or(64), n_tile.unwrap_or(64), k_tile.unwrap_or(32));
+        config.gemm_variant = match variant.unwrap_or(0) {
+            1 => GemmVariant::Tiled,
+            2 => GemmVariant::Simd,
+            _ => GemmVariant::Naive,
+        };
         
         let (epilogue_ops, epilogue_args) = parse_epilogue(epilogue, bias, residual)?;
         config.epilogue = epilogue_ops;
 
         #[cfg(target_os = "macos")]
-        let (backend, kernel_name) = (DeviceBackend::Metal, "gemm_metal_kernel");
+        let (backend, kernel_name) = (DeviceBackend::Metal, if config.gemm_variant == GemmVariant::Tiled { "gemm_tiled_kernel" } else { "gemm_metal_kernel" });
         #[cfg(not(target_os = "macos"))]
-        let (backend, kernel_name) = (DeviceBackend::Cuda, "gemm_mma_kernel");
+        let (backend, kernel_name) = (DeviceBackend::Cuda, if config.gemm_variant == GemmVariant::Simd { "gemm_mma_kernel" } else { "gemm_cublas_fallback" });
+        
         let emitter = UniversalEmitter::new(backend);
         let ir = UnifiedOpIR {
-            op_type: UnifiedOpType::Gemm { m, n, k },
+            op_type: UnifiedOpType::Gemm { m, n, k, batch: 1 },
             precison: "f16".to_string(),
             tiling: config.clone(),
             conv_magic_strategy: None,
@@ -306,7 +319,11 @@ impl PyContext {
         
         let kernel_id = match ctx.runtime.compile(&source, kernel_name, backend) {
             Ok(id) => id,
-            Err(e) => return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("GEMM Compile Error: {}", e))),
+            Err(e) => {
+                eprintln!("[Tracea Gemm] ❌ Compile Error: {}", e);
+                eprintln!("[Tracea Gemm] 📜 Generated Source:\n{}\n", source);
+                return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("GEMM Compile Error: {}", e)));
+            }
         };
 
         // C = A * B
@@ -650,15 +667,23 @@ impl PyContext {
 
     /// Execute a graph using Policy-driven scheduling.
     /// This is the Python entry point for the "Universal Compute OS".
+    /// Executes a graph of operators
     /// 
     /// # Arguments
     /// * `graph_json` - JSON string representing GraphTopology
+    /// * `input_buffers` - Dict mapping buffer_id to Buffer object (PyDeviceBufferF32/F16)
     /// * `backend` - Target backend: "cuda", "metal", or "cpu"
     /// 
     /// # Returns
-    /// Dict mapping op_id to output buffer id
-    #[pyo3(signature = (graph_json, backend="metal"))]
-    pub fn execute_graph(&self, py: Python<'_>, graph_json: String, backend: &str) -> PyResult<pyo3::Py<pyo3::types::PyDict>> {
+    /// Dict mapping buffer_id to output buffer id
+    #[pyo3(signature = (graph_json, input_buffers, backend="metal"))]
+    pub fn execute_graph(
+        &self, 
+        py: Python<'_>, 
+        graph_json: String, 
+        input_buffers: HashMap<u64, PyObject>,
+        backend: &str
+    ) -> PyResult<pyo3::Py<pyo3::types::PyDict>> {
         use crate::policy::types::GraphTopology;
         use std::collections::HashMap;
         
@@ -675,13 +700,25 @@ impl PyContext {
             _ => return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("Unknown backend: {}", backend))),
         };
         
+        // Resolve input buffers
+        let mut resolved_inputs = HashMap::new();
+        for (id, obj) in input_buffers {
+            let buf_id = if let Ok(b) = obj.extract::<PyDeviceBufferF32>(py) {
+                b.id
+            } else if let Ok(b) = obj.extract::<PyDeviceBufferF16>(py) {
+                b.id
+            } else {
+                return Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(format!("Input {} is not a Tracea DeviceBuffer", id)));
+            };
+            resolved_inputs.insert(id, buf_id);
+        }
+        
         // Execute graph
-        let input_buffers: HashMap<u64, crate::runtime::manager::BufferId> = HashMap::new();
-        let output_buffers = self.runtime.execute_graph(&graph, &input_buffers, backend)
+        let output_buffers = self.runtime.execute_graph(&graph, &resolved_inputs, backend)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))?;
         
         // Convert to Python dict
-        let dict = pyo3::types::PyDict::new(py);
+        let dict = pyo3::types::PyDict::new_bound(py);
         for (op_id, buf_id) in output_buffers {
             dict.set_item(op_id, buf_id.0)?;
         }

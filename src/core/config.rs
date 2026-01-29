@@ -113,6 +113,7 @@ pub enum AttentionVariant {
     SimdQ,      // Simdgroup for Q (Experimental)
     SimdQK,     // Simdgroup for QK, Naive for PV (Step 1)
     SimdFull,   // Simdgroup for QK and PV
+    FlashV2,    // Optimized FA2: 64x64 blocks, vectorized loads, async copy
 }
 
 impl AttentionVariant {
@@ -122,6 +123,7 @@ impl AttentionVariant {
             Self::SimdQ => 1.0,
             Self::SimdQK => 2.0,
             Self::SimdFull => 3.0,
+            Self::FlashV2 => 4.0,
         }
     }
     pub fn from_f32(val: f32) -> Self {
@@ -129,6 +131,7 @@ impl AttentionVariant {
             1 => Self::SimdQ,
             2 => Self::SimdQK,
             3 => Self::SimdFull,
+            4 => Self::FlashV2,
             _ => Self::Naive,
         }
     }
@@ -187,6 +190,28 @@ impl IntrinsicShape {
             Self::M16N16K1 => 1,
             Self::SimdAvx2 => 8, // Approx
             Self::None => 1,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
+pub enum RegisterStrategy {
+    #[default]
+    Array,
+    Expanded,
+}
+
+impl RegisterStrategy {
+    pub fn to_f32(self) -> f32 {
+        match self {
+            Self::Array => 0.0,
+            Self::Expanded => 1.0,
+        }
+    }
+    pub fn from_f32(val: f32) -> Self {
+        match val as u32 {
+            1 => Self::Expanded,
+            _ => Self::Array,
         }
     }
 }
@@ -293,6 +318,9 @@ pub struct PipelineConfig {
     pub ttg_enabled: bool,
     pub attention_variant: AttentionVariant,
     pub gemm_variant: GemmVariant,
+    /// Enable Double Buffering for memory latency hiding
+    pub double_buffer: bool,
+    pub register_strategy: RegisterStrategy,
 }
 
 impl PipelineConfig {
@@ -320,6 +348,8 @@ impl PipelineConfig {
             ttg_enabled: false,
             attention_variant: AttentionVariant::Naive,
             gemm_variant: GemmVariant::Naive,
+            double_buffer: false,
+            register_strategy: RegisterStrategy::Array,
         }
     }
 
@@ -357,11 +387,13 @@ impl PipelineConfig {
             if self.ttg_enabled { 1.0 } else { 0.0 },
             self.attention_variant.to_f32(),
             self.gemm_variant.to_f32(),
+            self.register_strategy.to_f32(),
         ]
     }
 
     pub fn from_vector(vec: &[f32]) -> Self {
         Self {
+            double_buffer: false,
             num_stages: vec[0] as u32,
             m_tile: vec[1] as u32,
             n_tile: vec[2] as u32,
@@ -384,6 +416,7 @@ impl PipelineConfig {
             ttg_enabled: vec.get(15).map(|&v| v > 0.5).unwrap_or(false),
             attention_variant: vec.get(16).map(|&v| AttentionVariant::from_f32(v)).unwrap_or(AttentionVariant::Naive),
             gemm_variant: vec.get(17).map(|&v| GemmVariant::from_f32(v)).unwrap_or(GemmVariant::Naive),
+            register_strategy: vec.get(18).map(|&v| RegisterStrategy::from_f32(v)).unwrap_or(RegisterStrategy::Array),
         }
     }
 

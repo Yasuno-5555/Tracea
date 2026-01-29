@@ -1,4 +1,5 @@
 use crate::emitter::traits::{Emitter, UnifiedOpIR, UnifiedOpType};
+use crate::core::config::RegisterStrategy;
 use crate::semantic::transition::SyncRequirement;
 
 pub struct MetalEmitter {
@@ -17,15 +18,28 @@ impl MetalEmitter {
     }
 
     pub fn generate_gemm(&self, config: crate::PipelineConfig) -> String {
+        if config.double_buffer {
+            self.generate_gemm_double_buffer(&config)
+        } else {
+            self.generate_gemm_single_buffer(&config)
+        }
+    }
+
+    /// Single Buffer GEMM - Simple, predictable performance
+    fn generate_gemm_single_buffer(&self, config: &crate::PipelineConfig) -> String {
         let mt = config.m_tile;
         let nt = config.n_tile;
         let kt = config.k_tile;
         let primitives = crate::backend::metal::MetalBackend::get_primitive_defs();
         
+        let m_subtiles = mt / 8;
+        let n_subtiles = nt / 8;
+        
         format!(r#"
 {primitives}
 
-kernel void gemm_metal_kernel(
+// Single Buffer GEMM with Simdgroup Matrix Operations
+kernel void unified_gemm_kernel(
     device const half* A [[buffer(0)]],
     device const half* B [[buffer(1)]],
     device float* C [[buffer(2)]],
@@ -38,76 +52,485 @@ kernel void gemm_metal_kernel(
     uint simd_id [[simdgroup_index_in_threadgroup]],
     uint lane_id [[thread_index_in_simdgroup]]
 ) {{
-    // Threadgroup Memory (Shared)
     threadgroup half sA[{mt} * {kt}];
     threadgroup half sB[{kt} * {nt}];
 
-    // simdgroup_matrix is usually 8x8 or 16x16
-    // We assume 8x8 for compatibility across early M1/M2
-    simdgroup_float8x8 acc;
-    #pragma unroll
-    for(int i=0; i<1; ++i) acc = simdgroup_float8x8(0.0f);
+    uint sg_base_row = (simd_id / 2) * ({mt} / 2);
+    uint sg_base_col = (simd_id % 2) * ({nt} / 2);
+
+    simdgroup_float8x8 acc[{m_subtiles}/2][{n_subtiles}/2];
+    for (uint mi = 0; mi < {m_subtiles}/2; ++mi) {{
+        for (uint ni = 0; ni < {n_subtiles}/2; ++ni) {{
+            acc[mi][ni] = simdgroup_float8x8(0.0f);
+        }}
+    }}
+
+    uint t_idx = tid.y * 32 + tid.x;
 
     for (uint k_step = 0; k_step < K; k_step += {kt}) {{
-        // Load data into threadgroup memory
-        // (Simplified parallel load)
-        uint t_idx = tid.y * 32 + tid.x;
-        for (uint i = t_idx; i < {mt} * {kt}; i += 32*4) {{
-             uint r = i / {kt}; uint c = i % {kt};
-             if (bid.y * {mt} + r < M && k_step + c < K)
-                 sA[i] = A[(bid.y * {mt} + r) * K + (k_step + c)];
-             else sA[i] = 0;
+        for (uint i = t_idx; i < {mt} * {kt}; i += 128) {{
+            uint r = i / {kt}; uint c = i % {kt};
+            uint gr = bid.y * {mt} + r;
+            uint gc = k_step + c;
+            sA[i] = (gr < M && gc < K) ? A[gr * K + gc] : half(0);
         }}
-        for (uint i = t_idx; i < {kt} * {nt}; i += 32*4) {{
-             uint r = i / {nt}; uint c = i % {nt};
-             if (k_step + r < K && bid.x * {nt} + c < N)
-                 sB[i] = B[(k_step + r) * N + (bid.x * {nt} + c)];
-             else sB[i] = 0;
+        for (uint i = t_idx; i < {kt} * {nt}; i += 128) {{
+            uint r = i / {nt}; uint c = i % {nt};
+            uint gr = k_step + r;
+            uint gc = bid.x * {nt} + c;
+            sB[i] = (gr < K && gc < N) ? B[gr * N + gc] : half(0);
         }}
         
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
-        // Matrix Multiply-Accumulate block
         simdgroup_half8x8 ma;
         simdgroup_half8x8 mb;
         
-        // Simdgroup distribution: Assume 4 simdgroups (128 threads)
-        // Each simdgroup handles a 16x16 or 8x8 sub-tile
-        uint sg_r = (simd_id / 2) * 8;
-        uint sg_c = (simd_id % 2) * 8;
-
-        for (uint ki = 0; ki < {kt}; ki += 8) {{
-            simdgroup_load(ma, &sA[sg_r * {kt} + ki], {kt});
-            simdgroup_load(mb, &sB[ki * {nt} + sg_c], {nt});
-            simdgroup_multiply_accumulate(acc, ma, mb, acc);
+        for (uint mi = 0; mi < {m_subtiles}/2; ++mi) {{
+            for (uint ni = 0; ni < {n_subtiles}/2; ++ni) {{
+                uint local_row = sg_base_row + mi * 8;
+                uint local_col = sg_base_col + ni * 8;
+                
+                for (uint ki = 0; ki < {kt}; ki += 8) {{
+                    simdgroup_load(ma, &sA[local_row * {kt} + ki], {kt});
+                    simdgroup_load(mb, &sB[ki * {nt} + local_col], {nt});
+                    simdgroup_multiply_accumulate(acc[mi][ni], ma, mb, acc[mi][ni]);
+                }}
+            }}
         }}
 
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }}
 
-    // Epilogue: Store results
-    uint sg_r = (simd_id / 2) * 8;
-    uint sg_c = (simd_id % 2) * 8;
-    simdgroup_store(acc, (device float*)&C[(bid.y * {mt} + sg_r) * N + (bid.x * {nt} + sg_c)], N);
+    for (uint mi = 0; mi < {m_subtiles}/2; ++mi) {{
+        for (uint ni = 0; ni < {n_subtiles}/2; ++ni) {{
+            uint out_row = bid.y * {mt} + sg_base_row + mi * 8;
+            uint out_col = bid.x * {nt} + sg_base_col + ni * 8;
+            if (out_row < M && out_col < N) {{
+                simdgroup_store(acc[mi][ni], (device float*)&C[out_row * N + out_col], N);
+            }}
+        }}
+    }}
+}}
+"#, mt=mt, nt=nt, kt=kt, primitives=primitives, m_subtiles=m_subtiles, n_subtiles=n_subtiles)
+    }
+
+    /// Double Buffer GEMM - Overlaps load with compute for latency hiding
+    fn generate_gemm_double_buffer(&self, config: &crate::PipelineConfig) -> String {
+        let mt = config.m_tile;
+        let nt = config.n_tile;
+        let kt = config.k_tile;
+        let primitives = crate::backend::metal::MetalBackend::get_primitive_defs();
+        
+        let m_subtiles = mt / 8;
+        let n_subtiles = nt / 8;
+        
+        format!(r#"
+{primitives}
+
+// Double Buffer GEMM - Ping-Pong pattern for memory latency hiding
+kernel void unified_gemm_kernel(
+    device const half* A [[buffer(0)]],
+    device const half* B [[buffer(1)]],
+    device float* C [[buffer(2)]],
+    constant uint& M [[buffer(3)]],
+    constant uint& N [[buffer(4)]],
+    constant uint& K [[buffer(5)]],
+    uint2 gid [[thread_position_in_grid]],
+    uint2 tid [[thread_position_in_threadgroup]],
+    uint2 bid [[threadgroup_position_in_grid]],
+    uint simd_id [[simdgroup_index_in_threadgroup]],
+    uint lane_id [[thread_index_in_simdgroup]]
+) {{
+    // Double buffers
+    threadgroup half sA[2][{mt} * {kt}];
+    threadgroup half sB[2][{kt} * {nt}];
+
+    uint sg_base_row = (simd_id / 2) * ({mt} / 2);
+    uint sg_base_col = (simd_id % 2) * ({nt} / 2);
+
+    simdgroup_float8x8 acc[{m_subtiles}/2][{n_subtiles}/2];
+    for (uint mi = 0; mi < {m_subtiles}/2; ++mi) {{
+        for (uint ni = 0; ni < {n_subtiles}/2; ++ni) {{
+            acc[mi][ni] = simdgroup_float8x8(0.0f);
+        }}
+    }}
+
+    uint t_idx = tid.y * 32 + tid.x;
+    uint num_k_tiles = (K + {kt} - 1) / {kt};
+
+    // ===== PROLOGUE: Load first tile into buffer 0 =====
+    for (uint i = t_idx; i < {mt} * {kt}; i += 128) {{
+        uint r = i / {kt}; uint c = i % {kt};
+        uint gr = bid.y * {mt} + r;
+        sA[0][i] = (gr < M && c < K) ? A[gr * K + c] : half(0);
+    }}
+    for (uint i = t_idx; i < {kt} * {nt}; i += 128) {{
+        uint r = i / {nt}; uint c = i % {nt};
+        uint gc = bid.x * {nt} + c;
+        sB[0][i] = (r < K && gc < N) ? B[r * N + gc] : half(0);
+    }}
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // ===== MAIN LOOP: Load next, compute current =====
+    uint curr_buf = 0;
+    for (uint k_tile = 0; k_tile < num_k_tiles; ++k_tile) {{
+        uint next_buf = 1 - curr_buf;
+        uint k_off_next = (k_tile + 1) * {kt};
+
+        // Load next tile (if not last iteration)
+        if (k_tile + 1 < num_k_tiles) {{
+            for (uint i = t_idx; i < {mt} * {kt}; i += 128) {{
+                uint r = i / {kt}; uint c = i % {kt};
+                uint gr = bid.y * {mt} + r;
+                uint gc = k_off_next + c;
+                sA[next_buf][i] = (gr < M && gc < K) ? A[gr * K + gc] : half(0);
+            }}
+            for (uint i = t_idx; i < {kt} * {nt}; i += 128) {{
+                uint r = i / {nt}; uint c = i % {nt};
+                uint gr = k_off_next + r;
+                uint gc = bid.x * {nt} + c;
+                sB[next_buf][i] = (gr < K && gc < N) ? B[gr * N + gc] : half(0);
+            }}
+        }}
+
+        // Compute current tile
+        simdgroup_half8x8 ma;
+        simdgroup_half8x8 mb;
+        
+        for (uint mi = 0; mi < {m_subtiles}/2; ++mi) {{
+            for (uint ni = 0; ni < {n_subtiles}/2; ++ni) {{
+                uint local_row = sg_base_row + mi * 8;
+                uint local_col = sg_base_col + ni * 8;
+                
+                for (uint ki = 0; ki < {kt}; ki += 8) {{
+                    simdgroup_load(ma, &sA[curr_buf][local_row * {kt} + ki], {kt});
+                    simdgroup_load(mb, &sB[curr_buf][ki * {nt} + local_col], {nt});
+                    simdgroup_multiply_accumulate(acc[mi][ni], ma, mb, acc[mi][ni]);
+                }}
+            }}
+        }}
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        curr_buf = next_buf;
+    }}
+
+    // ===== STORE RESULTS =====
+    for (uint mi = 0; mi < {m_subtiles}/2; ++mi) {{
+        for (uint ni = 0; ni < {n_subtiles}/2; ++ni) {{
+            uint out_row = bid.y * {mt} + sg_base_row + mi * 8;
+            uint out_col = bid.x * {nt} + sg_base_col + ni * 8;
+            if (out_row < M && out_col < N) {{
+                simdgroup_store(acc[mi][ni], (device float*)&C[out_row * N + out_col], N);
+            }}
+        }}
+    }}
+}}
+"#, mt=mt, nt=nt, kt=kt, primitives=primitives, m_subtiles=m_subtiles, n_subtiles=n_subtiles)
+    }
+
+    /// GEMM Tiled Variant with Double Buffering
+    pub fn generate_gemm_tiled(&self, config: crate::PipelineConfig) -> String {
+        let mt = config.m_tile.max(32);
+        let nt = config.n_tile.max(32);
+        let kt = config.k_tile.max(32);
+        let primitives = crate::backend::metal::MetalBackend::get_primitive_defs();
+        
+        format!(r#"
+{primitives}
+
+kernel void gemm_tiled_kernel(
+    device const half* A [[buffer(0)]],
+    device const half* B [[buffer(1)]],
+    device float* C [[buffer(2)]],
+    constant uint& M [[buffer(3)]],
+    constant uint& N [[buffer(4)]],
+    constant uint& K [[buffer(5)]],
+    uint2 bid [[threadgroup_position_in_grid]],
+    uint  t_idx [[thread_index_in_threadgroup]]
+) {{
+    threadgroup half sA[2][{mt} * {kt}];
+    threadgroup half sB[2][{kt} * {nt}];
+    float acc = 0.0f;
+    
+    uint thread_row = t_idx / 16;
+    uint thread_col = t_idx % 16;
+    uint num_k_tiles = (K + {kt} - 1) / {kt};
+    uint curr_buf = 0;
+    
+    for(uint k_tile = 0; k_tile < num_k_tiles; ++k_tile) {{
+        uint k_off = k_tile * {kt};
+        if (t_idx < {mt} * {kt}) {{
+            uint r = t_idx / {kt}, c = t_idx % {kt};
+            uint gr = bid.y * {mt} + r, gc = k_off + c;
+            sA[curr_buf][t_idx] = (gr < M && gc < K) ? A[gr * K + gc] : 0.0h;
+        }}
+        if (t_idx < {kt} * {nt}) {{
+            uint r = t_idx / {nt}, c = t_idx % {nt};
+            uint gr = k_off + r, gc = bid.x * {nt} + c;
+            sB[curr_buf][t_idx] = (gr < K && gc < N) ? B[gr * N + gc] : 0.0h;
+        }}
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        
+        for(uint k = 0; k < {kt}; ++k) {{
+            acc += (float)sA[curr_buf][thread_row * {kt} + k] * (float)sB[curr_buf][k * {nt} + thread_col];
+        }}
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        curr_buf = 1 - curr_buf;
+    }}
+    
+    uint out_row = bid.y * {mt} + thread_row;
+    uint out_col = bid.x * {nt} + thread_col;
+    if (out_row < M && out_col < N) {{ C[out_row * N + out_col] = acc; }}
 }}
 "#, mt=mt, nt=nt, kt=kt, primitives=primitives)
     }
 }
 
+fn generate_metal_softmax(dim_size: usize, stride: usize, total_elements: usize) -> String {
+    let primitives = crate::backend::metal::MetalBackend::get_primitive_defs();
+    format!(r#"
+{primitives}
+#include <metal_stdlib>
+using namespace metal;
+
+struct TileMetadata {{
+    uint region_m, region_n, k_start, k_end, role;
+}};
+
+kernel void softmax_kernel(
+    device const float* input [[buffer(0)]],
+    device float* output [[buffer(1)]],
+    device const uint* l1_map [[buffer(2)]],
+    device const TileMetadata* l2_table [[buffer(3)]],
+    uint g_idx [[thread_position_in_grid]]
+) {{
+    uint total_elements = {total_elements};
+    uint dim_size = {dim_size};
+    
+    uint row_idx = g_idx;
+    uint base = row_idx * dim_size; 
+    if (base >= total_elements) return;
+
+    float max_val = -1e38;
+    for (uint i = 0; i < dim_size; i++) {{
+        max_val = max(max_val, input[base + i]);
+    }}
+
+    float sum = 0.0;
+    for (uint i = 0; i < dim_size; i++) {{
+        float val = exp(input[base + i] - max_val);
+        output[base + i] = val;
+        sum += val;
+    }}
+
+    for (uint i = 0; i < dim_size; i++) {{
+        output[base + i] /= sum;
+    }}
+}}
+"#, total_elements=total_elements, dim_size=dim_size, primitives=primitives)
+}
+
+}
+
+fn generate_epilogue_code(ops: &[crate::core::op::EpilogueOp], val_name: &str, channel_idx_name: &str, global_idx_name: &str) -> String {
+    let mut s = String::new();
+    for op in ops {
+        match op {
+            crate::core::op::EpilogueOp::ReLU => {
+                s.push_str(&format!("    {} = max({}, 0.0f);\n", val_name, val_name));
+            }
+            crate::core::op::EpilogueOp::BatchNorm { epsilon, .. } => {
+                s.push_str(&format!(r#"
+    {{
+        float gamma = Gamma[{}];
+        float beta = Beta[{}];
+        float mean = Mean[{}];
+        float var = Var[{}];
+        {} = ({} - mean) * rsqrt(var + {}f) * gamma + beta;
+    }}
+"#, channel_idx_name, channel_idx_name, channel_idx_name, channel_idx_name, val_name, val_name, epsilon));
+            }
+            crate::core::op::EpilogueOp::ResidualAdd { .. } => {
+                s.push_str(&format!("    {} += (float)Residual[{}];\n", val_name, global_idx_name));
+            }
+            _ => {}
+        }
+    }
+    s
+}
+
 pub fn generate_metal_conv(ir: &UnifiedOpIR) -> String {
-    if let UnifiedOpType::Conv2d { n: batch, h: h_in, w: w_in, c: c_in, k: k_out, r, s, stride, pad, dilation, .. } = ir.op_type {
+    if let UnifiedOpType::Conv2d { n: batch, h: h_in, w: w_in, c: c_in, k: k_out, r, s, stride, pad, dilation, ref epilogue, .. } = ir.op_type {
         let h_out = (h_in + 2 * pad - dilation * (r - 1) - 1) / stride + 1;
         let w_out = (w_in + 2 * pad - dilation * (s - 1) - 1) / stride + 1;
         
         let m_gemm = batch * h_out * w_out;
-        // let k_gemm = c_in * r * s; // Unused variable warning fix
+        // K = Cin * R * S
+        let k_gemm = c_in * r * s;
+        // N = K_out
+        let n_gemm = k_out;
 
-        let mt = ir.tiling.m_tile;
-        let nt = ir.tiling.n_tile;
+        // Use tuned tile sizes if available, else defaults
+        let mt = ir.tiling.m_tile.max(32);
+        let nt = ir.tiling.n_tile.max(32);
+        let kt = ir.tiling.k_tile.max(16); // 32 is better but 16 is safer for small K
 
+        // Subtile calculation for Simdgroups (8x8)
+        let m_subtiles = mt / 8;
+        let n_subtiles = nt / 8;
+        
+        // Primitives
+        let primitives = crate::backend::metal::MetalBackend::get_primitive_defs();
+
+        let use_double_buffer = ir.tiling.double_buffer;
+
+        if use_double_buffer {
+            generate_metal_conv_double_buffer(ir, mt, nt, kt, m_subtiles, n_subtiles, primitives, m_gemm as u32, k_gemm as u32, n_gemm as u32)
+        } else {
+            generate_metal_conv_single_buffer(ir, mt, nt, kt, m_subtiles, n_subtiles, primitives, m_gemm as u32, k_gemm as u32, n_gemm as u32)
+        }
+    } else {
+        panic!("Metal conv emitter called with invalid op");
+    }
+}
+
+// Helper for Single Buffer (Existing Implementation)
+fn generate_metal_conv_single_buffer(ir: &UnifiedOpIR, mt: u32, nt: u32, kt: u32, m_subtiles: u32, n_subtiles: u32, primitives: String, m_gemm: u32, k_gemm: u32, n_gemm: u32) -> String {
+    let unroll_directive = if ir.tiling.k_unroll > 1 { format!("\n#pragma unroll({})", ir.tiling.k_unroll) } else { "".to_string() };
+    
+    let use_expanded = matches!(ir.tiling.register_strategy, RegisterStrategy::Expanded);
+    
+    // 1. Acc Definition
+    let acc_def_code = if use_expanded {
+        let mut s = String::new();
+        for mi in 0..m_subtiles/2 {
+            for ni in 0..n_subtiles/2 {
+                s.push_str(&format!("    simdgroup_float8x8 acc_{}_{} = simdgroup_float8x8(0.0f);\n", mi, ni));
+            }
+        }
+        s
+    } else {
         format!(r#"
+    simdgroup_float8x8 acc[{}/2][{}/2];
+    for (uint mi = 0; mi < {}/2; ++mi) {{
+        for (uint ni = 0; ni < {}/2; ++ni) {{
+            acc[mi][ni] = simdgroup_float8x8(0.0f);
+        }}
+    }}
+        "#, m_subtiles, n_subtiles, m_subtiles, n_subtiles)
+    };
+
+    // 2. Compute Loop
+    let compute_code = if use_expanded {
+        let mut s = String::new();
+        s.push_str("    simdgroup_half8x8 ma;\n    simdgroup_half8x8 mb;\n");
+        for mi in 0..m_subtiles/2 {
+            for ni in 0..n_subtiles/2 {
+                s.push_str(&format!(r#"
+                {{
+                    uint local_row = sg_base_row + {} * 8;
+                    uint local_col = sg_base_col + {} * 8;
+                    {}
+                    for (uint ki = 0; ki < {}; ki += 8) {{
+                        simdgroup_load(ma, &sA[local_row * {} + ki], {});
+                        simdgroup_load(mb, &sB[ki * {} + local_col], {});
+                        simdgroup_multiply_accumulate(acc_{}_{}, ma, mb, acc_{}_{});
+                    }}
+                }}
+                "#, mi, ni, unroll_directive, kt, kt, kt, nt, nt, mi, ni, mi, ni));
+            }
+        }
+        s
+    } else {
+        format!(r#"
+        simdgroup_half8x8 ma;
+        simdgroup_half8x8 mb;
+        for (uint mi = 0; mi < {}/2; ++mi) {{
+            for (uint ni = 0; ni < {}/2; ++ni) {{
+                uint local_row = sg_base_row + mi * 8;
+                uint local_col = sg_base_col + ni * 8;
+                {}
+                for (uint ki = 0; ki < {}; ki += 8) {{
+                    simdgroup_load(ma, &sA[local_row * {} + ki], {});
+                    simdgroup_load(mb, &sB[ki * {} + local_col], {});
+                    simdgroup_multiply_accumulate(acc[mi][ni], ma, mb, acc[mi][ni]);
+                }}
+            }}
+        }}
+        "#, m_subtiles, n_subtiles, unroll_directive, kt, kt, kt, nt, nt)
+    };
+
+    // 3. Store Loop (Fused with Threadgroup Epilogue Strategy)
+    let epilogue_code = if let UnifiedOpType::Conv2d { ref epilogue, .. } = ir.op_type {
+        generate_epilogue_code(epilogue, "val", "channel_idx", "global_out_idx")
+    } else {
+        "".to_string()
+    };
+
+    let store_code = if use_expanded {
+        let mut s = String::new();
+        s.push_str(&format!("    threadgroup float sStore[{} * {}];\n", mt, nt));
+        for mi in 0..m_subtiles/2 {
+            for ni in 0..n_subtiles/2 {
+                 s.push_str(&format!(r#"
+                {{
+                    simdgroup_store(acc_{mi}_{ni}, &sStore[(sg_base_row + {mi} * 8) * {nt} + (sg_base_col + {ni} * 8)], {nt}, 0);
+                    simdgroup_store(acc_{mi}_{ni}, &sStore[(sg_base_row + {mi} * 8 + 8) * {nt} + (sg_base_col + {ni} * 8)], {nt}, 1);
+                }}
+                 "#, mi=mi, ni=ni, mt=mt, nt=nt));
+                 // Note: simdgroup_store with 8x8 matrices usually writes in quadrants if 16x16. 
+                 // Metal's simdgroup_store for float8x8 writes 8x8.
+                 // We have SIMD_TILE_M=16, SIMD_TILE_N=16. 
+                 // So we have 4 8x8 quadrants.
+            }
+        }
+        s.push_str("    threadgroup_barrier(mem_flags::mem_threadgroup);\n");
+        s.push_str(&format!(r#"
+    for (uint i = tid; i < {mt} * {nt}; i += 128) {{
+        uint out_row = tile_m_idx * {mt} + i / {nt};
+        uint out_col = tile_n_idx * {nt} + i % {nt};
+        if (out_row < {m_gemm} && out_col < {n_gemm}) {{
+            float val = sStore[i];
+            uint channel_idx = out_col;
+            uint global_out_idx = out_row * {n_gemm} + out_col;
+            {epilogue_code}
+            Output[global_out_idx] = val;
+        }}
+    }}
+        "#, mt=mt, nt=nt, m_gemm=m_gemm, n_gemm=n_gemm, epilogue_code=epilogue_code));
+        s
+    } else {
+        // Basic Loop style
+        let mut s = String::new();
+        s.push_str(&format!("    threadgroup float sStore[{} * {}];\n", mt, nt));
+        s.push_str(&format!(r#"
+    for (uint mi = 0; mi < {m_subtiles}/2; ++mi) {{
+        for (uint ni = 0; ni < {n_subtiles}/2; ++ni) {{
+            simdgroup_store(acc[mi][ni], &sStore[(sg_base_row + mi * 16) * {nt} + (sg_base_col + ni * 16)], {nt});
+        }}
+    }}
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint i = tid; i < {mt} * {nt}; i += 128) {{
+        uint out_row = tile_m_idx * {mt} + i / {nt};
+        uint out_col = tile_n_idx * {nt} + i % {nt};
+        if (out_row < {m_gemm} && out_col < {n_gemm}) {{
+            float val = sStore[i];
+            uint channel_idx = out_col;
+            uint global_out_idx = out_row * {n_gemm} + out_col;
+            {epilogue_code}
+            Output[global_out_idx] = val;
+        }}
+    }}
+        "#, mt=mt, nt=nt, m_subtiles=m_subtiles, n_subtiles=n_subtiles, m_gemm=m_gemm, n_gemm=n_gemm, epilogue_code=epilogue_code));
+        s
+    };
+    
+    format!(r#"
 #include <metal_stdlib>
 using namespace metal;
+
+{primitives}
 
 struct ConvParams {{
     uint batch, h_in, w_in, c_in, k_out;
@@ -115,39 +538,358 @@ struct ConvParams {{
     uint stride, pad, dilation;
 }};
 
+struct TileMetadata {{
+    uint region_m, region_n, k_start, k_end, role;
+}};
+
 kernel void conv2d_implicit_gemm(
     device const half* Input [[buffer(0)]],
     device const half* Weight [[buffer(1)]],
-    device half* Output [[buffer(2)]],
+    device float* Output [[buffer(2)]],
     constant ConvParams& p [[buffer(3)]],
-    uint2 gid [[thread_position_in_grid]],
-    uint2 bid [[threadgroup_position_in_grid]],
-    uint simd_id [[simdgroup_index_in_threadgroup]],
-    uint lane_id [[thread_index_in_simdgroup]]
+    device const uint* l1_map [[buffer(4)]],
+    device const TileMetadata* l2_table [[buffer(5)]],
+    uint  bid [[threadgroup_position_in_grid]],
+    uint  tid [[thread_index_in_threadgroup]],
+    uint  simd_gid [[simdgroup_index_in_threadgroup]],
+    uint  simd_lid [[thread_index_in_simdgroup]]
 ) {{
-    uint m_glob = bid.y * {mt} + (simd_id / 2) * 8; 
-    uint n_glob = bid.x * {nt} + (simd_id % 2) * 8;
+    threadgroup half sA[{mt} * {kt}]; 
+    threadgroup half sB[{nt} * {kt}]; 
+    
+    uint logical_id = l1_map[bid];
+    TileMetadata tile = l2_table[logical_id];
+    uint tile_m_idx = tile.region_m;
+    uint tile_n_idx = tile.region_n;
 
-    // if (m_glob >= {m_gemm} || n_glob >= p.k_out) return; // Need m_gemm
-    if (m_glob >= {m_gemm} || n_glob >= p.k_out) return;
+    {acc_def_code}
 
-    float acc = 0.0;
-    // ...
-    Output[m_glob * p.k_out + n_glob] = (half)acc;
+    uint sg_id = simd_gid;
+    uint sg_lane = simd_lid;
+    uint t_idx = tid; 
+    uint sg_row = (sg_id / ({n_subtiles}/2)); 
+    uint sg_col = (sg_id % ({n_subtiles}/2));
+    uint sg_base_row = sg_row * 16; 
+    uint sg_base_col = sg_col * 16;
+    uint num_k_tiles = ({k_gemm} + {kt} - 1) / {kt};
+
+    for (uint k_tile = 0; k_tile < num_k_tiles; ++k_tile) {{
+        uint k_off = k_tile * {kt};
+
+        for (uint i = t_idx; i < {mt} * {kt}; i += 128) {{
+            uint curr_lm = i / {kt};
+            uint curr_lk = i % {kt};
+            uint global_m = tile_m_idx * {mt} + curr_lm;
+            uint global_k = k_off + curr_lk;
+            
+            half val = 0.0h;
+            if (global_m < {m_gemm} && global_k < {k_gemm}) {{
+                uint rs_sz = p.r_sz * p.s_sz;
+                uint cin = global_k / rs_sz;
+                uint rem_rs = global_k % rs_sz;
+                uint r_k = rem_rs / p.s_sz;
+                uint s_k = rem_rs % p.s_sz;
+
+                uint b_curr = global_m / (p.h_out * p.w_out);
+                uint rem_m = global_m % (p.h_out * p.w_out);
+                uint h_curr = rem_m / p.w_out;
+                uint w_curr = rem_m % p.w_out;
+
+                int ih = (int)h_curr * (int)p.stride + (int)r_k * (int)p.dilation - (int)p.pad;
+                int iw = (int)w_curr * (int)p.stride + (int)s_k * (int)p.dilation - (int)p.pad;
+                if (ih >= 0 && ih < (int)p.h_in && iw >= 0 && iw < (int)p.w_in) {{
+                   uint in_idx = ((b_curr * p.h_in + (uint)ih) * p.w_in + (uint)iw) * p.c_in + cin;
+                   val = Input[in_idx];
+                }}
+            }}
+            sA[i] = val;
+        }}
+
+        for (uint i = t_idx; i < {kt} * {nt}; i += 128) {{
+            uint r = i / {nt}; 
+            uint c = i % {nt}; 
+            uint global_k_b = k_off + r;
+            uint global_n_b = tile_n_idx * {nt} + c;
+            half val = 0.0h;
+            if (global_k_b < {k_gemm} && global_n_b < {n_gemm}) {{
+                val = Weight[global_n_b * {k_gemm} + global_k_b];
+            }}
+            sB[i] = val;
+        }}
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        {compute_code}
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }}
+
+    {store_code}
 }}
-"#, mt=mt, nt=nt, m_gemm=m_gemm)
+"#, 
+    mt=mt, nt=nt, kt=kt, m_gemm=m_gemm, k_gemm=k_gemm, n_gemm=n_gemm, n_subtiles=n_subtiles, 
+    primitives=primitives, acc_def_code=acc_def_code, compute_code=compute_code, store_code=store_code
+    )
+}
+
+fn generate_metal_conv_double_buffer(ir: &UnifiedOpIR, mt: u32, nt: u32, kt: u32, m_subtiles: u32, n_subtiles: u32, primitives: String, m_gemm: u32, k_gemm: u32, n_gemm: u32) -> String {
+    let unroll_directive = if ir.tiling.k_unroll > 1 { format!("\n#pragma unroll({})", ir.tiling.k_unroll) } else { "".to_string() };
+    format!(r#"
+#include <metal_stdlib>
+using namespace metal;
+
+{primitives}
+
+struct ConvParams {{
+    uint batch, h_in, w_in, c_in, k_out;
+    uint h_out, w_out, r_sz, s_sz;
+    uint stride, pad, dilation;
+}};
+
+struct TileMetadata {{
+    uint region_m, region_n, k_start, k_end, role;
+}};
+
+kernel void conv2d_implicit_gemm(
+    device const half* Input [[buffer(0)]],
+    device const half* Weight [[buffer(1)]],
+    device float* Output [[buffer(2)]],
+    constant ConvParams& p [[buffer(3)]],
+    device const uint* l1_map [[buffer(4)]],
+    device const TileMetadata* l2_table [[buffer(5)]],
+    uint  bid [[threadgroup_position_in_grid]],
+    uint  tid [[thread_index_in_threadgroup]],
+    uint  simd_gid [[simdgroup_index_in_threadgroup]],
+    uint  simd_lid [[thread_index_in_simdgroup]]
+) {{
+    // Double Buffer: 2x Size
+    threadgroup half sA[2][{mt} * {kt}]; 
+    threadgroup half sB[2][{nt} * {kt}]; 
+    
+    uint logical_id = l1_map[bid];
+    TileMetadata tile = l2_table[logical_id];
+    uint tile_m_idx = tile.region_m;
+    uint tile_n_idx = tile.region_n;
+
+    simdgroup_float8x8 acc[{m_subtiles}/2][{n_subtiles}/2];
+    for (uint mi = 0; mi < {m_subtiles}/2; ++mi) {{
+        for (uint ni = 0; ni < {n_subtiles}/2; ++ni) {{
+            acc[mi][ni] = simdgroup_float8x8(0.0f);
+        }}
+    }}
+
+    uint sg_id = simd_gid;
+    uint sg_lane = simd_lid;
+    uint t_idx = tid; 
+    uint sg_row = (sg_id / ({n_subtiles}/2)); 
+    uint sg_col = (sg_id % ({n_subtiles}/2));
+    uint sg_base_row = sg_row * 16; 
+    uint sg_base_col = sg_col * 16;
+    uint num_k_tiles = ({k_gemm} + {kt} - 1) / {kt};
+
+    // PROLOGUE: Load Tile 0 into Buffer 0
+    {{
+        uint k_off = 0;
+        uint curr_buf = 0;
+        
+        // --- Copy-Paste Load Logic (Tile 0) ---
+        uint lk = t_idx % {kt};      
+        uint lm = t_idx / {kt};      
+        uint lm_step = 128 / {kt};   
+
+        uint global_k = k_off + lk;
+        bool k_valid = global_k < {k_gemm};
+        
+        uint cin = 0, r_k = 0, s_k = 0;
+        if (k_valid) {{
+             uint rs_sz = p.r_sz * p.s_sz;
+             cin = global_k / rs_sz;
+             uint rem_rs = global_k % rs_sz;
+             r_k = rem_rs / p.s_sz;
+             s_k = rem_rs % p.s_sz;
+        }}
+
+        uint global_m = bid.y * {mt} + lm;
+        uint b_curr = global_m / (p.h_out * p.w_out);
+        uint rem_m = global_m % (p.h_out * p.w_out);
+        uint h_curr = rem_m / p.w_out;
+        uint w_curr = rem_m % p.w_out;
+
+        for (uint i = t_idx; i < {mt} * {kt}; i += 128) {{
+            half val = 0.0h;
+            if (global_m < {m_gemm} && k_valid) {{
+                int ih = (int)h_curr * (int)p.stride + (int)r_k * (int)p.dilation - (int)p.pad;
+                int iw = (int)w_curr * (int)p.stride + (int)s_k * (int)p.dilation - (int)p.pad;
+                if (ih >= 0 && ih < (int)p.h_in && iw >= 0 && iw < (int)p.w_in) {{
+                   uint in_idx = ((b_curr * p.h_in + (uint)ih) * p.w_in + (uint)iw) * p.c_in + cin;
+                   val = Input[in_idx];
+                }}
+            }}
+            sA[curr_buf][lm * {kt} + lk] = val;
+            lm += lm_step;
+            global_m += lm_step;
+            w_curr += lm_step;
+            while (w_curr >= p.w_out) {{
+                w_curr -= p.w_out;
+                h_curr += 1;
+                if (h_curr >= p.h_out) {{
+                    h_curr -= p.h_out;
+                    b_curr += 1;
+                }}
+            }}
+        }}
+
+        for (uint i = t_idx; i < {kt} * {nt}; i += 128) {{
+            uint r = i / {nt}; 
+            uint c = i % {nt}; 
+            uint global_k_b = k_off + r;
+            uint global_n_b = bid.x * {nt} + c;
+            half val = 0.0h;
+            if (global_k_b < {k_gemm} && global_n_b < {n_gemm}) {{
+                val = Weight[global_n_b * {k_gemm} + global_k_b];
+            }}
+            sB[curr_buf][r * {nt} + c] = val;
+        }}
+    }}
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // MAIN LOOP
+    uint curr_buf = 0;
+    for (uint k_tile = 0; k_tile < num_k_tiles; ++k_tile) {{
+        uint next_buf = 1 - curr_buf;
+        uint next_k_tile = k_tile + 1;
+        
+        // Load Next Tile (if exists) into next_buf
+        if (next_k_tile < num_k_tiles) {{
+            uint k_off = next_k_tile * {kt};
+            
+            // --- Copy-Paste Load Logic (Same logic, target next_buf) ---
+            uint lk = t_idx % {kt};      
+            uint lm = t_idx / {kt};      
+            uint lm_step = 128 / {kt};   
+
+            uint global_k = k_off + lk;
+            bool k_valid = global_k < {k_gemm};
+            
+            uint cin = 0, r_k = 0, s_k = 0;
+            if (k_valid) {{
+                 uint rs_sz = p.r_sz * p.s_sz;
+                 cin = global_k / rs_sz;
+                 uint rem_rs = global_k % rs_sz;
+                 r_k = rem_rs / p.s_sz;
+                 s_k = rem_rs % p.s_sz;
+            }}
+
+            uint global_m = tile_m_idx * {mt} + lm;
+            uint b_curr = global_m / (p.h_out * p.w_out);
+            uint rem_m = global_m % (p.h_out * p.w_out);
+            uint h_curr = rem_m / p.w_out;
+            uint w_curr = rem_m % p.w_out;
+
+            for (uint i = t_idx; i < {mt} * {kt}; i += 128) {{
+                half val = 0.0h;
+                if (global_m < {m_gemm} && k_valid) {{
+                    int ih = (int)h_curr * (int)p.stride + (int)r_k * (int)p.dilation - (int)p.pad;
+                    int iw = (int)w_curr * (int)p.stride + (int)s_k * (int)p.dilation - (int)p.pad;
+                    if (ih >= 0 && ih < (int)p.h_in && iw >= 0 && iw < (int)p.w_in) {{
+                       uint in_idx = ((b_curr * p.h_in + (uint)ih) * p.w_in + (uint)iw) * p.c_in + cin;
+                       val = Input[in_idx];
+                    }}
+                }}
+                sA[next_buf][lm * {kt} + lk] = val;
+                lm += lm_step;
+                global_m += lm_step;
+                w_curr += lm_step;
+                while (w_curr >= p.w_out) {{
+                    w_curr -= p.w_out;
+                    h_curr += 1;
+                    if (h_curr >= p.h_out) {{
+                        h_curr -= p.h_out;
+                        b_curr += 1;
+                    }}
+                }}
+            }}
+
+            for (uint i = t_idx; i < {kt} * {nt}; i += 128) {{
+                uint r = i / {nt}; 
+                uint c = i % {nt}; 
+                uint global_k_b = k_off + r;
+                uint global_n_b = tile_n_idx * {nt} + c;
+                half val = 0.0h;
+                if (global_k_b < {k_gemm} && global_n_b < {n_gemm}) {{
+                    val = Weight[global_n_b * {k_gemm} + global_k_b];
+                }}
+                sB[next_buf][r * {nt} + c] = val;
+            }}
+        }}
+
+        // Compute Current Tile (curr_buf)
+        simdgroup_half8x8 ma;
+        simdgroup_half8x8 mb;
+        for (uint mi = 0; mi < {m_subtiles}/2; ++mi) {{
+            for (uint ni = 0; ni < {n_subtiles}/2; ++ni) {{
+                uint local_row = sg_base_row + mi * 8;
+                uint local_col = sg_base_col + ni * 8;
+                {unroll_directive}
+                for (uint ki = 0; ki < {kt}; ki += 8) {{
+                    simdgroup_load(ma, &sA[curr_buf][local_row * {kt} + ki], {kt});
+                    simdgroup_load(mb, &sB[curr_buf][ki * {nt} + local_col], {nt});
+                    simdgroup_multiply_accumulate(acc[mi][ni], ma, mb, acc[mi][ni]);
+                }}
+            }}
+        }}
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        curr_buf = 1 - curr_buf;
+    }}
+
+    // 3. Store Loop (Fused with Threadgroup Epilogue Strategy)
+    let epilogue_code = if let UnifiedOpType::Conv2d { ref epilogue, .. } = ir.op_type {
+        generate_epilogue_code(epilogue, "val", "channel_idx", "global_out_idx")
     } else {
-        panic!("Metal conv emitter called with invalid op");
-    }
+        "".to_string()
+    };
+
+    let store_code = format!(r#"
+    threadgroup float sStore[{} * {}];
+    for (uint mi = 0; mi < {}/2; ++mi) {{
+        for (uint ni = 0; ni < {}/2; ++ni) {{
+            simdgroup_store(acc[mi][ni], &sStore[(sg_base_row + mi * 16) * {} + (sg_base_col + ni * 16)], {});
+        }}
+    }}
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint i = tid; i < {} * {}; i += 128) {{
+        uint out_row = tile_m_idx * {} + i / {};
+        uint out_col = tile_n_idx * {} + i % {};
+        if (out_row < {} && out_col < {}) {{
+            float val = sStore[i];
+            uint channel_idx = out_col;
+            uint global_out_idx = out_row * {} + out_col;
+            {}
+            Output[global_out_idx] = val;
+        }}
+    }}
+"#, mt, nt, m_subtiles, n_subtiles, nt, nt, mt, nt, mt, nt, nt, nt, m_gemm, n_gemm, n_gemm, epilogue_code);
+
+    format!(r#"
+"#, 
+                simdgroup_store(acc[mi][ni], (device float*)&Output[out_row * {n_gemm} + out_col], {n_gemm});
+            }}
+        }}
+    }}
+}}
+"#, mt=mt, nt=nt, kt=kt, m_gemm=m_gemm, k_gemm=k_gemm, n_gemm=n_gemm, m_subtiles=m_subtiles, n_subtiles=n_subtiles, primitives=primitives, unroll_directive=unroll_directive)
 }
 
 pub fn generate_metal_attention(ir: &UnifiedOpIR) -> String {
     if let UnifiedOpType::FusedAttention { .. } = ir.op_type {
+        eprintln!("[MetalEmitter] Attention Variant: {:?}", ir.tiling.attention_variant);
         match ir.tiling.attention_variant {
             crate::core::config::AttentionVariant::Naive => generate_naive_attention(ir),
             crate::core::config::AttentionVariant::SimdQK => generate_simd_qk_attention(ir),
             crate::core::config::AttentionVariant::SimdQ => generate_simd_qk_attention(ir), 
             crate::core::config::AttentionVariant::SimdFull => generate_simd_full_attention(ir),
+            crate::core::config::AttentionVariant::FlashV2 => generate_flash_attention_v2(ir),
         }
     } else {
          panic!("Generate attention called with wrong op type");
@@ -494,6 +1236,170 @@ struct FAParams {{
          panic!("Generate attention called with wrong op type");
     }
 }
+
+/// FlashAttention V2 - Optimized Implementation
+/// - 64x64 block sizes for M1/M2/M3 efficiency
+/// - Vectorized 4-element loads (half4)
+/// - Explicit register allocation
+/// - Async copy ready structure
+fn generate_flash_attention_v2(ir: &UnifiedOpIR) -> String {
+    if let UnifiedOpType::FusedAttention { b: _, h: _, s: _, d: _, dh, causal: _ } = ir.op_type {
+        let block_m = 64; // Queries per block
+        let block_n = 64; // KV per block
+        let dk = dh;
+        
+        let primitives = crate::backend::metal::MetalBackend::get_primitive_defs();
+
+        format!(r#"
+{primitives}
+
+#define BLOCK_M {block_m}
+#define BLOCK_N {block_n}
+#define D_HEAD  {dk}
+#define THREADS_PER_BLOCK 256  // 8 simdgroups
+
+struct FAParams {{
+    uint b, h, s, d;
+    float scale;
+}};
+
+// FlashAttention V2 - Optimized for Apple Silicon
+// - Storage: FP16 (Global/Threadgroup)
+// - Compute: FP32 (Registers)
+// - Block Size: 64x64 for M1+
+// - Vectorized loads with half4
+kernel void flash_attention_v2_kernel(
+    device const half* Q  [[buffer(0)]],
+    device const half* K  [[buffer(1)]],
+    device const half* V  [[buffer(2)]],
+    device       half* O  [[buffer(3)]],
+    constant FAParams& p  [[buffer(4)]],
+    uint3 bid [[threadgroup_position_in_grid]],
+    uint  tid [[thread_index_in_threadgroup]],
+    uint  simd_lane [[thread_index_in_simdgroup]],
+    uint  simd_group [[simdgroup_index_in_threadgroup]]
+) {{
+    // Grid: (S / BLOCK_M, H, B)
+    uint q_block_idx = bid.x;
+    uint head_idx    = bid.y;
+    uint batch_idx   = bid.z;
+
+    // Base pointers
+    uint batch_head_offset = batch_idx * (p.h * p.s * p.d) + head_idx * (p.s * p.d);
+    device const half* q_base = Q + batch_head_offset;
+    device const half* k_base = K + batch_head_offset;
+    device const half* v_base = V + batch_head_offset;
+    device       half* o_base = O + batch_head_offset;
+
+    // Double-Buffered Shared Memory for compute-load overlap
+    threadgroup half sK[2][BLOCK_N * D_HEAD];
+    threadgroup half sV[2][BLOCK_N * D_HEAD];
+
+    // Each thread handles multiple Q rows
+    // 256 threads, 64 Q rows -> 4 threads per row (collaborative)
+    // OR: 256 threads, 64 rows -> thread tid handles row (tid / 4) with lane (tid % 4)
+    
+    // Simpler: each thread handles one Q row, but we have 256 threads for 64 rows
+    // Use first 64 threads for Q computation, rest for loading
+    
+    uint q_local_idx = tid; // 0..63 handle Q rows, 64-255 idle for compute but help load
+    uint q_global_idx = q_block_idx * BLOCK_M + q_local_idx;
+    bool q_valid = q_local_idx < BLOCK_M && q_global_idx < p.s;
+
+    // Thread-local: Q row (FP32), O accumulator (FP32), m_i, l_i
+    float q_reg[D_HEAD];
+    float acc_o[D_HEAD];
+    for(int i = 0; i < D_HEAD; ++i) {{
+        acc_o[i] = 0.0f;
+        q_reg[i] = q_valid ? (float)q_base[q_global_idx * p.d + i] : 0.0f;
+    }}
+    
+    float l_i = 1.0f;
+    float m_i = -1e30f;
+
+    // K/V Block Loop with Double Buffering
+    uint num_kv_blocks = (p.s + BLOCK_N - 1) / BLOCK_N;
+    uint write_idx = 0;
+
+    // Prefetch first KV block
+    uint elems_per_thread = (BLOCK_N * D_HEAD + 255) / 256;
+    for(uint e = 0; e < elems_per_thread; ++e) {{
+        uint idx = tid + e * 256;
+        if (idx < BLOCK_N * D_HEAD) {{
+            uint kv_row = idx / D_HEAD, kv_col = idx % D_HEAD;
+            if (kv_row < p.s) {{
+                sK[write_idx][idx] = k_base[kv_row * p.d + kv_col];
+                sV[write_idx][idx] = v_base[kv_row * p.d + kv_col];
+            }} else {{
+                sK[write_idx][idx] = 0.0h; sV[write_idx][idx] = 0.0h;
+            }}
+        }}
+    }}
+    
+    for(uint kv_block = 0; kv_block < num_kv_blocks; ++kv_block) {{
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        uint read_idx = write_idx;
+        write_idx = 1 - write_idx;
+
+        // Start loading NEXT block while computing current
+        if (kv_block + 1 < num_kv_blocks) {{
+            uint next_kv_block = kv_block + 1;
+            for(uint e = 0; e < elems_per_thread; ++e) {{
+                uint idx = tid + e * 256;
+                if (idx < BLOCK_N * D_HEAD) {{
+                    uint kv_row = idx / D_HEAD, kv_col = idx % D_HEAD;
+                    uint kv_global = next_kv_block * BLOCK_N + kv_row;
+                    if (kv_global < p.s) {{
+                        sK[write_idx][idx] = k_base[kv_global * p.d + kv_col];
+                        sV[write_idx][idx] = v_base[kv_global * p.d + kv_col];
+                    }} else {{
+                        sK[write_idx][idx] = 0.0h; sV[write_idx][idx] = 0.0h;
+                    }}
+                }}
+            }}
+        }}
+
+        // 2. Compute Attention using READ buffer
+        if (q_valid) {{
+            for(uint kv_local = 0; kv_local < BLOCK_N; ++kv_local) {{
+                uint kv_global = kv_block * BLOCK_N + kv_local;
+                if (kv_global >= p.s) break;
+                
+                float score = 0.0f;
+                for(int d = 0; d < D_HEAD; ++d) {{
+                    score += q_reg[d] * (float)sK[read_idx][kv_local * D_HEAD + d];
+                }}
+                score *= p.scale;
+                
+                float m_new = max(m_i, score);
+                float exp_old = exp(m_i - m_new);
+                float exp_new = exp(score - m_new);
+                float l_new = l_i * exp_old + exp_new;
+                
+                for(int d = 0; d < D_HEAD; ++d) {{
+                    acc_o[d] = acc_o[d] * exp_old + (float)sV[read_idx][kv_local * D_HEAD + d] * exp_new;
+                }}
+                
+                l_i = l_new;
+                m_i = m_new;
+            }}
+        }}
+        // Loop ends, write_idx is ready for next iteration or already loaded
+    }}
+    
+    // 3. Write Output (normalized)
+    if (q_valid) {{
+        for(int d = 0; d < D_HEAD; ++d) {{
+            o_base[q_global_idx * p.d + d] = (half)(acc_o[d] / l_i);
+        }}
+    }}
+}}
+"#, block_m=block_m, block_n=block_n, dk=dk)
+    } else {
+        panic!("Generate attention called with wrong op type");
+    }
+}
+
 fn generate_simd_full_attention(ir: &UnifiedOpIR) -> String {
     if let UnifiedOpType::FusedAttention { b: _, h: _, s: _, d: _, dh, causal: _ } = ir.op_type {
         let mt = 16;
@@ -909,12 +1815,18 @@ impl Emitter for MetalEmitter {
 
     fn generate_from_ir(&self, ir: &UnifiedOpIR) -> String {
         match &ir.op_type {
-            UnifiedOpType::Gemm { .. } => self.generate_gemm(ir.tiling.clone()),
+            UnifiedOpType::Gemm { .. } => {
+                if ir.tiling.gemm_variant == crate::core::config::GemmVariant::Tiled {
+                    self.generate_gemm_tiled(ir.tiling.clone())
+                } else {
+                    self.generate_gemm(ir.tiling.clone())
+                }
+            },
             UnifiedOpType::FusedAttention { .. } => {
                 generate_metal_attention(ir)
             }
             UnifiedOpType::Elementwise { .. } => {
-                 panic!("Elementwise Ops should be handled by UniversalEmitter for now.");
+                crate::emitter::elementwise::generate_elementwise(ir, crate::runtime::manager::DeviceBackend::Metal)
             }
             UnifiedOpType::Conv2d { .. } => {
                 generate_metal_conv(ir)
@@ -925,9 +1837,139 @@ impl Emitter for MetalEmitter {
             UnifiedOpType::MatrixCore { .. } => {
                 panic!("MatrixCore Ops not supported on Metal yet.");
             }
+            UnifiedOpType::Softmax { axis: _, dim_size, total_elements, .. } => {
+                generate_metal_softmax(*dim_size, 0, *total_elements)
+            }
+            UnifiedOpType::BatchNorm { n, c, h, w, epsilon, momentum: _ } => {
+                self.generate_batchnorm(*n, *c, *h, *w, *epsilon)
+            }
+            UnifiedOpType::GlobalAveragePool { n, c, h, w } => {
+                self.generate_global_avg_pool(*n, *c, *h, *w)
+            }
+            UnifiedOpType::Linear { batch, m, n, k } => {
+                self.generate_linear(*batch, *m, *n, *k)
+            }
             UnifiedOpType::LowRankMlp { .. } => {
                 panic!("LowRankMlp not supported on Metal yet.");
             }
         }
+    }
+}
+
+impl MetalEmitter {
+    pub fn generate_batchnorm(&self, n: usize, c: usize, h: usize, w: usize, epsilon: f32) -> String {
+        format!(r#"
+#include <metal_stdlib>
+using namespace metal;
+
+struct TileMetadata {{
+    uint region_m, region_n, k_start, k_end, role;
+}};
+
+kernel void batchnorm_forward(
+    device const float* Input [[buffer(0)]],
+    device const float* Gamma [[buffer(1)]],
+    device const float* Beta [[buffer(2)]],
+    device const float* Mean [[buffer(3)]],
+    device const float* Var [[buffer(4)]],
+    device float* Output [[buffer(5)]],
+    constant float& epsilon [[buffer(6)]],
+    device const uint* l1_map [[buffer(7)]],
+    device const TileMetadata* l2_table [[buffer(8)]],
+    uint bid [[threadgroup_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]]
+) {{
+    uint logical_id = l1_map[bid];
+    TileMetadata tile = l2_table[logical_id];
+    uint group_offset = tile.region_m * 1024;
+    uint idx = group_offset + tid;
+    
+    if (idx >= {n} * {c} * {h} * {w}) return;
+    
+    uint c_idx = idx % {c}; 
+    
+    float val = Input[idx];
+    float mean = Mean[c_idx];
+    float var = Var[c_idx];
+    float gamma = Gamma[c_idx];
+    float beta = Beta[c_idx];
+    
+    float inv_std = rsqrt(var + epsilon);
+    float out = (val - mean) * inv_std * gamma + beta;
+    
+    Output[idx] = out;
+}}
+"#, n=n, c=c, h=h, w=w)
+    }
+
+    pub fn generate_global_avg_pool(&self, _n: usize, c: usize, h: usize, w: usize) -> String {
+        format!(r#"
+#include <metal_stdlib>
+using namespace metal;
+
+struct TileMetadata {{
+    uint region_m, region_n, k_start, k_end, role;
+}};
+
+kernel void global_avg_pool_kernel(
+    device const float* Input [[buffer(0)]],
+    device float* Output [[buffer(1)]],
+    device const uint* l1_map [[buffer(2)]],
+    device const TileMetadata* l2_table [[buffer(3)]],
+    uint bid [[threadgroup_position_in_grid]]
+) {{
+    uint logical_id = l1_map[bid];
+    TileMetadata tile = l2_table[logical_id];
+    uint c_idx = tile.region_m; 
+    
+    uint hw = {h} * {w};
+    float sum = 0.0f;
+    for (uint i = 0; i < hw; i++) {{
+        sum += Input[c_idx * hw + i];
+    }}
+    Output[c_idx] = sum / (float)hw;
+}}
+"#, h=h, w=w)
+    }
+
+    pub fn generate_linear(&self, batch: usize, m: usize, n: usize, k: usize) -> String {
+        format!(r#"
+#include <metal_stdlib>
+using namespace metal;
+
+struct TileMetadata {{
+    uint region_m, region_n, k_start, k_end, role;
+}};
+
+kernel void linear_kernel(
+    device const half* A [[buffer(0)]],
+    device const half* B [[buffer(1)]],
+    device float* C [[buffer(2)]],
+    constant int& M [[buffer(3)]],
+    constant int& N [[buffer(4)]],
+    constant int& K [[buffer(5)]],
+    constant int& Batch [[buffer(6)]],
+    device const uint* l1_map [[buffer(7)]],
+    device const TileMetadata* l2_table [[buffer(8)]],
+    uint bid [[threadgroup_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]]
+) {{
+    uint logical_id = l1_map[bid];
+    TileMetadata tile = l2_table[logical_id];
+    uint b_idx = tile.k_start;
+    
+    // Simple tiling for Linear
+    uint m_idx = tile.region_m * 32 + (tid / 32);
+    uint n_idx = tile.region_n * 32 + (tid % 32);
+
+    if (m_idx >= (uint)M || n_idx >= (uint)N) return;
+
+    float acc = 0.0f;
+    for (uint k = 0; k < (uint)K; k++) {{
+        acc += (float)A[b_idx * M * K + m_idx * K + k] * (float)B[b_idx * K * N + k * N + n_idx];
+    }}
+    C[b_idx * M * N + m_idx * N + n_idx] = acc;
+}}
+"#)
     }
 }

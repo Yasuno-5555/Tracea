@@ -1,5 +1,5 @@
 use crate::core::config::{PipelineConfig, MagicNumberStrategy};
-use crate::runtime::{RuntimeManager, BufferId, KernelArg};
+use crate::runtime::{RuntimeManager, BufferId, KernelArg, DeviceBackend};
 use crate::runtime::ttg_builder::TTGBuilder; 
 use std::sync::Arc;
 
@@ -83,7 +83,9 @@ pub struct NVRTCBenchmark {
 
 impl NVRTCBenchmark {
     pub fn new(runtime: Arc<RuntimeManager>, m: u32, n: u32, k: u32) -> Self {
-        let backend = if crate::emitter::rocm_driver::RocmDriverApi::get().is_some() {
+        let backend = if cfg!(target_os = "macos") {
+            crate::runtime::DeviceBackend::Metal
+        } else if crate::emitter::rocm_driver::RocmDriverApi::get().is_some() {
             crate::runtime::DeviceBackend::Rocm
         } else {
             crate::runtime::DeviceBackend::Cuda
@@ -108,7 +110,7 @@ impl NVRTCBenchmark {
 
     fn get_launch_params(&self, config: &PipelineConfig) -> ((u32, u32, u32), (u32, u32, u32), u32) {
         let (mt, nt, kt) = (config.m_tile, config.n_tile, config.k_tile);
-        let grid_dim = ((self.m + mt - 1) / mt, (self.n + nt - 1) / nt, 1);
+        let grid_dim = ((self.n + nt - 1) / nt, (self.m + mt - 1) / mt, 1);
         
         let (block_dim, smem_size) = match self.backend {
             crate::runtime::DeviceBackend::Cuda => {
@@ -130,7 +132,9 @@ impl NVRTCBenchmark {
             }
             crate::runtime::DeviceBackend::Metal => {
                 let block = (128, 1, 1); 
-                let smem = (mt * kt + kt * nt) * 2;
+                // Buffer multiplier: 1 for single, 2 for double buffer
+                let buf_mult = if config.double_buffer { 2 } else { 1 };
+                let smem = buf_mult * (mt * kt + kt * nt) * 2;
                 (block, smem)
             }
             crate::runtime::DeviceBackend::Cpu => {
@@ -146,7 +150,7 @@ impl MicroBenchmark for NVRTCBenchmark {
     fn validate_config(&self, config: &PipelineConfig) -> bool {
          let emitter = crate::emitter::universal::UniversalEmitter::new(self.backend);
          let ir = crate::emitter::traits::UnifiedOpIR {
-             op_type: crate::emitter::traits::UnifiedOpType::Gemm { m: self.m, n: self.n, k: self.k },
+             op_type: crate::emitter::traits::UnifiedOpType::Gemm { m: self.m, n: self.n, k: self.k, batch: 1 },
              precison: "f16".to_string(),
              tiling: config.clone(),
              conv_magic_strategy: None,
@@ -157,8 +161,12 @@ impl MicroBenchmark for NVRTCBenchmark {
           
           let kernel_id = match self.runtime.compile(&source, kernel_name, self.backend) {
               Ok(k) => k,
-              Err(_) => return false,
+              Err(e) => {
+                  eprintln!("[Benchmark] Validation Compile Failed: {}", e);
+                  return false;
+              }
           };
+
 
          let (mut grid_dim, block_dim, smem_size) = self.get_launch_params(config);
          
@@ -211,8 +219,9 @@ impl MicroBenchmark for NVRTCBenchmark {
              _l2_buf = Some(l2);
          }
 
-         if let Err(_) = self.runtime.launch(kernel_id, grid_dim, block_dim, smem_size as u32, args) {
-              return false;
+         if let Err(e) = self.runtime.launch(kernel_id, grid_dim, block_dim, smem_size as u32, args) {
+             eprintln!("[Benchmark] Validation Launch Failed: {}", e);
+             return false;
          }
          
          self.runtime.synchronize();
@@ -222,7 +231,7 @@ impl MicroBenchmark for NVRTCBenchmark {
     fn measure(&self, config: &PipelineConfig) -> BenchmarkResult {
         let emitter = crate::emitter::universal::UniversalEmitter::new(self.backend);
         let ir = crate::emitter::traits::UnifiedOpIR {
-            op_type: crate::emitter::traits::UnifiedOpType::Gemm { m: self.m, n: self.n, k: self.k },
+            op_type: crate::emitter::traits::UnifiedOpType::Gemm { m: self.m, n: self.n, k: self.k, batch: 1 },
             precison: "f16".to_string(),
             tiling: config.clone(),
             conv_magic_strategy: None,
@@ -576,6 +585,7 @@ pub trait Conv2dBenchmark {
 /// NVRTC-based Conv2d benchmark using implicit GEMM
 pub struct NVRTCConvBenchmark {
     pub runtime: Arc<RuntimeManager>,
+    pub backend: DeviceBackend,
     pub problem: Conv2dProblem,
     pub d_input: BufferId,
     pub d_weight: BufferId,
@@ -584,7 +594,11 @@ pub struct NVRTCConvBenchmark {
 
 impl NVRTCConvBenchmark {
     pub fn new(runtime: Arc<RuntimeManager>, problem: Conv2dProblem) -> Self {
-        let backend = crate::runtime::DeviceBackend::Cuda;
+        let backend = if cfg!(target_os = "macos") {
+            crate::runtime::DeviceBackend::Metal
+        } else {
+            crate::runtime::DeviceBackend::Cuda
+        };
         
         let input_size = problem.batch * problem.h_in * problem.w_in * problem.c_in;
         let weight_size = problem.c_out * problem.kernel_h * problem.kernel_w * problem.c_in;
@@ -602,6 +616,7 @@ impl NVRTCConvBenchmark {
         
         Self {
             runtime,
+            backend,
             problem,
             d_input,
             d_weight,
@@ -617,8 +632,9 @@ impl NVRTCConvBenchmark {
         let num_warps = config.base.force_num_warps.unwrap_or(4) as usize;
         let stages = config.base.num_stages as usize;
         
-        let grid_x = (m_gemm + mt - 1) / mt;
-        let grid_y = (n_gemm + nt - 1) / nt;
+        // Metal kernel uses bid.y for M dimension, bid.x for N dimension
+        let grid_m = (m_gemm + mt - 1) / mt;  // Y dimension in Metal
+        let grid_n = (n_gemm + nt - 1) / nt;  // X dimension in Metal
         
         // Shared memory logic must match emitter in src/emitter/conv.rs
         let a_stride = kt + 8;
@@ -632,7 +648,8 @@ impl NVRTCConvBenchmark {
         
         let smem = (std::cmp::max(smem_compute, smem_epilogue) as u32 + 255) & !255;
         
-        ((grid_x as u32, grid_y as u32, 1), 
+        // Grid: (X=N, Y=M, Z=1) to match Metal kernel's bid.x/bid.y usage
+        ((grid_n as u32, grid_m as u32, 1), 
          ((num_warps * 32) as u32, 1, 1), 
          smem)
     }
@@ -644,7 +661,7 @@ impl Conv2dBenchmark for NVRTCConvBenchmark {
         use crate::emitter::traits::{UnifiedOpIR, UnifiedOpType};
         use crate::core::config::LayoutPolicy;
         
-        let backend = crate::runtime::DeviceBackend::Cuda;
+        let backend = self.backend;
         let emitter = UniversalEmitter::new(backend);
         
         let ir = UnifiedOpIR {
@@ -682,7 +699,7 @@ impl Conv2dBenchmark for NVRTCConvBenchmark {
         use crate::emitter::traits::{UnifiedOpIR, UnifiedOpType};
         use crate::core::config::LayoutPolicy;
         
-        let backend = crate::runtime::DeviceBackend::Cuda;
+        let backend = self.backend;
         let emitter = UniversalEmitter::new(backend);
         
         let ir = UnifiedOpIR {
@@ -713,10 +730,30 @@ impl Conv2dBenchmark for NVRTCConvBenchmark {
         
         let (grid, block, smem) = self.get_launch_params(config);
         
+        // Build ConvParams structure matching Metal kernel's expectation
+        // struct ConvParams { uint batch, h_in, w_in, c_in, k_out, h_out, w_out, r_sz, s_sz, stride, pad, dilation; }
+        let h_out = self.problem.h_out();
+        let w_out = self.problem.w_out();
+        let conv_params: Vec<u8> = [
+            self.problem.batch as u32,
+            self.problem.h_in as u32,
+            self.problem.w_in as u32,
+            self.problem.c_in as u32,
+            self.problem.c_out as u32,
+            h_out as u32,
+            w_out as u32,
+            self.problem.kernel_h as u32,
+            self.problem.kernel_w as u32,
+            self.problem.stride as u32,
+            self.problem.pad as u32,
+            self.problem.dilation as u32,
+        ].iter().flat_map(|v| v.to_le_bytes()).collect();
+        
         let args = vec![
             KernelArg::Buffer(self.d_input),
             KernelArg::Buffer(self.d_weight),
             KernelArg::Buffer(self.d_output),
+            KernelArg::Bytes(conv_params.clone()),
         ];
         
         // Pass 1: Warmup + Rapid 1st Measurement
@@ -837,7 +874,11 @@ pub struct FlashAttentionBenchmark {
 
 impl FlashAttentionBenchmark {
     pub fn new(runtime: Arc<RuntimeManager>, problem: FlashAttentionProblem) -> Self {
-        let backend = crate::runtime::DeviceBackend::Cuda;
+        let backend = if cfg!(target_os = "macos") {
+            crate::runtime::DeviceBackend::Metal
+        } else {
+            crate::runtime::DeviceBackend::Cuda
+        };
         let size = problem.b * problem.h * problem.s * problem.d; // in elements
         
         // 256MB allocations logic check
@@ -862,7 +903,11 @@ impl MicroBenchmark for FlashAttentionBenchmark {
     fn k(&self) -> u32 { self.problem.d as u32 }
 
     fn validate_config(&self, config: &PipelineConfig) -> bool {
-        let backend = crate::runtime::DeviceBackend::Cuda;
+        let backend = if cfg!(target_os = "macos") {
+            crate::runtime::DeviceBackend::Metal
+        } else {
+            crate::runtime::DeviceBackend::Cuda
+        };
         let emitter = crate::emitter::universal::UniversalEmitter::new(backend);
         let source = emitter.generate(crate::emitter::traits::UnifiedOpIR {
             op_type: crate::emitter::traits::UnifiedOpType::FusedAttention {
@@ -885,7 +930,11 @@ impl MicroBenchmark for FlashAttentionBenchmark {
     }
 
     fn measure(&self, config: &PipelineConfig) -> BenchmarkResult {
-        let backend = crate::runtime::DeviceBackend::Cuda;
+        let backend = if cfg!(target_os = "macos") {
+            crate::runtime::DeviceBackend::Metal
+        } else {
+            crate::runtime::DeviceBackend::Cuda
+        };
         let emitter = crate::emitter::universal::UniversalEmitter::new(backend);
         let source = emitter.generate(crate::emitter::traits::UnifiedOpIR {
             op_type: crate::emitter::traits::UnifiedOpType::FusedAttention {
@@ -953,11 +1002,16 @@ impl MicroBenchmark for FlashAttentionBenchmark {
     }
     
     fn device_info(&self) -> EnvironmentInfo { 
+        let backend = if cfg!(target_os = "macos") {
+            crate::runtime::DeviceBackend::Metal
+        } else {
+            crate::runtime::DeviceBackend::Cuda
+        };
         EnvironmentInfo {
-            backend: crate::runtime::DeviceBackend::Cuda,
-            api_version: "12.0".to_string(),
+            backend,
+            api_version: "1.0".to_string(),
             driver_version: "Unknown".to_string(),
-            arch: "sm_86".to_string(),
+            arch: "M1/Ampere".to_string(),
         }
     }
 }

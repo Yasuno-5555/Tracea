@@ -1,15 +1,18 @@
 {
-  "timestamp": 1769506463,
-  "status": "Ok",
-  "cuda_version": "nvcc: NVIDIA (R) Cuda compiler driver\r\nCopyright (c) 2005-2025 NVIDIA Corporation\r\nBuilt on Fri_Nov__7_19:25:04_Pacific_Standard_Time_2025\r\nCuda compilation tools, release 13.1, V13.1.80\r\nBuild cuda_13.1.r13.1/compiler.36836380_0",
-  "ptxas_version": "ptxas: NVIDIA (R) Ptx optimizing assembler\r\nCopyright (c) 2005-2025 NVIDIA Corporation\r\nBuilt on Fri_Nov__7_19:21:52_Pacific_Standard_Time_2025\r\nCuda compilation tools, release 13.1, V13.1.80\r\nBuild cuda_13.1.r13.1/compiler.36836380_0",
+  "timestamp": 1769704934,
+  "status": "Warning",
+  "cuda_version": null,
+  "ptxas_version": null,
   "rocm_version": null,
   "metal_version": null,
   "gpu_name": null,
   "gpu_arch": null,
   "driver_version": null,
-  "gpu_info": "==============NVSMI LOG==============\r\n\r\nTimestamp                                              : Tue Jan 27 18:34:23 2026\r\nDriver Version                                         : 591.74\r\nCUDA Version                                           : 13.1\r\n\r\nAttached GPUs                                          : 1\r\nGPU 00000000:06:00.0\r\n    FB Memory Usage\r\n        Total                                          : 8192 MiB\r\n        Reserved                                       : 174 MiB\r\n        Used                                           : 1734 MiB\r\n        Free                                           : 6285 MiB\r\n    BAR1 Memory Usage\r\n        Total                                          : 256 MiB\r\n        Used                                           : 228 MiB\r\n        Free                                           : 28 MiB\r\n    Conf Compute Protected Memory Usage\r\n        Total                                          : N/A\r\n        Used                                           : N/A\r\n        Free                                           : N/A\r\n    Compute Mode                                       : Default",
+  "gpu_info": null,
   "rocm_info": null,
-  "issues": [],
-  "summary": "Environment Healthy"
+  "issues": [
+    "CUDA Toolkit (nvcc) not found.",
+    "ptxas not found."
+  ],
+  "summary": "Found 2 issues"
 }

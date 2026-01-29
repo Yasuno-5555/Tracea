@@ -128,6 +128,19 @@ impl TuningPolicy for Conv2dPolicy {
         use crate::core::config::{SwizzleMode, SpecializedInstruction};
         use crate::optimizer::problem::Layout;
         let mut configs = vec![];
+        
+        if self.problem.device == Device::Metal {
+            let mut cfg = PipelineConfig::new(2, 64, 64, 32).with_warps(4);
+            cfg.instruction = SpecializedInstruction::MetalSimdGroup;
+            configs.push(HeroConfig {
+                config: cfg,
+                note: "Metal Simdgroup Conv2d Hero",
+                arch_hint: ArchHint::Any,
+                scope: HeroScope::Layer,
+            });
+            return configs;
+        }
+
         let layout = match self.problem.layer_type {
             LayerType::Conv2d(l) => l,
             _ => Layout::NHWC,
@@ -244,6 +257,20 @@ impl TuningPolicy for GemmPolicy {
     fn hero_configs(&self) -> Vec<HeroConfig> {
         use crate::core::config::{SpecializedInstruction};
         let mut configs = vec![];
+        
+        if self._problem.device == Device::Metal {
+            let mut cfg = PipelineConfig::new(2, 64, 64, 32).with_warps(4);
+            cfg.instruction = SpecializedInstruction::MetalSimdGroup;
+            cfg.intrinsic_shape = crate::core::config::IntrinsicShape::M16N16K1;
+            configs.push(HeroConfig {
+                config: cfg,
+                note: "Metal Simdgroup GEMM Hero",
+                arch_hint: ArchHint::Any,
+                scope: HeroScope::Layer,
+            });
+            return configs;
+        }
+
         let output_size = self._problem.shape.m * self._problem.shape.n;
 
         if output_size < 1024 * 1024 {
@@ -346,8 +373,22 @@ impl TuningPolicy for Fa2Policy {
 
     fn hero_configs(&self) -> Vec<HeroConfig> {
         use crate::core::config::{SpecializedInstruction, SwizzleMode, SoftmaxGranularity};
-        let s_len = self._problem.shape.n; // KV Seq Len
         let mut heroes = Vec::new();
+
+        if self._problem.device == Device::Metal {
+            let mut cfg = PipelineConfig::new(2, 64, 64, 32).with_warps(4);
+            cfg.instruction = SpecializedInstruction::MetalSimdGroup;
+            cfg.attention_variant = crate::core::config::AttentionVariant::SimdFull;
+            heroes.push(HeroConfig {
+                config: cfg,
+                note: "Metal Simdgroup FlashAttention Hero",
+                arch_hint: ArchHint::Any,
+                scope: HeroScope::Layer,
+            });
+            return heroes;
+        }
+
+        let s_len = self._problem.shape.n; // KV Seq Len
 
         // 醇 Hero 1: The "Baseline Champion" (7.63 TFLOPS Proven)
         let mut cfg1 = PipelineConfig::new(2, 128, 64, 32).with_warps(9);
@@ -473,11 +514,16 @@ pub struct PolicyFactory;
 
 impl PolicyFactory {
     pub fn derive(problem: &ProblemDescriptor) -> Box<dyn TuningPolicy> {
-        match (problem.device, problem.layer_type) {
-            (Device::Cpu(arch), LayerType::Gemm) => Box::new(CpuGemmPolicy::new(problem, arch)),
-            (_, LayerType::Gemm) => Box::new(GemmPolicy::new(problem)),
-            (_, LayerType::Conv2d(_)) => Box::new(Conv2dPolicy::new(problem)),
-            (_, LayerType::FlashAttention(v)) => Box::new(Fa2Policy::new(problem, v)),
+        match problem.layer_type {
+            LayerType::Gemm => {
+                if let Device::Cpu(arch) = problem.device {
+                    Box::new(CpuGemmPolicy::new(problem, arch))
+                } else {
+                    Box::new(GemmPolicy::new(problem))
+                }
+            }
+            LayerType::Conv2d(_) => Box::new(Conv2dPolicy::new(problem)),
+            LayerType::FlashAttention(v) => Box::new(Fa2Policy::new(problem, v)),
         }
     }
 }

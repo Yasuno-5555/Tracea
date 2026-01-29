@@ -1,5 +1,5 @@
 {
-  "Cuda:NVIDIA GeForce RTX 3070:256:256:256:f16::v3.1_forced:Ampere:GEMM_M256_N256_K256": {
+  "Metal:Apple M1:1024:1024:1024:f16::v3.1_forced:Unknown:GEMM_M1024_N1024_K1024": {
     "num_stages": 2,
     "m_tile": 64,
     "n_tile": 64,
@@ -10,53 +10,17 @@
     "layout_policy": "RowMajor",
     "epilogue": [],
     "force_num_warps": 4,
-    "micro_m": 1,
+    "micro_m": 32,
     "micro_n": 1,
     "k_unroll": 1,
     "prefetch_distance": 0,
     "cp_async_distance": 0,
     "barrier_mode": "None",
     "softmax_granularity": "PerTile",
-    "intrinsic_shape": "None"
-  },
-  "Cuda:NVIDIA GeForce RTX 3070:2048:2048:2048:f16::v3.1_forced:Ampere:GEMM_M2048_N2048_K2048": {
-    "num_stages": 3,
-    "m_tile": 128,
-    "n_tile": 128,
-    "k_tile": 32,
-    "instruction": "CudaMMA",
-    "swizzle_mode": "None",
-    "quantization": "None",
-    "layout_policy": "RowMajor",
-    "epilogue": [],
-    "force_num_warps": 8,
-    "micro_m": 1,
-    "micro_n": 1,
-    "k_unroll": 1,
-    "prefetch_distance": 0,
-    "cp_async_distance": 0,
-    "barrier_mode": "None",
-    "softmax_granularity": "PerTile",
-    "intrinsic_shape": "None"
-  },
-  "Cuda:NVIDIA GeForce RTX 3070:256:256:256:f16::v2:Ampere:GEMM_M256_N256_K256": {
-    "num_stages": 2,
-    "m_tile": 64,
-    "n_tile": 64,
-    "k_tile": 32,
-    "instruction": "CudaMMA",
-    "swizzle_mode": "None",
-    "quantization": "None",
-    "layout_policy": "RowMajor",
-    "epilogue": [],
-    "force_num_warps": 4,
-    "micro_m": 1,
-    "micro_n": 1,
-    "k_unroll": 1,
-    "prefetch_distance": 0,
-    "cp_async_distance": 0,
-    "barrier_mode": "None",
-    "softmax_granularity": "PerTile",
-    "intrinsic_shape": "None"
+    "intrinsic_shape": "None",
+    "vectorize_epilogue": true,
+    "ttg_enabled": false,
+    "attention_variant": "Naive",
+    "gemm_variant": "Naive"
   }
 }
