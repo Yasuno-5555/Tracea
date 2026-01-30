@@ -10,6 +10,9 @@ pub struct ErrorReport {
     pub causal_analysis: Option<String>,
 }
 
+use crate::policy::types::GraphTopology;
+use crate::runtime::plan::{ExecutionPlan, ExecutionStep};
+
 pub struct Visualizer {
     runtime: std::sync::Arc<RuntimeManager>,
 }
@@ -85,5 +88,41 @@ impl Visualizer {
             s.push(char);
         }
         s
+    }
+
+    pub fn export_mermaid(&self, topology: &GraphTopology, path: &str) {
+        let mut output = String::from("graph TD\n");
+        for op in &topology.operators {
+            let label = format!("node_{}[\"{}: {}\"]", op.op_id(), op.op_id(), op.name());
+            output.push_str(&format!("  {}\n", label));
+        }
+        for (prod, cons) in &topology.dependencies {
+            output.push_str(&format!("  node_{} --> node_{}\n", prod, cons));
+        }
+        let _ = std::fs::write(path, output);
+        println!("[Doctor] 🗺 Saved graph visualization to {}", path);
+    }
+
+    pub fn export_execution_plan_mermaid(&self, plan: &ExecutionPlan, path: &str) {
+        let mut output = String::from("graph LR\n");
+        output.push_str("  subgraph Arena\n");
+        output.push_str(&format!("    size[\"Total Size: {} bytes\"]\n", plan.arena_size));
+        output.push_str("  end\n");
+
+        for (i, step) in plan.steps.iter().enumerate() {
+            match step {
+                ExecutionStep::LaunchKernel { kernel_id, .. } => {
+                    output.push_str(&format!("  step_{}[\"Step {}: Kernel {:?}\"]\n", i, i, kernel_id));
+                }
+                ExecutionStep::Memcpy { src_offset, dst_offset, size } => {
+                    output.push_str(&format!("  step_{}[\"Step {}: Memcpy {}->{} ({} bytes)\"]\n", i, i, src_offset, dst_offset, size));
+                }
+            }
+            if i > 0 {
+                output.push_str(&format!("  step_{} --> step_{}\n", i - 1, i));
+            }
+        }
+        let _ = std::fs::write(path, output);
+        println!("[Doctor] 🗺 Saved execution plan visualization to {}", path);
     }
 }

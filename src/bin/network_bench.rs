@@ -3,12 +3,24 @@ use tracea::policy::types::{GraphTopology, OperatorTopology};
 use tracea::core::loader::ModelLoader;
 use std::collections::HashMap;
 use std::time::Instant;
+use std::sync::Arc;
 
 fn main() {
     println!("🚀 Tracea Network Integration Benchmark");
     
-    let runtime = RuntimeManager::new();
-    let backend = DeviceBackend::Metal;
+    let backend_str = std::env::var("TRACEA_BACKEND").unwrap_or_else(|_| {
+        if cfg!(target_os = "macos") { "metal".to_string() } else { "cuda".to_string() }
+    });
+    let backend = match backend_str.to_lowercase().as_str() {
+        "cuda" => DeviceBackend::Cuda,
+        "metal" => DeviceBackend::Metal,
+        #[cfg(feature = "vulkan")]
+        "vulkan" => DeviceBackend::Vulkan,
+        _ => panic!("Unsupported backend: {}", backend_str),
+    };
+    println!("Selected Backend: {:?}", backend);
+
+    let runtime = RuntimeManager::init(Some(backend)).unwrap();
 
     run_resnet_block(&runtime, backend);
     run_fork_join_test(&runtime, backend);
@@ -16,9 +28,17 @@ fn main() {
     run_head_test(&runtime, backend);
     run_downsample_test(&runtime, backend);
     run_resnet18_benchmark(&runtime, backend);
+    
+    // Doctor v2: Save outputs
+    println!("\n[Doctor] 🏥 Finalizing diagnostics...");
+    tracea::doctor::profiler::TraceProfiler::get().save("network_trace.json");
+    
+    // For visualization, we can use the same graph as resnet18
+    // Since we don't return the graph from run_resnet18, we might need a quick hack or refactor 
+    // to just show it works.
 }
 
-fn run_resnet18_benchmark(runtime: &RuntimeManager, backend: DeviceBackend) {
+fn run_resnet18_benchmark(runtime: &Arc<RuntimeManager>, backend: DeviceBackend) {
     println!("\n--- Full ResNet-18 End-to-End Benchmark ---");
     let mut operators = Vec::new();
     let mut dependencies = Vec::new();
@@ -195,28 +215,39 @@ fn run_resnet18_benchmark(runtime: &RuntimeManager, backend: DeviceBackend) {
     println!("[Graph] Generated ResNet-18 with {} operators", graph.operators.len());
 
     let mut inputs = HashMap::new();
-    inputs.insert(input_id, runtime.alloc(3*224*224*2, backend).unwrap());
+    // Pad RGB input (3 -> 8 channels worth of space) to satisfy potential vectorized loads
+    let input_size = 1*8*224*224*2; 
+    inputs.insert(input_id, runtime.alloc(input_size, backend).unwrap());
 
     println!("[Benchmark] Running ResNet-18 warmup...");
-    let result = runtime.execute_graph(&graph, &inputs, backend);
-    match result {
-        Ok(_) => println!("✅ ResNet-18 Executed Successfully!"),
-        Err(e) => println!("❌ ResNet-18 Failed: {}", e),
+    if let Err(e) = runtime.execute_graph(&graph, &inputs, backend) {
+        eprintln!("❌ ResNet-18 Benchmark Failed: {}", e);
+        // Save what we have
+        tracea::doctor::profiler::TraceProfiler::get().save("network_trace.json");
+        return;
     }
+    println!("✅ ResNet-18 Executed Successfully!");
+    
+    // Doctor v2: Export Graph
+    let visualizer = tracea::doctor::visualizer::Visualizer::new(runtime.clone());
+    visualizer.export_mermaid(&graph, "resnet18_graph.mmd");
 
-    let start = Instant::now();
     let iters = 5;
-    for _ in 0..iters {
-        runtime.execute_graph(&graph, &inputs, backend).unwrap();
+    let start = Instant::now();
+    for i in 0..iters {
+        if let Err(e) = runtime.execute_graph(&graph, &inputs, backend) {
+             eprintln!("❌ ResNet-18 Iteration {} Failed: {}", i, e);
+             break;
+        }
         runtime.synchronize();
     }
-    // runtime.synchronize(); // Wait for completion
     let avg_latency = start.elapsed().as_secs_f32() / iters as f32 * 1000.0;
     println!("📊 ResNet-18 Average Latency: {:.3} ms", avg_latency);
-    println!("📊 Est. Throughput: {:.1} images/sec", 1000.0 / avg_latency);
+    println!("[Doctor] 🏥 Finalizing diagnostics...");
+    tracea::doctor::profiler::TraceProfiler::get().save("network_trace.json");
 }
 
-fn run_downsample_test(runtime: &RuntimeManager, backend: DeviceBackend) {
+fn run_downsample_test(runtime: &Arc<RuntimeManager>, backend: DeviceBackend) {
     println!("\n--- ResNet Downsample Block Test (Stride=2) ---");
     let mut operators = Vec::new();
     let mut dependencies = Vec::new();
@@ -314,19 +345,26 @@ fn run_downsample_test(runtime: &RuntimeManager, backend: DeviceBackend) {
     let result = runtime.execute_graph(&graph, &inputs, backend);
     match result {
         Ok(_) => println!("✅ Downsample Block Executed Successfully!"),
-        Err(e) => println!("❌ Downsample Block Failed: {}", e),
+        Err(e) => {
+            println!("❌ Downsample Block Failed: {}", e);
+            tracea::doctor::profiler::TraceProfiler::get().save("network_trace.json");
+            return;
+        }
     }
 
     let start = Instant::now();
-    for _ in 0..10 {
-        runtime.execute_graph(&graph, &inputs, backend).unwrap();
+    for i in 0..10 {
+        if let Err(e) = runtime.execute_graph(&graph, &inputs, backend) {
+            println!("❌ Downsample Iteration {} Failed: {}", i, e);
+            break;
+        }
     }
     runtime.synchronize();
     let avg_latency = start.elapsed().as_secs_f32() / 10.0 * 1000.0;
     println!("📊 Downsample Average Latency: {:.3} ms", avg_latency);
 }
 
-fn run_head_test(runtime: &RuntimeManager, backend: DeviceBackend) {
+fn run_head_test(runtime: &Arc<RuntimeManager>, backend: DeviceBackend) {
     println!("\n--- Classification Head Test (Pool -> Linear) ---");
     let mut operators = Vec::new();
     let mut dependencies = Vec::new();
@@ -364,19 +402,26 @@ fn run_head_test(runtime: &RuntimeManager, backend: DeviceBackend) {
     let result = runtime.execute_graph(&graph, &inputs, backend);
     match result {
         Ok(_) => println!("✅ Classification Head Executed Successfully!"),
-        Err(e) => println!("❌ Classification Head Failed: {}", e),
+        Err(e) => {
+            println!("❌ Classification Head Failed: {}", e);
+            tracea::doctor::profiler::TraceProfiler::get().save("network_trace.json");
+            return;
+        }
     }
 
     let start = Instant::now();
-    for _ in 0..10 {
-        runtime.execute_graph(&graph, &inputs, backend).unwrap();
+    for i in 0..10 {
+        if let Err(e) = runtime.execute_graph(&graph, &inputs, backend) {
+            println!("❌ Head Iteration {} Failed: {}", i, e);
+            break;
+        }
     }
     runtime.synchronize();
     let avg_latency = start.elapsed().as_secs_f32() / 10.0 * 1000.0;
     println!("📊 Head Average Latency: {:.3} ms", avg_latency);
 }
 
-fn run_loader_test(runtime: &RuntimeManager, backend: DeviceBackend) {
+fn run_loader_test(runtime: &Arc<RuntimeManager>, backend: DeviceBackend) {
     println!("\n--- Model Loader Test (JSON Import) ---");
     
     // 1. Create a dummy JSON topology
@@ -408,7 +453,7 @@ fn run_loader_test(runtime: &RuntimeManager, backend: DeviceBackend) {
     }
 }
 
-fn run_resnet_block(runtime: &RuntimeManager, backend: DeviceBackend) {
+fn run_resnet_block(runtime: &Arc<RuntimeManager>, backend: DeviceBackend) {
     println!("\n--- ResNet Block (Linear Chain) ---");
     let mut operators = Vec::new();
     let mut dependencies = Vec::new();
@@ -459,18 +504,25 @@ fn run_resnet_block(runtime: &RuntimeManager, backend: DeviceBackend) {
     inputs.insert(1034, runtime.alloc(32*2, backend).unwrap());
 
     println!("[Benchmark] Running ResNet block warmup...");
-    runtime.execute_graph(&graph, &inputs, backend).unwrap();
+    if let Err(e) = runtime.execute_graph(&graph, &inputs, backend) {
+        eprintln!("❌ ResNet Block Failed: {}", e);
+        tracea::doctor::profiler::TraceProfiler::get().save("network_trace.json");
+        return;
+    }
     
     let start = Instant::now();
-    for _ in 0..10 {
-        runtime.execute_graph(&graph, &inputs, backend).unwrap();
+    for i in 0..10 {
+        if let Err(e) = runtime.execute_graph(&graph, &inputs, backend) {
+            eprintln!("❌ ResNet Block Iteration {} Failed: {}", i, e);
+            break;
+        }
     }
     runtime.synchronize(); // Wait for all kernels to complete
     let avg_latency = start.elapsed().as_secs_f32() / 10.0 * 1000.0;
     println!("📊 ResNet Block Average Latency: {:.3} ms", avg_latency);
 }
 
-fn run_fork_join_test(runtime: &RuntimeManager, backend: DeviceBackend) {
+fn run_fork_join_test(runtime: &Arc<RuntimeManager>, backend: DeviceBackend) {
     println!("\n--- Fork & Join (Skip Connection) Test ---");
     let mut operators = Vec::new();
     let mut dependencies = Vec::new();
@@ -510,12 +562,19 @@ fn run_fork_join_test(runtime: &RuntimeManager, backend: DeviceBackend) {
     let result = runtime.execute_graph(&graph, &inputs, backend);
     match result {
         Ok(_) => println!("✅ Fork & Join Executed Successfully!"),
-        Err(e) => println!("❌ Fork & Join Failed: {}", e),
+        Err(e) => {
+            println!("❌ Fork & Join Failed: {}", e);
+            tracea::doctor::profiler::TraceProfiler::get().save("network_trace.json");
+            return;
+        }
     }
 
     let start = Instant::now();
-    for _ in 0..10 {
-        runtime.execute_graph(&graph, &inputs, backend).unwrap();
+    for i in 0..10 {
+        if let Err(e) = runtime.execute_graph(&graph, &inputs, backend) {
+            println!("❌ Fork & Join Iteration {} Failed: {}", i, e);
+            break;
+        }
     }
     runtime.synchronize();
     let avg_latency = start.elapsed().as_secs_f32() / 10.0 * 1000.0;

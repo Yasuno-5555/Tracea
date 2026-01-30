@@ -8,6 +8,8 @@ impl RuntimeManager {
     pub fn launch(&self, id: KernelId, grid: (u32, u32, u32), block: (u32, u32, u32), smem: u32, args: Vec<KernelArg>) -> Result<(), String> {
         let recorded = self.kernels.lock().map_err(|_| "Lock")?.get(&id).ok_or("No kernel")?.clone();
         
+        let profiler = crate::doctor::profiler::TraceProfiler::get();
+        profiler.record(recorded.name.clone(), "B");
         // println!("[Runtime] Launching {}: Grid{:?}, Block{:?}, Smem: {}", recorded.name, grid, block, smem);
 
         let mut arg_store = [0u64; 64]; 
@@ -220,6 +222,8 @@ impl RuntimeManager {
             }
             _ => return Err("Unsupported backend".to_string()),
         }
+
+        profiler.record(recorded.name.clone(), "E");
         Ok(())
     }
 

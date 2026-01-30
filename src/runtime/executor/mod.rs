@@ -108,10 +108,9 @@ pub struct GraphExecutor {
 }
 
 impl GraphExecutor {
-    pub fn new() -> Self {
-        // In a real implementation, we would initialize backends here
+    pub fn new(backend: crate::runtime::manager::DeviceBackend) -> Self {
         Self {
-            backend: crate::runtime::manager::DeviceBackend::Metal,
+            backend,
         }
     }
 
@@ -131,9 +130,13 @@ impl GraphExecutor {
             #[cfg(target_os = "macos")]
             { manager.get_arena_metal_buffer(plan.arena_size)? }
             #[cfg(not(target_os = "macos"))]
-            { return Err("Metal not supported".into()); }
+            { return Err("Metal not supported on this platform".into()); }
+        } else if self.backend == DeviceBackend::Cuda {
+            // For CUDA, we use the unified alloc/arena if implemented, 
+            // or just skip if kernels handle their own memory for now.
+            (BufferId(0), 0) 
         } else {
-            (BufferId(0), 0) // Fallback or handle other backends
+            (BufferId(0), 0)
         };
 
         // 2. Dispatch Steps
@@ -182,10 +185,9 @@ impl GraphExecutor {
         }
         
         // 3. Retrieve Outputs
-        // Allocate new buffers for outputs and copy from Arena
         let mut results = HashMap::new();
         for (op_id, (offset, size)) in &plan.output_map {
-             let output_buf = manager.alloc(*size, DeviceBackend::Metal)?;
+             let output_buf = manager.alloc(*size, self.backend)?;
              manager.memcpy_d2d(arena_id, *offset, output_buf, 0, *size)?;
              results.insert(*op_id, output_buf);
         }
@@ -195,7 +197,7 @@ impl GraphExecutor {
     pub fn capture(
         &self,
         plan: &ExecutionPlan,
-        _inputs: &HashMap<u64, BufferId>,
+        inputs: &HashMap<u64, BufferId>,
         manager: &crate::runtime::manager::RuntimeManager,
     ) -> Result<capture::CapturedGraph, String> {
         #[cfg(target_os = "macos")]

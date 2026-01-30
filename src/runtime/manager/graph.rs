@@ -35,7 +35,7 @@ impl RuntimeManager {
                  println!("[Cache] 🐢 Graph Cache MISS - Compiling...");
                  let compiler = self.compiler.lock().map_err(|_| "Compiler Lock")?;
                  // Pass self as manager for JIT compilation inside compiler
-                 let new_plan = compiler.compile(graph.clone(), self)?;
+                 let new_plan = compiler.compile(graph.clone(), self, backend)?;
                  
                  // Insert into Cache
                  let mut cache = self.graph_cache.write().map_err(|_| "Graph Cache Write Lock")?;

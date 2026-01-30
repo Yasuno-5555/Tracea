@@ -200,6 +200,7 @@ impl RuntimeManager {
                 let mut arch_static: &'static str = "sm_80";
                 if let Some(handle) = devices.get(&DeviceBackend::Cuda) {
                     arch_static = Box::leak(handle.arch.clone().into_boxed_str());
+                    println!("[Runtime] Using detected CUDA architecture: {}", arch_static);
                 }
 
                 let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -219,15 +220,27 @@ impl RuntimeManager {
                 let opts = cudarc::nvrtc::CompileOptions {
                     arch: Some(arch_static), 
                     options: vec![
-                        "-I".to_string(), 
-                        "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.1/include".to_string(),
-                        format!("--gpu-architecture=compute_{}", arch_static.replace("sm_", "")),
+                        "--std=c++17".to_string(),
+                        format!("-I{}/include", std::env::var("CUDA_PATH").unwrap_or_else(|_| "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.4".to_string())),
                     ],
                     ..Default::default()
                 };
+                println!("[Runtime] 🛠 Compiling for {} (Real) with minimal opts", arch_static);
                 
                 let ptx_res = cudarc::nvrtc::compile_ptx_with_opts(source, opts);
                 
+                match &ptx_res {
+                    Ok(ptx) => {
+                        println!("[Runtime] ✅ JIT Succeeded for {}", kernel_name);
+                        let ptx_str = ptx.to_src();
+                        let _ = std::fs::write("last_kernel.ptx", &ptx_str);
+                        println!("[Runtime] 📝 Dumped PTX to last_kernel.ptx (Size: {} bytes)", ptx_str.len());
+                    },
+                    Err(e) => {
+                        println!("[Runtime] ❌ JIT Failed for {}: {:?}", kernel_name, e);
+                    },
+                };
+
                 let (jit_code, jit_log) = match &ptx_res {
                     Ok(_) => (0, String::new()),
                     Err(e) => (1, format!("{:?}", e)),
@@ -247,10 +260,7 @@ impl RuntimeManager {
                 }
 
                 let ptx_src = match ptx_res {
-                    Ok(ptx) => {
-                        println!("[Runtime] JIT Compilation Successful for {}", kernel_name);
-                        ptx.to_src()
-                    }
+                    Ok(ptx) => ptx.to_src(),
                     Err(e) => {
                          println!("[Runtime] ❌ JIT Compilation Failed for {}: {}", kernel_name, e);
                          return self.load_prebuilt_fallback(kernel_name, backend); 

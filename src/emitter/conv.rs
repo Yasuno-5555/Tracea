@@ -16,6 +16,26 @@ pub fn magic_u32(n: u32) -> (u32, u32) {
     (0, 0)
 }
 
+pub fn calculate_smem_usage(ir: &UnifiedOpIR) -> usize {
+    if let UnifiedOpType::Conv2d { .. } = ir.op_type {
+        let mt = ir.tiling.m_tile;
+        let nt = ir.tiling.n_tile;
+        let kt = ir.tiling.k_tile;
+        let stages = ir.tiling.num_stages.max(2);
+        
+        let sa_stride = kt + 8;
+        let sb_stride = nt + 8;
+        let smem_a_bytes = mt * sa_stride * 2; // half is 2 bytes
+        let smem_b_bytes = kt * sb_stride * 2;
+        let total_smem_tiles = (smem_a_bytes + smem_b_bytes) * stages;
+        
+        let hoisting_bytes = mt * (8 + 4 + 4);
+        (total_smem_tiles + hoisting_bytes + 1024) as usize
+    } else {
+        0
+    }
+}
+
 pub fn generate_conv(ir: &UnifiedOpIR) -> String {
     if let UnifiedOpType::Conv2d { n: batch, h: h_in, w: w_in, c: c_in, k: k_out, r, s, stride, pad, dilation, layout: _, epilogue: _ } = ir.op_type {
         let h_out = (h_in + 2 * pad - dilation * (r - 1) - 1) / stride + 1;
@@ -29,7 +49,23 @@ pub fn generate_conv(ir: &UnifiedOpIR) -> String {
         let nt = ir.tiling.n_tile;
         let kt = ir.tiling.k_tile;
         let num_warps = ir.tiling.force_num_warps.unwrap_or(8);
-        let stages = ir.tiling.num_stages;
+        let stages = ir.tiling.num_stages.max(2);
+        let m_frags = (mt / 16).max(1);
+        let n_frags = (nt / 16).max(1);
+
+        let (_c_in_padded, k_gemm_padded) = if let Some(ref strategy) = ir.polyhedral_strategy {
+            let mut cp = c_in;
+            for (dim_idx, pad) in &strategy.padding_needed {
+                if dim_idx == &4 { // dim_c is index 4 in our Conv2d mapper
+                    cp += *pad as usize;
+                }
+            }
+            (cp, cp * r * s) 
+        } else {
+            (c_in, c_in * r * s)
+        };
+        let m_gemm = batch * h_out * w_out;
+        let k_gemm_final = k_gemm_padded;
         
         // Padded strides to avoid bank conflicts
         let sa_stride = kt + 8;
@@ -83,6 +119,7 @@ pub fn generate_conv(ir: &UnifiedOpIR) -> String {
         format!(r#"
 #include <cuda_fp16.h>
 #include <mma.h>
+#include <cuda_pipeline.h>
 
 {epilogue_defs}
 {primitives}
@@ -114,7 +151,7 @@ __device__ __forceinline__ void fast_divmod(int n, unsigned int m, int s, int d,
     }}
 }}
 
-extern "C" __global__ void conv2d_implicit_gemm(
+extern "C" __global__ void kernel_main(
     const half* __restrict__ Input,
     const half* __restrict__ Weight,
     half* __restrict__ Output{epilogue_args},
@@ -132,9 +169,9 @@ extern "C" __global__ void conv2d_implicit_gemm(
     int m_block = blockIdx.x * MT;
     int n_block = blockIdx.y * NT;
 
-    wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc[8];
+    nvcuda::wmma::fragment<nvcuda::wmma::accumulator, 16, 16, 16, float> acc[{n_frags}];
     #pragma unroll
-    for(int i=0; i<8; ++i) wmma::fill_fragment(acc[i], 0.0f);
+    for(int i=0; i<{n_frags}; ++i) nvcuda::wmma::fill_fragment(acc[i], 0.0f);
 
     // Hybrid Hoisting Logic
     __shared__ long long block_base_off[MT];
@@ -187,15 +224,46 @@ extern "C" __global__ void conv2d_implicit_gemm(
                         base_off = (long long)bn * p.h_in * p.w_in * p.c_in;
                     }}
                     bool pred = (hi >= 0 && hi < p.h_in && wi >= 0 && wi < p.w_in);
-                    cp_async_ampere(dst, Input + base_off + (long long)(hi * p.w_in + wi) * p.c_in + ci, pred);
-                }} else *((uint4*)dst) = make_uint4(0,0,0,0);
+                    const half* src_ptr = Input + base_off + (long long)(hi * p.w_in + wi) * p.c_in + ci;
+                    
+                    if (p.c_in % 8 == 0) {{
+                        cp_async_ampere(dst, src_ptr, pred);
+                    }} else {{
+                        // Virtual Padding Strategy: Use predicated vector load
+                        if (pred) {{
+                            int remaining = p.c_in - ci;
+                            float4 v = load_float4_predicated((const float*)src_ptr, remaining);
+                            float4 v2 = load_float4_predicated(((const float*)src_ptr) + 4, remaining - 4);
+                            *((float4*)dst) = v;
+                            *((float4*)(dst + 4)) = v2;
+                        }} else {{
+                            *((float4*)dst) = make_float4(0,0,0,0);
+                            *((float4*)(dst+4)) = make_float4(0,0,0,0);
+                        }}
+                    }}
+                }} else {{
+                    *((float4*)dst) = make_float4(0,0,0,0);
+                    *((float4*)(dst+4)) = make_float4(0,0,0,0);
+                }}
             }}
             // Load sB
             for (int i = tid; i < (KT * NT) / 8; i += N_WARPS * 32) {{
                 int k_local = (i * 8) / NT; int n_local = (i * 8) % NT;
                 half* dst = sB + s_in * KT * {sb_stride} + k_local * {sb_stride} + n_local;
                 int k_glob = k_tile_start + k_local; int n_glob = n_block + n_local;
-                cp_async_ampere(dst, Weight + (long long)k_glob * p.k_out + n_glob, (k_glob < {k_gemm} && n_glob < p.k_out));
+                const half* src_ptr = Weight + (long long)k_glob * p.k_out + n_glob;
+                
+                if (p.k_out % 8 == 0) {{
+                    cp_async_ampere(dst, src_ptr, (k_glob < {k_gemm} && n_glob < p.k_out));
+                }} else {{
+                    if (k_glob < {k_gemm} && n_glob < p.k_out) {{
+                        #pragma unroll
+                        for(int v=0; v<8; ++v) dst[v] = src_ptr[v];
+                    }} else {{
+                        #pragma unroll
+                        for(int v=0; v<8; ++v) dst[v] = 0.0f;
+                    }}
+                }}
             }}
             cp_async_commit_group();
         }}
@@ -204,16 +272,16 @@ extern "C" __global__ void conv2d_implicit_gemm(
             cp_async_wait_group<STAGES - 2>();
             __syncthreads();
             int stage = k_tile % STAGES;
-            wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::row_major> frag_A[2];
-            wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::row_major> frag_B[2];
-            wmma::load_matrix_sync(frag_A[0], sA + stage * MT * {sa_stride} + warp_id * 16 * {sa_stride}, {sa_stride});
-            wmma::load_matrix_sync(frag_A[1], sA + stage * MT * {sa_stride} + warp_id * 16 * {sa_stride} + 16, {sa_stride});
+            nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, half, nvcuda::wmma::row_major> frag_A[2];
+            nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, half, nvcuda::wmma::row_major> frag_B[2];
+            nvcuda::wmma::load_matrix_sync(frag_A[0], sA + stage * MT * {sa_stride} + warp_id * 16 * {sa_stride}, {sa_stride});
+            nvcuda::wmma::load_matrix_sync(frag_A[1], sA + stage * MT * {sa_stride} + warp_id * 16 * {sa_stride} + 16, {sa_stride});
             #pragma unroll
-            for(int j=0; j<8; ++j) {{
-                wmma::load_matrix_sync(frag_B[0], sB + stage * KT * {sb_stride} + j * 16, {sb_stride});
-                wmma::load_matrix_sync(frag_B[1], sB + stage * KT * {sb_stride} + 16 * {sb_stride} + j * 16, {sb_stride});
-                wmma::mma_sync(acc[j], frag_A[0], frag_B[0], acc[j]);
-                wmma::mma_sync(acc[j], frag_A[1], frag_B[1], acc[j]);
+            for(int j=0; j<{n_frags}; ++j) {{
+                nvcuda::wmma::load_matrix_sync(frag_B[0], sB + stage * KT * {sb_stride} + j * 16, {sb_stride});
+                nvcuda::wmma::load_matrix_sync(frag_B[1], sB + stage * KT * {sb_stride} + 16 * {sb_stride} + j * 16, {sb_stride});
+                nvcuda::wmma::mma_sync(acc[j], frag_A[0], frag_B[0], acc[j]);
+                nvcuda::wmma::mma_sync(acc[j], frag_A[1], frag_B[1], acc[j]);
             }}
         }}
     }}
@@ -222,11 +290,11 @@ extern "C" __global__ void conv2d_implicit_gemm(
     
     // Alignment-Safe Epilogue
     #pragma unroll
-    for(int j=0; j<8; ++j) {{
+    for(int j=0; j<{n_frags}; ++j) {{
         int m_glob_warp = m_block + warp_id * 16;
         int n_glob_tile = n_block + j * 16;
         if (m_glob_warp < {m_gemm} && n_glob_tile < p.k_out) {{
-            wmma::store_matrix_sync(sOut + warp_id * 256, acc[j], 16, wmma::mem_row_major);
+            nvcuda::wmma::store_matrix_sync(sOut + warp_id * 256, acc[j], 16, nvcuda::wmma::mem_row_major);
             __syncwarp();
             half* p_half = (half*)smem + warp_id * 256;
             for(int k=lane_id; k<256; k+=32) p_half[k] = (half)sOut[warp_id * 256 + k];
@@ -240,21 +308,21 @@ extern "C" __global__ void conv2d_implicit_gemm(
                 // Robust Store: check OC alignment
                 if (p.k_out % 8 == 0 && n_glob + 8 <= p.k_out) {{
                     #pragma unroll
-                    for(int c=0; c<8; ++c) {{
-                        float val = p_half[r_idx * 16 + c_start + c];
-                        int n_glob_c = n_glob + c;
+                    for(int cc=0; cc<8; ++cc) {{
+                        float val = p_half[r_idx * 16 + c_start + cc];
+                        int n_glob_c = n_glob + cc;
                         {epilogue_apply}
-                        p_half[r_idx * 16 + c_start + c] = (half)val;
+                        p_half[r_idx * 16 + c_start + cc] = (half)val;
                     }}
                     *((uint4*)&Output[(long long)m_glob * p.k_out + n_glob]) = *((uint4*)&p_half[r_idx * 16 + c_start]);
                 }} else {{
                     #pragma unroll
-                    for(int c=0; c<8; ++c) {{
-                        if (n_glob + c < p.k_out) {{
-                            float val = p_half[r_idx * 16 + c_start + c];
-                            int n_glob_c = n_glob + c;
+                    for(int cc=0; cc<8; ++cc) {{
+                        if (n_glob + cc < p.k_out) {{
+                            float val = p_half[r_idx * 16 + c_start + cc];
+                            int n_glob_c = n_glob + cc;
                             {epilogue_apply}
-                            Output[(long long)m_glob * p.k_out + n_glob + c] = (half)val;
+                            Output[(long long)m_glob * p.k_out + n_glob + cc] = (half)val;
                         }}
                     }}
                 }}
@@ -268,7 +336,7 @@ extern "C" __global__ void conv2d_implicit_gemm(
         mt=mt, nt=nt, kt=kt, stages=stages, num_warps=num_warps,
         sa_stride=sa_stride, sb_stride=sb_stride,
         can_hoist=if can_hoist { "true" } else { "false" },
-        m_gemm=m_gemm, k_gemm=k_gemm,
+        m_gemm=m_gemm, k_gemm=k_gemm_final,
         epilogue_args=epilogue_args, epilogue_apply=epilogue_apply
         )
     } else {

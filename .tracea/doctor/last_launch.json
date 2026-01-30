@@ -1,1 +1,15 @@
-{"block":[256,1,1],"grid":[32,32,1],"kernel":"unified_gemm_kernel","smem":65536,"timestamp":1769768704}
+{
+    "block": [
+        256,
+        1,
+        1
+    ],
+    "grid": [
+        32,
+        32,
+        1
+    ],
+    "kernel": "unified_gemm_kernel",
+    "smem": 65536,
+    "timestamp": 1769768704
+}

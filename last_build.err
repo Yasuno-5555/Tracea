@@ -1,0 +1,44 @@
+﻿cargo : warning: tracea@0.1.0: CUD
+A (nvcc) not found. Skipping templ
+ate compilation.
+発生場所 行:1 文字:1
++ cargo check --bin network_bench 
+2>&1 | Out-File -FilePath last_bui
+ld. ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~
+    + CategoryInfo          : Not 
+   Specified: (warning: tracea..  
+  .te compilation.:String) [],    
+ RemoteException
+    + FullyQualifiedErrorId : Nat 
+   iveCommandError
+ 
+    Checking tracea v0.1.0 (E:\Pro
+jects\Tracea)
+error: unexpected closing delimite
+r: `}`
+   --> src\runtime\manager\kernel.
+rs:497:1
+    |
+221 |                  self.doctor
+.on_jit_result(JitResultInfo {
+    |                             
+                             - thi
+s delimiter might not be properly 
+closed...
+...
+228 |                 });
+    |                 - ...as it m
+atches this but it has different i
+ndentation
+...
+497 | }
+    | ^ unexpected closing delimit
+er
+
+warning: tracea@0.1.0: CUDA (nvcc)
+ not found. Skipping template comp
+ilation.
+error: could not compile `tracea` 
+(lib) due to 1 previous error

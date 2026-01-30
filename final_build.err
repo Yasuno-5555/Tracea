@@ -1,0 +1,1531 @@
+﻿cargo : warning: tracea@0.1.0: CUD
+A (nvcc) not found. Skipping templ
+ate compilation.
+発生場所 行:1 文字:1
++ cargo check --bin network_bench 
+2>&1 | Out-File -FilePath final_bu
+ild ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~
+    + CategoryInfo          : Not 
+   Specified: (warning: tracea..  
+  .te compilation.:String) [],    
+ RemoteException
+    + FullyQualifiedErrorId : Nat 
+   iveCommandError
+ 
+warning: unused import: `crate::ba
+ckend::cuda::CudaBackend`
+ --> src\kernels\attention\cuda_em
+itter.rs:2:5
+  |
+2 | use crate::backend::cuda::Cuda
+Backend;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]
+` (part of `#[warn(unused)]`) on b
+y default
+
+warning: unused import: `Parameter
+Range`
+ --> src\kernels\attention\cuda_ad
+apter.rs:1:55
+  |
+1 | ...ace, ParameterRange};
+  |         ^^^^^^^^^^^^^^
+
+warning: unused import: `Quantizat
+ionMode`
+ --> src\kernels\attention\cuda_ad
+apter.rs:2:80
+  |
+2 | ...on, QuantizationMode};
+  |        ^^^^^^^^^^^^^^^^
+
+warning: unused import: `Specializ
+edInstruction`
+ --> src\kernels\attention\rocm_ad
+apter.rs:2:56
+  |
+2 | ...e, SpecializedInstruction};
+  |       ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::em
+itter::rocm::ROCMEmitter`
+ --> src\kernels\attention\rocm_ad
+apter.rs:3:5
+  |
+3 | use crate::emitter::rocm::ROCM
+Emitter;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^
+
+warning: unused import: `KernelArg
+`
+ --> src\kernels\attention\rocm_ad
+apter.rs:4:62
+  |
+4 | ...ckend, KernelArg};
+  |           ^^^^^^^^^
+
+warning: unused imports: `Speciali
+zedInstruction` and `SwizzleMode`
+ --> src\kernels\attention\metal_a
+dapter.rs:2:43
+  |
+2 | ...g, SwizzleMode, Specialized
+Instruction};
+  |       ^^^^^^^^^^^  ^^^^^^^^^^^
+^^^^^^^^^^^
+
+warning: unused import: `crate::em
+itter::metal::MetalEmitter`
+ --> src\kernels\attention\metal_a
+dapter.rs:3:5
+  |
+3 | use crate::emitter::metal::Met
+alEmitter;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^
+
+warning: unused import: `KernelArg
+`
+ --> src\kernels\attention\metal_a
+dapter.rs:4:62
+  |
+4 | ...ckend, KernelArg};
+  |           ^^^^^^^^^
+
+warning: unused import: `wide::*`
+ --> src\kernels\cpu\gemm.rs:2:5
+  |
+2 | use wide::*;
+  |     ^^^^^^^
+
+warning: unused import: `std::conv
+ert::TryInto`
+ --> src\kernels\cpu\gemm.rs:3:5
+  |
+3 | use std::convert::TryInto;
+  |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `DeviceBa
+ckend` and `KernelArg`
+ --> src\kernels\gpu\gpu_dispatch.
+rs:2:31
+  |
+2 | ...::{DeviceBackend, KernelArg
+};
+  |       ^^^^^^^^^^^^^  ^^^^^^^^^
+
+warning: unused import: `std::coll
+ections::HashSet`
+ --> src\semantic\mapping.rs:1:5
+  |
+1 | use std::collections::HashSet;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `UnifiedO
+pIR` and `UnifiedOpType`
+ --> src\emitter\jit.rs:4:39
+  |
+4 | ...r, UnifiedOpIR, UnifiedOpTy
+pe};
+  |       ^^^^^^^^^^^  ^^^^^^^^^^^
+^^
+
+warning: unused import: `LayoutPol
+icy`
+ --> src\emitter\cuda.rs:3:43
+  |
+3 | ...nfig, LayoutPolicy};
+  |          ^^^^^^^^^^^^
+
+warning: unused import: `crate::em
+itter::traits::UnifiedOpType`
+ --> src\emitter\metal\utils.rs:1:
+5
+  |
+1 | use crate::emitter::traits::Un
+ifiedOpType;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^
+
+warning: unused import: `crate::co
+re::config::PipelineConfig`
+ --> src\emitter\cuda_low_rank.rs:
+2:5
+  |
+2 | use crate::core::config::Pipel
+ineConfig;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^
+
+warning: unused import: `std::sync
+::Mutex`
+ --> src\runtime\manager\memory.rs
+:1:5
+  |
+1 | use std::sync::Mutex;
+  |     ^^^^^^^^^^^^^^^^
+
+warning: unused import: `Mutex`
+ --> src\runtime\manager\kernel.rs
+:1:22
+  |
+1 | use std::sync::{Arc, Mutex};
+  |                      ^^^^^
+
+warning: unused import: `graph::*`
+  --> src\runtime\manager\mod.rs:2
+0:9
+   |
+20 | pub use graph::*;
+   |         ^^^^^^^^
+
+warning: unused import: `ArenaSlic
+e`
+ --> src\runtime\ttg.rs:1:72
+  |
+1 | ...ckend, ArenaSlice};
+  |           ^^^^^^^^^^
+
+warning: unused import: `std::sync
+::Arc`
+ --> src\runtime\ttg.rs:3:5
+  |
+3 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+
+warning: unused import: `crate::co
+re::op::EpilogueOp`
+ --> src\runtime\compiler.rs:3:5
+  |
+3 | use crate::core::op::EpilogueO
+p;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+^
+
+warning: unused import: `RuntimeMa
+nager`
+ --> src\runtime\executor\mod.rs:2
+:31
+  |
+2 | ...er::{RuntimeManager, Buf...
+  |         ^^^^^^^^^^^^^^
+
+warning: unused imports: `Arc` and
+ `RwLock`
+ --> src\runtime\executor\mod.rs:4
+:17
+  |
+4 | use std::sync::{Arc, RwLock};
+  |                 ^^^  ^^^^^^
+
+warning: unused import: `DeviceBac
+kend`
+ --> src\runtime\executor\mod.rs:7
+:61
+  |
+7 | ...rId, DeviceBackend};
+  |         ^^^^^^^^^^^^^
+
+warning: unused import: `std::ptr`
+ --> src\backend\cuda\capture.rs:2
+:5
+  |
+2 | use std::ptr;
+  |     ^^^^^^^^
+
+warning: unused import: `cudarc::d
+river::CudaDevice`
+ --> src\optimizer\mod.rs:3:5
+  |
+3 | use cudarc::driver::CudaDevice
+;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `CpuArch`
+ and `CudaArch`
+ --> src\optimizer\mod.rs:7:36
+  |
+7 | ...e, CudaArch, CpuArch};
+  |       ^^^^^^^^  ^^^^^^^
+
+warning: unused imports: `Sampling
+Plan` and `TuningContext`
+ --> src\optimizer\mod.rs:9:61
+  |
+9 | ...y, SamplingPlan, TuningCont
+ext, S...
+  |       ^^^^^^^^^^^^  ^^^^^^^^^^
+^^^
+
+warning: unused import: `Node`
+ --> src\optimizer\semantic.rs:1:3
+3
+  |
+1 | ...::{Graph, Node, Operation};
+  |              ^^^^
+
+warning: unused imports: `Epilogue
+Op` and `FusedGemmOp`
+ --> src\optimizer\semantic.rs:2:2
+3
+  |
+2 | ...::{FusedGemmOp, EpilogueOp}
+;
+  |       ^^^^^^^^^^^  ^^^^^^^^^^
+
+warning: unused import: `Arc`
+ --> src\optimizer\tuner.rs:1:17
+  |
+1 | use std::sync::{Arc, Mutex};
+  |                 ^^^
+
+warning: unused import: `GraphTopo
+logy`
+ --> src\optimizer\tuner.rs:7:28
+  |
+7 | ...es::{GraphTopology, Oper...
+  |         ^^^^^^^^^^^^^
+
+warning: unused import: `crate::op
+timizer::benchmark::MicroBenchmark
+`
+ --> src\optimizer\tuner.rs:8:5
+  |
+8 | use crate::optimizer::benchmar
+k::MicroBenchmark;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^
+
+warning: unused import: `Conv2dPro
+blem`
+   --> src\optimizer\mod.rs:275:92
+    |
+275 | ...ig, Conv2dProblem};
+    |        ^^^^^^^^^^^^^
+
+warning: unused imports: `CacheKey
+` and `TuningCache`
+   --> src\optimizer\mod.rs:276:13
+    |
+276 | ...::{TuningCache, CacheKey}
+;
+    |       ^^^^^^^^^^^  ^^^^^^^^
+
+warning: unused imports: `Deserial
+ize` and `Serialize`
+ --> src\doctor\mod.rs:1:13
+  |
+1 | ...::{Serialize, Deserialize};
+  |       ^^^^^^^^^  ^^^^^^^^^^^
+
+warning: unused import: `Path`
+ --> src\doctor\diagnosis.rs:1:17
+  |
+1 | use std::path::{Path, PathB...
+  |                 ^^^^
+
+warning: unused import: `PolicyCon
+text as _PC`
+ --> src\policy\engine.rs:1:59
+  |
+1 | ...n, PolicyContext as _PC}; .
+..
+  |       ^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `HashSet`
+ --> src\policy\scheduler.rs:4:33
+  |
+4 | ...ashMap, HashSet};
+  |            ^^^^^^^
+
+warning: unused import: `Diagnosti
+cStrategy`
+ --> src\doctor\diagnosis.rs:9:47
+  |
+9 | ...y, DiagnosticStrategy};
+  |       ^^^^^^^^^^^^^^^^^^
+
+warning: unused variable: `d_over_
+16`
+  --> src\kernels\attention\cuda_e
+mitter.rs:45:13
+   |
+45 | ... let d_over_16 = d / 16;
+   |         ^^^^^^^^^ help: if th
+is is intentional, prefix it with 
+an underscore: `_d_over_16`
+   |
+   = note: `#[warn(unused_variable
+s)]` (part of `#[warn(unused)]`) o
+n by default
+
+warning: unused variable: `cfg`
+  --> src\kernels\attention\rocm_a
+dapter.rs:72:25
+   |
+72 | ...&self, cfg: &Self::Conf...
+   |           ^^^ help: if this i
+s intentional, prefix it with an u
+nderscore: `_cfg`
+
+warning: unused variable: `bytes`
+  --> src\kernels\attention\metal_
+adapter.rs:29:13
+   |
+29 | ...   let bytes = problem....
+   |           ^^^^^ help: if this
+ is intentional, prefix it with an
+ underscore: `_bytes`
+
+warning: unused variable: `a_ptr`
+   --> src\kernels\gemm\cuda_gemm.
+rs:121:13
+    |
+121 | ...   let a_ptr = self.ru...
+    |           ^^^^^ help: if thi
+s is intentional, prefix it with a
+n underscore: `_a_ptr`
+
+warning: unused variable: `b_ptr`
+   --> src\kernels\gemm\cuda_gemm.
+rs:122:13
+    |
+122 | ...   let b_ptr = self.ru...
+    |           ^^^^^ help: if thi
+s is intentional, prefix it with a
+n underscore: `_b_ptr`
+
+warning: unused variable: `c_ptr`
+   --> src\kernels\gemm\cuda_gemm.
+rs:123:13
+    |
+123 | ...   let c_ptr = self.ru...
+    |           ^^^^^ help: if thi
+s is intentional, prefix it with a
+n underscore: `_c_ptr`
+
+warning: unused variable: `block_t
+hreads`
+   --> src\kernels\gemm\metal_gemm
+.rs:123:13
+    |
+123 | ...et block_threads = 128;
+    |       ^^^^^^^^^^^^^ help: if
+ this is intentional, prefix it wi
+th an underscore: `_block_threads`
+
+warning: variable does not need to
+ be mutable
+  --> src\kernels\gemm\cpu_adapter
+.rs:63:21
+   |
+63 | ...   let mut cfg = CpuGem...
+   |           ----^^^
+   |           |
+   |           help: remove this `
+mut`
+   |
+   = note: `#[warn(unused_mut)]` (
+part of `#[warn(unused)]`) on by d
+efault
+
+warning: variable does not need to
+ be mutable
+  --> src\core\optimizer.rs:73:57
+   |
+73 | ...t Some(mut rev) = rever...
+   |           ----^^^
+   |           |
+   |           help: remove this `
+mut`
+
+warning: unused variable: `row`
+  --> src\semantic\mapping.rs:20:2
+8
+   |
+20 | ...&self, row: u32, col: u...
+   |           ^^^ help: if this i
+s intentional, prefix it with an u
+nderscore: `_row`
+
+warning: unused variable: `col`
+  --> src\semantic\mapping.rs:20:3
+8
+   |
+20 | ...: u32, col: u32) -> Str...
+   |           ^^^ help: if this i
+s intentional, prefix it with an u
+nderscore: `_col`
+
+warning: unused variable: `m`
+   --> src\emitter\cuda.rs:507:41
+    |
+507 | ...ixCore { m, n, k } => {
+    |             ^ help: try igno
+ring the field: `m: _`
+
+warning: unused variable: `n`
+   --> src\emitter\cuda.rs:507:44
+    |
+507 | ...ore { m, n, k } => {
+    |             ^ help: try igno
+ring the field: `n: _`
+
+warning: unused variable: `k`
+   --> src\emitter\cuda.rs:507:47
+    |
+507 | ... { m, n, k } => {
+    |             ^ help: try igno
+ring the field: `k: _`
+
+warning: unused variable: `epsilon
+`
+ --> src\emitter\metal\nn.rs:1:67
+  |
+1 | ...usize, epsilon: f32) -> ...
+  |           ^^^^^^^ help: if thi
+s is intentional, prefix it with a
+n underscore: `_epsilon`
+
+warning: unused variable: `c`
+  --> src\emitter\metal\nn.rs:46:4
+4
+   |
+46 | ...: usize, c: usize, h: u...
+   |             ^ help: if this i
+s intentional, prefix it with an u
+nderscore: `_c`
+
+warning: unused variable: `batch`
+  --> src\emitter\metal\nn.rs:76:2
+4
+   |
+76 | ...linear(batch: usize, m:...
+   |           ^^^^^ help: if this
+ is intentional, prefix it with an
+ underscore: `_batch`
+
+warning: unused variable: `m`
+  --> src\emitter\metal\nn.rs:76:3
+8
+   |
+76 | ...: usize, m: usize, n: u...
+   |             ^ help: if this i
+s intentional, prefix it with an u
+nderscore: `_m`
+
+warning: unused variable: `n`
+  --> src\emitter\metal\nn.rs:76:4
+8
+   |
+76 | ...: usize, n: usize, k: u...
+   |             ^ help: if this i
+s intentional, prefix it with an u
+nderscore: `_n`
+
+warning: unused variable: `k`
+  --> src\emitter\metal\nn.rs:76:5
+8
+   |
+76 | ...: usize, k: usize) -> S...
+   |             ^ help: if this i
+s intentional, prefix it with an u
+nderscore: `_k`
+
+warning: unused variable: `stride`
+ --> src\emitter\metal\utils.rs:3:
+48
+  |
+3 | ...usize, stride: usize, to...
+  |           ^^^^^^ help: if this
+ is intentional, prefix it with an
+ underscore: `_stride`
+
+warning: unused variable: `n`
+  --> src\emitter\elementwise.rs:2
+7:76
+   |
+27 | ...iseType, n: usize) -> S...
+   |             ^ help: if this i
+s intentional, prefix it with an u
+nderscore: `_n`
+
+warning: unused variable: `n`
+  --> src\emitter\elementwise.rs:5
+6:77
+   |
+56 | ...iseType, n: usize) -> S...
+   |             ^ help: if this i
+s intentional, prefix it with an u
+nderscore: `_n`
+
+warning: unused variable: `n_gemm`
+  --> src\emitter\conv.rs:25:13
+   |
+25 |         let n_gemm = k_out;
+   |             ^^^^^^ help: if t
+his is intentional, prefix it with
+ an underscore: `_n_gemm`
+
+warning: unused variable: `hw_magi
+c`
+  --> src\emitter\conv.rs:45:14
+   |
+45 | ...let (hw_magic, hw_shift...
+   |         ^^^^^^^^ help: if thi
+s is intentional, prefix it with a
+n underscore: `_hw_magic`
+
+warning: unused variable: `hw_shif
+t`
+  --> src\emitter\conv.rs:45:24
+   |
+45 | ...gic, hw_shift) = magic_...
+   |         ^^^^^^^^ help: if thi
+s is intentional, prefix it with a
+n underscore: `_hw_shift`
+
+warning: unused variable: `w_magic
+`
+  --> src\emitter\conv.rs:46:14
+   |
+46 | ...  let (w_magic, w_shift...
+   |           ^^^^^^^ help: if th
+is is intentional, prefix it with 
+an underscore: `_w_magic`
+
+warning: unused variable: `w_shift
+`
+  --> src\emitter\conv.rs:46:23
+   |
+46 | ...magic, w_shift) = magic...
+   |           ^^^^^^^ help: if th
+is is intentional, prefix it with 
+an underscore: `_w_shift`
+
+warning: unused variable: `sic_mag
+ic`
+  --> src\emitter\conv.rs:47:14
+   |
+47 | ...let (sic_magic, sic_shi...
+   |         ^^^^^^^^^ help: if th
+is is intentional, prefix it with 
+an underscore: `_sic_magic`
+
+warning: unused variable: `sic_shi
+ft`
+  --> src\emitter\conv.rs:47:25
+   |
+47 | ...gic, sic_shift) = magic...
+   |         ^^^^^^^^^ help: if th
+is is intentional, prefix it with 
+an underscore: `_sic_shift`
+
+warning: unused variable: `c_magic
+`
+  --> src\emitter\conv.rs:48:14
+   |
+48 | ...  let (c_magic, c_shift...
+   |           ^^^^^^^ help: if th
+is is intentional, prefix it with 
+an underscore: `_c_magic`
+
+warning: unused variable: `c_shift
+`
+  --> src\emitter\conv.rs:48:23
+   |
+48 | ...magic, c_shift) = magic...
+   |           ^^^^^^^ help: if th
+is is intentional, prefix it with 
+an underscore: `_c_shift`
+
+warning: unused variable: `use_amp
+ere`
+  --> src\emitter\conv.rs:54:13
+   |
+54 | ... let use_ampere = (c_in...
+   |         ^^^^^^^^^^ help: if t
+his is intentional, prefix it with
+ an underscore: `_use_ampere`
+
+warning: unused variable: `m`
+ --> src\emitter\gemm.rs:5:34
+  |
+5 | ...::Gemm { m, n, k, .. } =...
+  |             ^ help: try ignori
+ng the field: `m: _`
+
+warning: unused variable: `n`
+ --> src\emitter\gemm.rs:5:37
+  |
+5 | ...emm { m, n, k, .. } = ir...
+  |             ^ help: try ignori
+ng the field: `n: _`
+
+warning: unused variable: `k`
+ --> src\emitter\gemm.rs:5:40
+  |
+5 | ... { m, n, k, .. } = ir.op...
+  |             ^ help: try ignori
+ng the field: `k: _`
+
+warning: unused variable: `b`
+ --> src\emitter\attention.rs:5:44
+  |
+5 | ...ention { b, s, d, h, dh,...
+  |             ^ help: try ignori
+ng the field: `b: _`
+
+warning: unused variable: `s`
+ --> src\emitter\attention.rs:5:47
+  |
+5 | ...ion { b, s, d, h, dh, ca...
+  |             ^ help: try ignori
+ng the field: `s: _`
+
+warning: unused variable: `d`
+ --> src\emitter\attention.rs:5:50
+  |
+5 | ... { b, s, d, h, dh, causa...
+  |             ^ help: try ignori
+ng the field: `d: _`
+
+warning: unused variable: `h`
+ --> src\emitter\attention.rs:5:53
+  |
+5 | ...b, s, d, h, dh, causal }...
+  |             ^ help: try ignori
+ng the field: `h: _`
+
+warning: unused variable: `dh`
+ --> src\emitter\attention.rs:5:56
+  |
+5 | ...s, d, h, dh, causal } = ...
+  |             ^^ help: try ignor
+ing the field: `dh: _`
+
+warning: unused variable: `causal`
+ --> src\emitter\attention.rs:5:60
+  |
+5 | ...h, dh, causal } = ir.op_...
+  |           ^^^^^^ help: try ign
+oring the field: `causal: _`
+
+warning: unused variable: `m`
+ --> src\emitter\cuda_low_rank.rs:
+6:10
+  |
+6 |     let (m, n, k, r_dim) = ...
+  |          ^ help: if this is in
+tentional, prefix it with an under
+score: `_m`
+
+warning: unused variable: `n`
+ --> src\emitter\cuda_low_rank.rs:
+6:13
+  |
+6 |     let (m, n, k, r_dim) = ...
+  |             ^ help: if this is
+ intentional, prefix it with an un
+derscore: `_n`
+
+warning: unused variable: `k`
+ --> src\emitter\cuda_low_rank.rs:
+6:16
+  |
+6 | ...t (m, n, k, r_dim) = if ...
+  |             ^ help: if this is
+ intentional, prefix it with an un
+derscore: `_k`
+
+warning: unused variable: `smem_b_
+bytes`
+  --> src\emitter\cuda_low_rank.rs
+:39:9
+   |
+39 |     let smem_b_bytes = rt ...
+   |         ^^^^^^^^^^^^ help: if
+ this is intentional, prefix it wi
+th an underscore: `_smem_b_bytes`
+
+warning: unused variable: `target_
+arch`
+   --> src\runtime\manager\kernel.
+rs:185:21
+    |
+185 | ... let target_arch = cud...
+    |         ^^^^^^^^^^^ help: if
+ this is intentional, prefix it wi
+th an underscore: `_target_arch`
+
+warning: unreachable pattern
+   --> src\runtime\manager\launche
+r.rs:218:13
+    |
+218 |             _ => return E...
+    |             ^ no value can r
+each this
+    |
+note: multiple earlier patterns ma
+tch some of the same values
+   --> src\runtime\manager\launche
+r.rs:218:13
+    |
+ 55 | ...   KernelHandle::Cuda { f
+unc, .. } => {
+    |       ----------------------
+--------- matches some of the same
+ values
+...
+ 92 | ...   KernelHandle::Rocm { f
+unc, .. } => {
+    |       ----------------------
+--------- matches some of the same
+ values
+...
+218 | ...   _ => return Err("Unsup
+ported backe...
+    |       ^ collectively making 
+this unreachable
+    = note: `#[warn(unreachable_pa
+tterns)]` (part of `#[warn(unused)
+]`) on by default
+
+warning: unused variable: `pref_ba
+ckend`
+  --> src\runtime\manager\mod.rs:8
+9:17
+   |
+89 | ...init(pref_backend: Opti...
+   |         ^^^^^^^^^^^^ help: if
+ this is intentional, prefix it wi
+th an underscore: `_pref_backend`
+
+warning: unused variable: `k`
+   --> src\runtime\ttg_builder.rs:
+244:54
+    |
+244 | ...h, m, n, k, .. }, _) => {
+    |             ^ help: try igno
+ring the field: `k: _`
+
+warning: unused variable: `tile_n`
+   --> src\runtime\compiler.rs:247
+:79
+    |
+247 | ...ile_m, tile_n, .. }) =...
+    |           ^^^^^^ help: try i
+gnoring the field: `tile_n: _`
+
+warning: unreachable pattern
+   --> src\optimizer\benchmark.rs:
+372:13
+    |
+372 |             _ => panic!("...
+    |             ^ no value can r
+each this
+    |
+note: multiple earlier patterns ma
+tch some of the same values
+   --> src\optimizer\benchmark.rs:
+372:13
+    |
+332 | ...   crate::runtime::Device
+Backend::Cuda => {
+    |       ----------------------
+------------- matches some of the 
+same values
+...
+348 | ...   crate::runtime::Device
+Backend::Rocm => {
+    |       ----------------------
+------------- matches some of the 
+same values
+...
+356 | ...   crate::runtime::Device
+Backend::Metal => {
+    |       ----------------------
+-------------- matches some of the
+ same values
+...
+364 | ...   crate::runtime::Device
+Backend::Cpu => {
+    |       ----------------------
+------------ matches some of the s
+ame values
+...
+372 | ...   _ => panic!("Unknown b
+ackend"),
+    |       ^ collectively making 
+this unreachable
+
+warning: unused variable: `nt`
+    --> src\optimizer\benchmark.rs
+:1031:13
+     |
+1031 | ...   let nt = config.n_...
+     |           ^^ help: if this 
+is intentional, prefix it with an 
+underscore: `_nt`
+
+warning: unreachable pattern
+   --> src\optimizer\policy.rs:188
+:13
+    |
+188 |             _ => {}
+    |             ^ no value can r
+each this
+    |
+note: multiple earlier patterns ma
+tch some of the same values
+   --> src\optimizer\policy.rs:188
+:13
+    |
+151 | ...   Layout::NHWC => {
+    |       ------------ matches s
+ome of the same values
+...
+176 | ...   Layout::NCHW => {
+    |       ------------ matches s
+ome of the same values
+...
+188 | ...   _ => {}
+    |       ^ collectively making 
+this unreachable
+
+warning: unused variable: `ctx`
+   --> src\optimizer\policy.rs:220
+:29
+    |
+220 | ...&self, ctx: &TuningCon...
+    |           ^^^ help: if this 
+is intentional, prefix it with an 
+underscore: `_ctx`
+
+warning: unused variable: `ctx`
+   --> src\optimizer\policy.rs:320
+:29
+    |
+320 | ...&self, ctx: &TuningCon...
+    |           ^^^ help: if this 
+is intentional, prefix it with an 
+underscore: `_ctx`
+
+warning: unused variable: `ctx`
+   --> src\optimizer\policy.rs:447
+:29
+    |
+447 | ...&self, ctx: &TuningCon...
+    |           ^^^ help: if this 
+is intentional, prefix it with an 
+underscore: `_ctx`
+
+warning: unused variable: `graph`
+  --> src\optimizer\semantic.rs:12
+:26
+   |
+12 | ...&self, graph: &mut Grap...
+   |           ^^^^^ help: if this
+ is intentional, prefix it with an
+ underscore: `_graph`
+
+warning: unused variable: `n`
+  --> src\optimizer\semantic.rs:24
+:43
+   |
+24 | ...m), Some(n), Some(k)) =...
+   |             ^ help: if this i
+s intentional, prefix it with an u
+nderscore: `_n`
+
+warning: unused variable: `k`
+  --> src\optimizer\semantic.rs:24
+:52
+   |
+24 | ...n), Some(k)) = (gemm.m....
+   |             ^ help: if this i
+s intentional, prefix it with an u
+nderscore: `_k`
+
+warning: unused variable: `iterati
+ons`
+   --> src\optimizer\mod.rs:591:98
+    |
+591 | ...tor, iterations: usize...
+    |         ^^^^^^^^^^ help: if 
+this is intentional, prefix it wit
+h an underscore: `_iterations`
+
+warning: unused variable: `goal`
+   --> src\optimizer\mod.rs:591:11
+7
+    |
+591 | ...usize, goal: Optimizat...
+    |           ^^^^ help: if this
+ is intentional, prefix it with an
+ underscore: `_goal`
+
+warning: unused variable: `mse`
+  --> src\doctor\visualizer.rs:66:
+40
+   |
+66 | ...: f32, mse: f32) -> Str...
+   |           ^^^ help: if this i
+s intentional, prefix it with an u
+nderscore: `_mse`
+
+warning: unused variable: `d`
+   --> src\policy\standard.rs:245:
+72
+    |
+245 | ..._, h: _, d, name: _ } ...
+    |             ^ help: try igno
+ring the field: `d: _`
+
+warning: unused variable: `c_idx`
+  --> src\policy\scheduler.rs:39:4
+1
+   |
+39 | ... Some(&c_idx)) = (op_ma...
+   |           ^^^^^ help: if this
+ is intentional, prefix it with an
+ underscore: `_c_idx`
+
+warning: unused variable: `device`
+  --> src\policy\scheduler.rs:62:4
+8
+   |
+62 | ...ology, device: &DeviceP...
+   |           ^^^^^^ help: if thi
+s is intentional, prefix it with a
+n underscore: `_device`
+
+warning: fields `q_buf`, `k_buf`, 
+`v_buf`, and `o_buf` are never rea
+d
+  --> src\kernels\attention\rocm_a
+dapter.rs:21:5
+   |
+17 | pub struct RocmFa2Adapter {
+   |            -------------- fie
+lds in this struct
+...
+21 |     q_buf: crate::runtime::m.
+..
+   |     ^^^^^
+22 |     k_buf: crate::runtime::m.
+..
+   |     ^^^^^
+23 |     v_buf: crate::runtime::m.
+..
+   |     ^^^^^
+24 |     o_buf: crate::runtime::m.
+..
+   |     ^^^^^
+   |
+   = note: `#[warn(dead_code)]` (p
+art of `#[warn(unused)]`) on by de
+fault
+
+warning: fields `q_buf`, `k_buf`, 
+`v_buf`, and `o_buf` are never rea
+d
+  --> src\kernels\attention\metal_
+adapter.rs:21:5
+   |
+17 | pub struct MetalFa2Adapter {
+   |            --------------- fi
+elds in this struct
+...
+21 |     q_buf: crate::runtime::ma
+...
+   |     ^^^^^
+22 |     k_buf: crate::runtime::ma
+...
+   |     ^^^^^
+23 |     v_buf: crate::runtime::ma
+...
+   |     ^^^^^
+24 |     o_buf: crate::runtime::ma
+...
+   |     ^^^^^
+
+warning: enum `SwizzleMode` is nev
+er used
+ --> src\semantic\swizzle.rs:4:10
+  |
+4 | pub enum SwizzleMode {
+  |          ^^^^^^^^^^^
+
+warning: struct `BankConflictSimul
+ator` is never constructed
+  --> src\semantic\swizzle.rs:11:1
+2
+   |
+11 | ...ct BankConflictSimulator {
+   |       ^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated items `new` an
+d `has_conflicts` are never used
+  --> src\semantic\swizzle.rs:17:1
+2
+   |
+16 | impl BankConflictSimulator {
+   | -------------------------- as
+sociated items in this implementat
+ion
+17 |     pub fn new(num_banks: u32
+...
+   |            ^^^
+...
+22 |     pub fn has_conflicts(&sel
+...
+   |            ^^^^^^^^^^^^^
+
+warning: struct `OptimizedTileConf
+ig` is never constructed
+ --> src\optimized\config.rs:2:12
+  |
+2 | ...ct OptimizedTileConfig;
+  |       ^^^^^^^^^^^^^^^^^^^
+
+warning: methods `calculate_score`
+ and `propose_candidate` are never
+ used
+   --> src\optimizer\mod.rs:648:8
+    |
+589 | impl AutoTuner {
+    | -------------- methods in th
+is implementation
+...
+648 |     fn calculate_score(&sel.
+..
+    |        ^^^^^^^^^^^^^^^
+...
+660 |     fn propose_candidate(&s.
+..
+    |        ^^^^^^^^^^^^^^^^^
+
+warning: field `problem` is never 
+read
+   --> src\optimizer\policy.rs:460
+:5
+    |
+459 | pub struct CpuGemmPolicy {
+    |            ------------- fie
+ld in this struct
+460 |     problem: ProblemDescrip.
+..
+    |     ^^^^^^^
+
+warning: field `runtime` is never 
+read
+  --> src\optimizer\orchestrator.r
+s:10:5
+   |
+ 9 | pub struct CrossBackendTuner 
+{
+   |            ----------------- 
+field in this struct
+10 |     runtime: Arc<RuntimeManag
+er>,
+   |     ^^^^^^^
+
+warning: variable `sQ_bytes` shoul
+d have a snake case name
+  --> src\kernels\attention\cuda_e
+mitter.rs:22:13
+   |
+22 | ... let sQ_bytes = (mt as ...
+   |         ^^^^^^^^ help: conver
+t the identifier to snake case: `s
+_q_bytes`
+   |
+   = note: `#[warn(non_snake_case)
+]` (part of `#[warn(nonstandard_st
+yle)]`) on by default
+
+warning: variable `sK_bytes` shoul
+d have a snake case name
+  --> src\kernels\attention\cuda_e
+mitter.rs:26:13
+   |
+26 | ... let sK_bytes = (stages...
+   |         ^^^^^^^^ help: conver
+t the identifier to snake case: `s
+_k_bytes`
+
+warning: variable `sV_bytes` shoul
+d have a snake case name
+  --> src\kernels\attention\cuda_e
+mitter.rs:30:13
+   |
+30 | ... let sV_bytes = (v_offs...
+   |         ^^^^^^^^ help: conver
+t the identifier to snake case: `s
+_v_bytes`
+
+warning: variable `sO_float_bytes`
+ should have a snake case name
+  --> src\kernels\attention\cuda_e
+mitter.rs:34:13
+   |
+34 | ...et sO_float_bytes = (mt...
+   |       ^^^^^^^^^^^^^^ help: co
+nvert the identifier to snake case
+: `s_o_float_bytes`
+
+warning: structure field `hipGetDe
+viceCount` should have a snake cas
+e name
+  --> src\emitter\rocm_driver.rs:3
+2:9
+   |
+32 | ...ub hipGetDeviceCount: S...
+   |       ^^^^^^^^^^^^^^^^^ help:
+ convert the identifier to snake c
+ase: `hip_get_device_count`
+
+warning: structure field `hipDevic
+eGetAttribute` should have a snake
+ case name
+  --> src\emitter\rocm_driver.rs:3
+3:9
+   |
+33 | ...ub hipDeviceGetAttribute: 
+S...
+   |       ^^^^^^^^^^^^^^^^^^^^^ h
+elp: convert the identifier to sna
+ke case: `hip_device_get_attribute
+`
+
+warning: structure field `hipGetDe
+viceProperties` should have a snak
+e case name
+  --> src\emitter\rocm_driver.rs:3
+4:9
+   |
+34 | ...ub hipGetDeviceProperties:
+ S...
+   |       ^^^^^^^^^^^^^^^^^^^^^^ 
+help: convert the identifier to sn
+ake case: `hip_get_device_properti
+es`
+
+warning: structure field `hipMallo
+c` should have a snake case name
+  --> src\emitter\rocm_driver.rs:3
+5:9
+   |
+35 |     pub hipMalloc: Symbol<...
+   |         ^^^^^^^^^ help: conve
+rt the identifier to snake case: `
+hip_malloc`
+
+warning: structure field `hipFree`
+ should have a snake case name
+  --> src\emitter\rocm_driver.rs:3
+6:9
+   |
+36 |     pub hipFree: Symbol<'s...
+   |         ^^^^^^^ help: convert
+ the identifier to snake case: `hi
+p_free`
+
+warning: structure field `hipMemcp
+yHtoD` should have a snake case na
+me
+  --> src\emitter\rocm_driver.rs:3
+7:9
+   |
+37 | ...ub hipMemcpyHtoD: Symbo...
+   |       ^^^^^^^^^^^^^ help: con
+vert the identifier to snake case:
+ `hip_memcpy_hto_d`
+
+warning: structure field `hipMemcp
+yDtoD` should have a snake case na
+me
+  --> src\emitter\rocm_driver.rs:3
+8:9
+   |
+38 | ...ub hipMemcpyDtoD: Symbo...
+   |       ^^^^^^^^^^^^^ help: con
+vert the identifier to snake case:
+ `hip_memcpy_dto_d`
+
+warning: structure field `hipModul
+eLoadData` should have a snake cas
+e name
+  --> src\emitter\rocm_driver.rs:3
+9:9
+   |
+39 | ...ub hipModuleLoadData: S...
+   |       ^^^^^^^^^^^^^^^^^ help:
+ convert the identifier to snake c
+ase: `hip_module_load_data`
+
+warning: structure field `hipModul
+eGetFunction` should have a snake 
+case name
+  --> src\emitter\rocm_driver.rs:4
+0:9
+   |
+40 | ...ub hipModuleGetFunction: S
+...
+   |       ^^^^^^^^^^^^^^^^^^^^ he
+lp: convert the identifier to snak
+e case: `hip_module_get_function`
+
+warning: structure field `hipModul
+eLaunchKernel` should have a snake
+ case name
+  --> src\emitter\rocm_driver.rs:4
+1:9
+   |
+41 | ...ub hipModuleLaunchKernel: 
+S...
+   |       ^^^^^^^^^^^^^^^^^^^^^ h
+elp: convert the identifier to sna
+ke case: `hip_module_launch_kernel
+`
+
+warning: structure field `hipDevic
+eSynchronize` should have a snake 
+case name
+  --> src\emitter\rocm_driver.rs:4
+2:9
+   |
+42 | ...ub hipDeviceSynchronize: S
+...
+   |       ^^^^^^^^^^^^^^^^^^^^ he
+lp: convert the identifier to snak
+e case: `hip_device_synchronize`
+
+warning: structure field `hipModul
+eUnload` should have a snake case 
+name
+  --> src\emitter\rocm_driver.rs:4
+3:9
+   |
+43 | ...ub hipModuleUnload: Sym...
+   |       ^^^^^^^^^^^^^^^ help: c
+onvert the identifier to snake cas
+e: `hip_module_unload`
+
+warning: creating a shared referen
+ce to mutable static
+  --> src\emitter\rocm_driver.rs:5
+1:16
+   |
+51 | ...if ROCM_DRIVER_API.is_some
+() {
+   |       ^^^^^^^^^^^^^^^^^^^^^^^
+^^ shared reference to mutable sta
+tic
+   |
+   = note: for more information, s
+ee <https://doc.rust-lang.org/edit
+ion-guide/rust-2024/static-mut-ref
+erences.html>
+   = note: shared references to mu
+table statics are dangerous; it's 
+undefined behavior if the static i
+s mutated or if a mutable referenc
+e is created for it while the shar
+ed reference lives
+   = note: `#[warn(static_mut_refs
+)]` (part of `#[warn(rust_2024_com
+patibility)]`) on by default
+
+warning: creating a shared referen
+ce to mutable static
+  --> src\emitter\rocm_driver.rs:5
+2:24
+   |
+52 | ...rn ROCM_DRIVER_API.as_ref(
+);
+   |       ^^^^^^^^^^^^^^^^^^^^^^^
+^ shared reference to mutable stat
+ic
+   |
+   = note: for more information, s
+ee <https://doc.rust-lang.org/edit
+ion-guide/rust-2024/static-mut-ref
+erences.html>
+   = note: shared references to mu
+table statics are dangerous; it's 
+undefined behavior if the static i
+s mutated or if a mutable referenc
+e is created for it while the shar
+ed reference lives
+
+warning: creating a shared referen
+ce to mutable static
+  --> src\emitter\rocm_driver.rs:8
+9:28
+   |
+89 | ...rn ROCM_DRIVER_API.as_ref(
+);
+   |       ^^^^^^^^^^^^^^^^^^^^^^^
+^ shared reference to mutable stat
+ic
+   |
+   = note: for more information, s
+ee <https://doc.rust-lang.org/edit
+ion-guide/rust-2024/static-mut-ref
+erences.html>
+   = note: shared references to mu
+table statics are dangerous; it's 
+undefined behavior if the static i
+s mutated or if a mutable referenc
+e is created for it while the shar
+ed reference lives
+
+warning: structure field `hiprtcCr
+eateProgram` should have a snake c
+ase name
+  --> src\emitter\rocm_jit.rs:19:9
+   |
+19 | ...ub hiprtcCreateProgram: S.
+..
+   |       ^^^^^^^^^^^^^^^^^^^ hel
+p: convert the identifier to snake
+ case: `hiprtc_create_program`
+
+warning: structure field `hiprtcCo
+mpileProgram` should have a snake 
+case name
+  --> src\emitter\rocm_jit.rs:20:9
+   |
+20 | ...ub hiprtcCompileProgram: S
+...
+   |       ^^^^^^^^^^^^^^^^^^^^ he
+lp: convert the identifier to snak
+e case: `hiprtc_compile_program`
+
+warning: structure field `hiprtcGe
+tCodeSize` should have a snake cas
+e name
+  --> src\emitter\rocm_jit.rs:21:9
+   |
+21 | ...ub hiprtcGetCodeSize: S...
+   |       ^^^^^^^^^^^^^^^^^ help:
+ convert the identifier to snake c
+ase: `hiprtc_get_code_size`
+
+warning: structure field `hiprtcGe
+tCode` should have a snake case na
+me
+  --> src\emitter\rocm_jit.rs:22:9
+   |
+22 | ...ub hiprtcGetCode: Symbo...
+   |       ^^^^^^^^^^^^^ help: con
+vert the identifier to snake case:
+ `hiprtc_get_code`
+
+warning: structure field `hiprtcDe
+stroyProgram` should have a snake 
+case name
+  --> src\emitter\rocm_jit.rs:23:9
+   |
+23 | ...ub hiprtcDestroyProgram: S
+...
+   |       ^^^^^^^^^^^^^^^^^^^^ he
+lp: convert the identifier to snak
+e case: `hiprtc_destroy_program`
+
+warning: creating a shared referen
+ce to mutable static
+  --> src\emitter\driver.rs:68:15
+   |
+68 |         match &DRIVER_API {
+   |               ^^^^^^^^^^^ sha
+red reference to mutable static
+   |
+   = note: for more information, s
+ee <https://doc.rust-lang.org/edit
+ion-guide/rust-2024/static-mut-ref
+erences.html>
+   = note: shared references to mu
+table statics are dangerous; it's 
+undefined behavior if the static i
+s mutated or if a mutable referenc
+e is created for it while the shar
+ed reference lives
+help: use `&raw const` instead to 
+create a raw pointer
+   |
+68 |         match &raw const DRIV
+ER_API {
+   |                +++++++++
+
+warning: `tracea` (lib) generated 
+142 warnings (run `cargo fix --lib
+ -p tracea` to apply 104 suggestio
+ns)
+    Checking tracea v0.1.0 (E:\Pro
+jects\Tracea)
+error[E0433]: failed to resolve: u
+nresolved import
+  --> src\bin\network_bench.rs:32:
+12
+   |
+32 |     crate::doctor::profiler::
+TraceProfiler::get().save("network
+_trace.json");
+   |            ^^^^^^ unresolved 
+import
+   |
+help: a similar path exists
+   |
+32 |     crate::tracea::doctor::pr
+ofiler::TraceProfiler::get().save(
+"network_trace.json");
+   |            ++++++++
+help: consider importing this stru
+ct
+   |
+ 1 + use tracea::doctor::profiler:
+:TraceProfiler;
+   |
+help: if you import `TraceProfiler
+`, refer to it directly
+   |
+32 -     crate::doctor::profiler::
+TraceProfiler::get().save("network
+_trace.json");
+32 +     TraceProfiler::get().save
+("network_trace.json");
+   |
+
+warning: value assigned to `op_id_
+counter` is never read
+   --> src\bin\network_bench.rs:21
+0:5
+    |
+210 |     op_id_counter += 1;
+    |     ^^^^^^^^^^^^^^^^^^
+    |
+    = help: maybe it is overwritte
+n before being read?
+    = note: `#[warn(unused_assignm
+ents)]` (part of `#[warn(unused)]`
+) on by default
+
+For more information about this er
+ror, try `rustc --explain E0433`.
+warning: `tracea` (bin "network_be
+nch") generated 1 warning
+warning: tracea@0.1.0: CUDA (nvcc)
+ not found. Skipping template comp
+ilation.
+error: could not compile `tracea` 
+(bin "network_bench") due to 1 pre
+vious error; 1 warning emitted

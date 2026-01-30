@@ -24,6 +24,10 @@ impl DnaDatabase {
     }
 
     pub fn save(&self, path: &str) {
+        let dir = std::path::Path::new(path).parent().unwrap();
+        if !dir.exists() {
+            let _ = fs::create_dir_all(dir);
+        }
         if let Ok(content) = serde_json::to_string_pretty(self) {
             let _ = fs::write(path, content);
         }
@@ -40,6 +44,7 @@ impl EvolutionaryEngine {
         Self { db_path: db_path.to_string() }
     }
 
+    /// Primary evolution entry point that runs N generations of mutation/selection
     pub fn search(
         &self,
         atom: &ComputeAtom,
@@ -51,6 +56,7 @@ impl EvolutionaryEngine {
         let key = format!("{}:{}", atom.name, lattice.name);
         
         let mut best_strategy = db.strategies.get(&key).cloned().unwrap_or_else(|| {
+             // Start from an informed baseline if possible, otherwise empty
              MappingStrategy {
                  tile_sizes: atom.domain.dimensions.iter().map(|d| (d.id.clone(), 32)).collect(),
                  loop_order: atom.domain.dimensions.iter().map(|d| d.id.clone()).collect(),
@@ -66,12 +72,13 @@ impl EvolutionaryEngine {
             let score = evaluator(&candidate);
             
             if score > best_score {
-                eprintln!("[Evolution] Gen {}: New best! Score: {:.2}", gen, score);
+                eprintln!("[Evolution] Gen {}: Found new best strategy! Score: {:.2}", gen, score);
                 best_score = score;
                 best_strategy = candidate;
             }
         }
 
+        // Persistence
         db.strategies.insert(key, best_strategy.clone());
         db.save(&self.db_path);
 
@@ -81,6 +88,7 @@ impl EvolutionaryEngine {
 
 impl EvolutionEngine for EvolutionaryEngine {
     fn evolve(&self, atom: &ComputeAtom, lattice: &HardwareLattice) -> MappingStrategy {
+        // Default evolution behavior with 5 gens and mock evaluator if not called via search
         self.search(atom, lattice, 5, |_| thread_rng().gen_range(0.0..10.0))
     }
 }

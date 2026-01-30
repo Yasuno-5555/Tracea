@@ -1,5 +1,3 @@
-// src/bin/icb_min_crash.rs
-
 #[cfg(target_os = "macos")]
 use metal;
 
