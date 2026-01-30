@@ -197,6 +197,7 @@ fn run_softmax(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         precison: "f32".to_string(),
         tiling: PipelineConfig::default(),
         conv_magic_strategy: None,
+        polyhedral_strategy: None,
     };
 
     let emitter = UniversalEmitter::new(backend);

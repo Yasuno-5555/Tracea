@@ -220,6 +220,7 @@ impl PyContext {
             precison: "f16".to_string(),
             tiling: final_config.clone(),
             conv_magic_strategy: None,
+            polyhedral_strategy: None,
         };
         let final_config = ir.tiling.clone(); // Clone before move
         let source = emitter.generate(ir);
@@ -313,6 +314,7 @@ impl PyContext {
             precison: "f16".to_string(),
             tiling: config.clone(),
             conv_magic_strategy: None,
+            polyhedral_strategy: None,
         };
         
         let source = emitter.generate(ir);
@@ -408,6 +410,7 @@ impl PyContext {
             precison: "f16".to_string(),
             tiling: config.clone(),
             conv_magic_strategy: None,
+            polyhedral_strategy: None,
         };
         
         let source = emitter.generate(ir);
@@ -496,6 +499,7 @@ impl PyContext {
             precison: "f32".to_string(), 
             tiling: final_config.clone(),
             conv_magic_strategy: None,
+            polyhedral_strategy: None,
         };
         
         let source = emitter.generate(ir);
@@ -964,7 +968,7 @@ impl PyTuner {
         
         // Update tuner's runtime reference for Doctor
         let mut tuner = self.inner.lock().map_err(|_| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Lock Poisoned"))?;
-        tuner.runtime = Some(ctx.runtime.clone());
+        tuner.runtime = Some(std::sync::Arc::downgrade(&ctx.runtime));
         
         let goal = crate::optimizer::OptimizationGoal::MaximizeTFLOPS;
         let config = tuner.optimize_conv(&benchmark, 20, goal); // 20 iterations default

@@ -3,6 +3,7 @@ use cudarc::driver::{CudaDevice, DriverError};
 use std::sync::Arc;
 
 pub mod primitives;
+pub mod capture;
 
 pub struct CudaBackend {
     pub device: Arc<CudaDevice>,
@@ -19,8 +20,6 @@ impl CudaBackend {
         // device.name() is available? 
         // Using "cuda:<ordinal>" as fallback or querying raw properties via separate helper if needed.
         let name = device.name().unwrap_or_else(|_| "UnknownGPU".into());
-        // For tuning, we really want Architecture (sm_86).
-        // Let's assume generic for validation.
         let device_id = format!("{}_{}", name.replace(" ", "_"), device_ordinal);
 
         Ok(Self {

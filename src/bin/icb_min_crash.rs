@@ -1,5 +1,7 @@
+#[cfg(target_os = "macos")]
 use metal;
 
+#[cfg(target_os = "macos")]
 fn main() {
     println!("[ICB Min] Starting minimal ICB test...");
     let device = metal::Device::system_default().expect("No Metal device");
@@ -40,4 +42,9 @@ fn main() {
     cmd.set_compute_pipeline_state(&pipeline);
     
     println!("[ICB Min] SUCCESS. ICB might actually work if simple?");
+}
+
+#[cfg(not(target_os = "macos"))]
+fn main() {
+    println!("ICB test is only supported on macOS.");
 }

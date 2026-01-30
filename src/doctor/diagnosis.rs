@@ -7,6 +7,7 @@ use serde::{Serialize, Deserialize};
 
 use super::registry::BackendKind;
 use crate::doctor::strategies::{get_strategy, DiagnosticStrategy};
+use crate::core::lattice::{HardwareLattice, ComputeNode, MemoryHierarchy};
 use std::io::Write;
 
 // --- Configuration ---
@@ -379,7 +380,111 @@ impl Doctor {
         report
     }
 
-     fn run_cmd(&self, cmd: &str, args: &[&str]) -> Option<String> {
+    pub fn perform_polyhedral_audit(&self, op: &crate::policy::types::OperatorTopology) -> Option<crate::doctor::polyhedral::PolyhedralAudit> {
+        let caps = crate::doctor::profiler::get_capabilities();
+        let audit = crate::doctor::polyhedral::PolyhedralAudit::analyze(op, &caps);
+        
+        if let Some(ref a) = audit {
+            if !a.issues.is_empty() {
+                eprintln!("[Doctor] 📐 Polyhedral Audit for {}: {} Issue(s) found", a.op_name, a.issues.len());
+                for issue in &a.issues {
+                    eprintln!("  - {}", issue);
+                }
+            } else {
+                println!("[Doctor] 📐 Polyhedral Audit for {}: Healthy", a.op_name);
+            }
+
+            // Print synthesized strategy
+            if !a.strategy.padding_needed.is_empty() {
+                for (dim_idx, amount) in &a.strategy.padding_needed {
+                    println!("[Doctor] 💊 Prescription: Virtual Padding of {} for dimension '{}'", amount, a.info.dim_names[*dim_idx]);
+                }
+            }
+            println!("[Doctor] 💡 Suggested Tile Sizes: {:?}", a.strategy.tile_sizes);
+        }
+        
+        audit
+    }
+
+    /// Synthesizes a hierarchical Hardware Lattice based on the observed environment.
+    pub fn synthesize_hardware_lattice(&self) -> HardwareLattice {
+        let env = self.state.lock().unwrap().last_env.clone();
+        
+        // Base structure: Device
+        let mut root = ComputeNode {
+            name: "Device".to_string(),
+            parallelism: vec![1],
+            memory: Some(MemoryHierarchy::Global),
+            children: Vec::new(),
+        };
+
+        if let Some(env_report) = env {
+            if env_report.cuda_version.is_some() {
+                // RTX 3070 Class Hierarchy: Device -> 46 SMs -> 4 Warp Groups -> 32 Threads -> 16x8x16 MMA
+                let sm_count = if env_report.gpu_name.as_deref().unwrap_or("").contains("3070") { 46 } else { 16 };
+                
+                let mut sm_node = ComputeNode {
+                    name: "SM".to_string(),
+                    parallelism: vec![sm_count],
+                    memory: Some(MemoryHierarchy::Shared),
+                    children: Vec::new(),
+                };
+
+                let mut warp_group = ComputeNode {
+                    name: "WarpGroup".to_string(),
+                    parallelism: vec![4], // 4 warp schedulers per SM in Ampere
+                    memory: Some(MemoryHierarchy::Register),
+                    children: Vec::new(),
+                };
+
+                let thread_node = ComputeNode {
+                    name: "Thread".to_string(),
+                    parallelism: vec![32],
+                    memory: Some(MemoryHierarchy::Register),
+                    children: Vec::new(),
+                };
+
+                // Add MMA capability if arch >= 70
+                let mma_node = ComputeNode {
+                    name: "TensorCore".to_string(),
+                    parallelism: vec![16, 8, 16], // M, N, K
+                    memory: None,
+                    children: Vec::new(),
+                };
+
+                warp_group.children.push(thread_node);
+                warp_group.children.push(mma_node);
+                sm_node.children.push(warp_group);
+                root.children.push(sm_node);
+            } else if env_report.metal_version.is_some() {
+                // Apple M-series structure
+                let gpu_node = ComputeNode {
+                    name: "GPU_Cluster".to_string(),
+                    parallelism: vec![8],
+                    memory: Some(MemoryHierarchy::Shared),
+                    children: vec![
+                         ComputeNode {
+                             name: "SimdGroup".to_string(),
+                             parallelism: vec![32],
+                             memory: Some(MemoryHierarchy::Register),
+                             children: Vec::new(),
+                         }
+                    ],
+                };
+                root.children.push(gpu_node);
+            }
+        }
+
+        HardwareLattice {
+            name: "Synthesized_Lattice".to_string(),
+            root,
+            bandwidth_mbps: vec![
+                ("Device".to_string(), "SM".to_string(), 448000.0), // RTX 3070 VRAM Bandwidth
+            ],
+        }
+    }
+
+    fn run_cmd(&self, cmd: &str, args: &[&str]) -> Option<String> {
         std::process::Command::new(cmd)
             .args(args)
             .output()

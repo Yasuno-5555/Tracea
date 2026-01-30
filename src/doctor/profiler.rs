@@ -1,6 +1,9 @@
 use super::capabilities::{TraceaCapabilities, BackendCapabilities};
 use super::registry::BackendKind;
 use cudarc::driver::{CudaDevice, sys};
+use serde::{Serialize, Deserialize};
+use std::sync::{Mutex, OnceLock};
+use std::time::Instant;
 
 // Mock/Stub logic for backends not available in this environment
 // In a real scenario, we'd use conditional compilation or dynamic loading (dlopen)
@@ -214,5 +217,57 @@ fn calculate_env_id_from_backends(backends: &[BackendCapabilities], out_hash: &m
     let bytes = json.as_bytes();
     for (i, &b) in bytes.iter().enumerate() {
         out_hash[i % 32] ^= b;
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ChromeTraceEvent {
+    pub name: String,
+    pub cat: String,
+    pub ph: String, // "B" (Begin) or "E" (End)
+    pub ts: u64,    // timestamp (micros)
+    pub pid: u32,
+    pub tid: u32,
+}
+
+pub struct TraceProfiler {
+    events: Mutex<Vec<ChromeTraceEvent>>,
+    start_time: Instant,
+}
+
+static PROFILER: OnceLock<TraceProfiler> = OnceLock::new();
+
+impl TraceProfiler {
+    pub fn get() -> &'static Self {
+        PROFILER.get_or_init(|| Self {
+            events: Mutex::new(Vec::new()),
+            start_time: Instant::now(),
+        })
+    }
+
+    pub fn record(&self, name: String, ph: &str) {
+        let ts = self.start_time.elapsed().as_micros() as u64;
+        let mut events = self.events.lock().unwrap();
+        // Fallback for thread ID if as_u64 is not stable enough or different across platforms
+        let tid = format!("{:?}", std::thread::current().id());
+        // Simple hash of tid string to u32
+        let tid_u32 = tid.chars().fold(0u32, |acc, c| acc.wrapping_add(c as u32));
+
+        events.push(ChromeTraceEvent {
+            name,
+            cat: "execution".to_string(),
+            ph: ph.to_string(),
+            ts,
+            pid: 1,
+            tid: tid_u32,
+        });
+    }
+
+    pub fn save(&self, path: &str) {
+        let events = self.events.lock().unwrap();
+        if let Ok(json) = serde_json::to_string(&*events) {
+            let _ = std::fs::write(path, json);
+            println!("[Doctor] 📊 Saved timeline trace to {}", path);
+        }
     }
 }

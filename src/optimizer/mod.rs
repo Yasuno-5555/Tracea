@@ -271,6 +271,7 @@ pub mod orchestrator;
 pub mod semantic;
 pub mod history;
 pub mod tuner;
+pub mod evolution;
 
 use benchmark::{MicroBenchmark, Observation, BenchmarkResult, Conv2dBenchmark, ConvConfig, Conv2dProblem};
 use cache::{TuningCache, CacheKey};

@@ -33,22 +33,24 @@ fn main() {
 
     // 2. Compile Plan
     println!("Compiling plan...");
+    let backend = if cfg!(target_os = "macos") { DeviceBackend::Metal } else { DeviceBackend::Cuda };
+    
     let plan = {
         let compiler = manager.compiler.lock().unwrap();
-        compiler.compile(graph.clone(), &manager).expect("Compilation failed")
+        compiler.compile(graph.clone(), &manager, backend).expect("Compilation failed")
     };
     println!("Plan compiled. Steps: {}", plan.steps.len());
     
     // 3. Alloc Memory
     let arena_size = 256 * 1024 * 1024;
-    manager.init_arena(arena_size, DeviceBackend::Metal).expect("Arena init failed");
+    manager.init_arena(arena_size, backend).expect("Arena init failed");
     
     // Alloc inputs manually
     let input_size = 1 * 64 * 56 * 56 * 2; // FP16
     let weight_size = 64 * 64 * 3 * 3 * 2; // FP16
     
-    let buf_in = manager.alloc(input_size, DeviceBackend::Metal).expect("Alloc input failed");
-    let buf_w = manager.alloc(weight_size, DeviceBackend::Metal).expect("Alloc weight failed");
+    let buf_in = manager.alloc(input_size, backend).expect("Alloc input failed");
+    let buf_w = manager.alloc(weight_size, backend).expect("Alloc weight failed");
     
     let mut inputs = HashMap::new();
     inputs.insert(1, buf_in);

@@ -90,6 +90,7 @@ impl TunableKernel for MetalGemmAdapter {
             precison: "f16".to_string(),
             tiling: cfg.clone(),
             conv_magic_strategy: None,
+            polyhedral_strategy: None,
         };
 
         let emitter = UniversalEmitter::new(DeviceBackend::Metal);

@@ -38,6 +38,10 @@ pub struct MetalConvParams {
     pub batch: u32, pub h_in: u32, pub w_in: u32, pub c_in: u32, pub k_out: u32,
     pub h_out: u32, pub w_out: u32, pub r_sz: u32, pub s_sz: u32,
     pub stride: u32, pub pad: u32, pub dilation: u32,
+    pub hw_m: u32, pub hw_s: u32,
+    pub w_m: u32, pub w_s: u32,
+    pub sic_m: u32, pub sic_s: u32,
+    pub c_m: u32, pub c_s: u32,
 }
 
 #[repr(C)]
@@ -156,6 +160,7 @@ impl RuntimeManager {
         let doctor = Doctor::global();
         doctor.diagnose_environment();
 
+        let selected_backend = pref_backend.unwrap_or(DeviceBackend::Cuda);
         let instance = Arc::new_cyclic(|me| {
             let tuner = Arc::new(MetaTuner::new(me.clone()));
             
@@ -171,7 +176,7 @@ impl RuntimeManager {
             arena: Mutex::new(None),
             graph_cache: RwLock::new(GraphCache::new()),
             compiler: Mutex::new(GraphCompiler::new()),
-            executor: GraphExecutor::new(),
+            executor: GraphExecutor::new(selected_backend),
             tuner,
             }
         });

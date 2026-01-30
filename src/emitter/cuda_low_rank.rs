@@ -188,6 +188,7 @@ mod tests {
             precison: "f16".to_string(),
             tiling: PipelineConfig::new(2, 64, 64, 32),
             conv_magic_strategy: None,
+            polyhedral_strategy: None,
         };
         let source = generate_low_rank_mlp(&ir);
         assert!(source.contains("low_rank_mlp_kernel"));

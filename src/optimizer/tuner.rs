@@ -12,6 +12,7 @@ pub struct MetaTuner {
     runtime: std::sync::Weak<RuntimeManager>,
     tuners: HashMap<DeviceBackend, Mutex<AutoTuner>>,
     history: Mutex<TuningHistory>,
+    pub evolution: std::sync::Arc<crate::optimizer::evolution::EvolutionaryEngine>,
 }
 
 impl MetaTuner {
@@ -50,6 +51,7 @@ impl MetaTuner {
             runtime,
             tuners,
             history: Mutex::new(TuningHistory::load_or_create("tuning_history.json")),
+            evolution: std::sync::Arc::new(crate::optimizer::evolution::EvolutionaryEngine::new("dna_database.json")),
         }
     }
     
@@ -143,5 +145,35 @@ impl MetaTuner {
             stats.insert(*backend, t.stats.clone());
         }
         stats
+    }
+
+    /// Primary evolution entry point for a ComputeAtom
+    pub fn tune_atom(
+        &self,
+        atom: &crate::core::manifold::ComputeAtom,
+        backend: DeviceBackend,
+        generations: usize,
+    ) -> Option<crate::core::mapper::MappingStrategy> {
+        let runtime_arc = self.runtime.upgrade()?;
+        let lattice = runtime_arc.doctor.synthesize_hardware_lattice();
+        
+        eprintln!("[MetaTuner] 🧬 Starting evolution for atom: {} on lattice: {}", atom.name, lattice.name);
+        
+        let best_strategy = self.evolution.search(atom, &lattice, generations, |strategy| {
+            // Evaluator: Heuristic + Basic Occupancy check for now in POC
+            // A full implementation would compile and run here using NVRTCBenchmark-like logic
+            let (grid, block) = strategy.get_launch_params(atom);
+            let threads = grid.0 * grid.1 * grid.2 * block.0 * block.1 * block.2;
+            
+            if threads == 0 { return 0.0; }
+            
+            // Simulated Fitness: Prefer larger tiles and higher occupancy
+            let tile_score = strategy.tile_sizes.values().sum::<usize>() as f32;
+            let occupancy_multiplier = if block.0 % 32 == 0 { 1.2 } else { 0.8 };
+            
+            tile_score * occupancy_multiplier
+        });
+        
+        Some(best_strategy)
     }
 }

@@ -17,3 +17,8 @@ pub mod device;
 pub mod ttg;
 pub mod cost;
 pub mod optimizer;
+pub mod polyhedral;
+pub mod manifold;
+pub mod lattice;
+pub mod mapper;
+pub mod evolution;

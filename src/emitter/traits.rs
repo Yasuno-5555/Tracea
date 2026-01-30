@@ -26,6 +26,7 @@ pub struct UnifiedOpIR {
     pub precison: String,
     pub tiling: crate::PipelineConfig,
     pub conv_magic_strategy: Option<crate::core::config::MagicNumberStrategy>,
+    pub polyhedral_strategy: Option<crate::core::polyhedral::TilingStrategy>,
 }
 
 #[derive(Debug, Clone)]

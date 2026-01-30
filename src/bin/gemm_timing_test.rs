@@ -31,6 +31,7 @@ fn main() {
             ..Default::default()
         },
         conv_magic_strategy: None,
+        polyhedral_strategy: None,
     };
     
     let emitter = tracea::emitter::metal::MetalEmitter::detect();

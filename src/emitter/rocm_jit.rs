@@ -23,39 +23,36 @@ pub struct RocmJitApi {
     pub hiprtcDestroyProgram: Symbol<'static, HiprtcDestroyProgram>,
 }
 
-static mut ROCM_JIT_API: Option<RocmJitApi> = None;
+static ROCM_JIT_API: std::sync::OnceLock<Option<RocmJitApi>> = std::sync::OnceLock::new();
 
 impl RocmJitApi {
     pub fn get() -> Option<&'static Self> {
-        unsafe {
-            if ROCM_JIT_API.is_some() {
-                return ROCM_JIT_API.as_ref();
-            }
-
-            let lib_res = Library::new("hiprtc.dll"); 
-            if let Ok(lib) = lib_res {
-                let lib_ref: &'static Library = Box::leak(Box::new(lib));
-                
-                if let (Ok(create), Ok(compile), Ok(get_size), Ok(get_code), Ok(destroy)) = (
-                    lib_ref.get(b"hiprtcCreateProgram"),
-                    lib_ref.get(b"hiprtcCompileProgram"),
-                    lib_ref.get(b"hiprtcGetCodeSize"),
-                    lib_ref.get(b"hiprtcGetCode"),
-                    lib_ref.get(b"hiprtcDestroyProgram"),
-                ) {
-                    ROCM_JIT_API = Some(RocmJitApi {
-                        lib: lib_ref,
-                        hiprtcCreateProgram: create,
-                        hiprtcCompileProgram: compile,
-                        hiprtcGetCodeSize: get_size,
-                        hiprtcGetCode: get_code,
-                        hiprtcDestroyProgram: destroy,
-                    });
-                    return ROCM_JIT_API.as_ref();
+        ROCM_JIT_API.get_or_init(|| {
+            unsafe {
+                let lib_res = Library::new("hiprtc.dll"); 
+                if let Ok(lib) = lib_res {
+                    let lib_ref: &'static Library = Box::leak(Box::new(lib));
+                    
+                    if let (Ok(create), Ok(compile), Ok(get_size), Ok(get_code), Ok(destroy)) = (
+                        lib_ref.get(b"hiprtcCreateProgram"),
+                        lib_ref.get(b"hiprtcCompileProgram"),
+                        lib_ref.get(b"hiprtcGetCodeSize"),
+                        lib_ref.get(b"hiprtcGetCode"),
+                        lib_ref.get(b"hiprtcDestroyProgram"),
+                    ) {
+                        return Some(RocmJitApi {
+                            lib: lib_ref,
+                            hiprtcCreateProgram: create,
+                            hiprtcCompileProgram: compile,
+                            hiprtcGetCodeSize: get_size,
+                            hiprtcGetCode: get_code,
+                            hiprtcDestroyProgram: destroy,
+                        });
+                    }
                 }
+                None
             }
-            None
-        }
+        }).as_ref()
     }
 }
 

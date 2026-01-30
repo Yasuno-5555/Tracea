@@ -16,9 +16,9 @@ impl GraphCompiler {
 
     /// Consumes the graph and produces an ExecutionPlan.
     /// This is the "Slow Path".
-    pub fn compile(&self, graph: GraphTopology, manager: &RuntimeManager) -> Result<ExecutionPlan, String> {
+    pub fn compile(&self, graph: GraphTopology, manager: &RuntimeManager, backend: DeviceBackend) -> Result<ExecutionPlan, String> {
         // 1. Optimize & Select Kernels (Policy)
-        let (decision, optimized_graph) = self.optimize_graph(&graph)?;
+        let (decision, optimized_graph) = self.optimize_graph(&graph, backend)?;
         let sorted_nodes = self.schedule(&decision);
         let (arena_offsets, arena_size) = self.plan_memory(&optimized_graph, &sorted_nodes, &decision)?;
 
@@ -37,24 +37,39 @@ impl GraphCompiler {
             }
 
             // Compile Kernel (JIT)
-            // Use backend from Manager? Or hardcoded Metal for now?
-            let backend = DeviceBackend::Metal;
             let kernel_id = self.compile_kernel(operator, tile_policy.cloned(), manager, backend)?;
             
             // Build Arguments
             let args = self.build_arguments(operator, &optimized_graph, &arena_offsets, op_id)?;
 
-            // Calc grid/block (simplified)
-            // Ideally should come from `tile_policy` or `TTGBuilder`.
-            // For now, use a naive heuristic or `TTGBuilder` if accessible.
             let (grid_size, block_size) = self.calculate_launch_dims(operator, tile_policy.cloned());
-            let shared_mem = 0; 
+            
+            // Unified Shared Memory Calculation via Emitters (Temporary transition)
+            let shared_mem_bytes = match operator {
+                OperatorTopology::Conv2d { .. } => {
+                    let ir = self.build_ir(operator, tile_policy, None).unwrap();
+                    crate::emitter::conv::calculate_smem_usage(&ir)
+                },
+                _ => 0,
+            };
+
+            // Prototype: Create Manifold & Lattice (Not used yet in execution, but verifying path)
+            let lattice = manager.doctor.synthesize_hardware_lattice();
+            let _atom = match operator {
+                OperatorTopology::Conv2d { n, c, h, w, k, r, s, stride, padding, .. } => {
+                    Some(crate::core::manifold::ComputeAtom::from_conv2d(*n, *c, *h, *w, *k, *r, *s, *stride, *padding, 1))
+                },
+                OperatorTopology::Gemm { m, n, k, batch, .. } => {
+                    Some(crate::core::manifold::ComputeAtom::from_gemm(*m, *n, *k, *batch))
+                },
+                _ => None,
+            };
 
             steps.push(ExecutionStep::LaunchKernel {
                 kernel_id,
                 grid_size,
                 block_size,
-                shared_mem_bytes: shared_mem,
+                shared_mem_bytes: shared_mem_bytes as u32,
                 args,
             });
         }
@@ -81,13 +96,13 @@ impl GraphCompiler {
     }
     
     // Helper methods
-    fn optimize_graph(&self, graph: &GraphTopology) -> Result<(PolicyDecision, GraphTopology), String> {
+    fn optimize_graph(&self, graph: &GraphTopology, backend: DeviceBackend) -> Result<(PolicyDecision, GraphTopology), String> {
         // 1. Canonicalize & Optimize
         let mut optimized_graph = graph.clone();
         crate::policy::transform::canonicalize_graph(&mut optimized_graph);
         crate::core::optimizer::GraphOptimizer::optimize(&mut optimized_graph);
 
-        let device = crate::core::device::DeviceProfile::from_backend(DeviceBackend::Metal); // Hardcoded for now, or pass in
+        let device = crate::core::device::DeviceProfile::from_backend(backend);
         let mut engine = crate::policy::standard::StandardPolicyEngine::new();
         let ctx = crate::policy::types::GraphContext {
             device: &device,
@@ -180,7 +195,8 @@ impl GraphCompiler {
             }
         }
 
-        let ir = self.build_ir(operator, final_policy.as_ref())?;
+        let audit = manager.doctor.perform_polyhedral_audit(operator);
+        let ir = self.build_ir(operator, final_policy.as_ref(), audit.map(|a| a.strategy))?;
         
         use crate::emitter::traits::Emitter;
         let (source, kernel_name) = match backend {
@@ -275,7 +291,9 @@ impl GraphCompiler {
         &self,
         operator: &OperatorTopology,
         tile_policy: Option<&crate::policy::types::TilePolicy>,
+        polyhedral_strategy: Option<crate::core::polyhedral::TilingStrategy>,
     ) -> Result<crate::emitter::traits::UnifiedOpIR, String> {
+        // ... (match blocks) ...
         let op_type = match operator {
             OperatorTopology::Gemm { m, n, k, batch, epilogue, .. } => {
                 crate::emitter::traits::UnifiedOpType::Gemm { 
@@ -360,12 +378,13 @@ impl GraphCompiler {
             },
             _ => crate::PipelineConfig::default(),
         };
-
+ 
         Ok(crate::emitter::traits::UnifiedOpIR {
             op_type,
             precison: "fp16".to_string(),
             tiling,
             conv_magic_strategy: None,
+            polyhedral_strategy,
         })
     }
 
@@ -448,10 +467,20 @@ impl GraphCompiler {
              OperatorTopology::Conv2d { n, h, w, c, k, r, s, stride, padding, .. } => {
                   let h_out = (h + 2 * padding - 1 * (r - 1) - 1) / stride + 1;
                   let w_out = (w + 2 * padding - 1 * (s - 1) - 1) / stride + 1;
+                  
+                  let (hw_m, hw_s) = crate::emitter::conv::magic_u32(h_out * w_out);
+                  let (w_m, w_s) = crate::emitter::conv::magic_u32(w_out);
+                  let (sic_m, sic_s) = crate::emitter::conv::magic_u32(*s * *c);
+                  let (c_m, c_s) = crate::emitter::conv::magic_u32(*c);
+
                   let params = crate::runtime::manager::MetalConvParams {
                          batch: *n, h_in: *h, w_in: *w, c_in: *c, k_out: *k,
                          h_out, w_out, r_sz: *r, s_sz: *s,
                          stride: *stride, pad: *padding, dilation: 1,
+                         hw_m, hw_s,
+                         w_m, w_s,
+                         sic_m, sic_s,
+                         c_m, c_s,
                      };
                      let mut bytes = Vec::new();
                      let ptr = &params as *const crate::runtime::manager::MetalConvParams as *const u8;

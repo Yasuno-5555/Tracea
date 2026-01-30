@@ -248,6 +248,7 @@ pub extern "C" fn tracea_conv2d(
             precison: "f16".to_string(), // Fixed f16 for now
             tiling: config.clone(),
             conv_magic_strategy: None,
+            polyhedral_strategy: None,
         };
 
         let source = emitter.generate(ir);
@@ -327,6 +328,7 @@ pub extern "C" fn tracea_conv_transpose2d(
             precison: "f32".to_string(), // ConvTranspose used f32 in Python
             tiling: config.clone(),
             conv_magic_strategy: None,
+            polyhedral_strategy: None,
         };
 
         let source = emitter.generate(ir);
@@ -398,6 +400,7 @@ pub extern "C" fn tracea_gemm(
             precison: "f16".to_string(),
             tiling: config.clone(),
             conv_magic_strategy: None,
+            polyhedral_strategy: None,
         };
 
         let source = emitter.generate(ir);
@@ -461,6 +464,7 @@ pub extern "C" fn tracea_attention(
         precison: "f16".to_string(),
         tiling: config.clone(),
         conv_magic_strategy: None,
+        polyhedral_strategy: None,
     };
 
     let source = emitter.generate(ir);
