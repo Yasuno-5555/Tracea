@@ -3,7 +3,7 @@ use std::env;
 use std::fs::File;
 use std::io::Write;
 use tracea::runtime::{RuntimeManager, DeviceBackend, KernelArg};
-use tracea::optimizer::{AutoTuner, OptimizationGoal, HardwareProfile};
+use tracea::optimizer::{AutoTuner, OptimizationGoal};
 use tracea::core::config::PipelineConfig;
 use tracea::emitter::universal::UniversalEmitter;
 use chrono::Local;
@@ -98,7 +98,7 @@ fn run_gemm(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let path = Path::new(&output_file);
-    let mut file = File::create(&path)?;
+    let mut file = File::create(path)?;
     file.write_all(serde_json::to_string_pretty(&json_output)?.as_bytes())?;
     
     println!("Results saved to {}", output_file);
@@ -121,7 +121,7 @@ fn run_conv(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let stride = args.get(7).map(|s| s.parse().unwrap_or(1)).unwrap_or(1);
     let pad = args.get(8).map(|s| s.parse().unwrap_or(0)).unwrap_or(0);
 
-    let output_file = "conv_bench_results.json".to_string();
+    let _output_file = "conv_bench_results.json".to_string();
 
     println!("Starting Tuner for Conv2d Nx{}x{}x{} -> Kx{}x{}", h, w, c_in, r, s);
 
@@ -169,7 +169,7 @@ fn run_conv(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn run_softmax(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    if args.len() < 1 {
+    if args.is_empty() {
         eprintln!("Usage: tuner softmax <size> [--out <file>]");
         return Ok(());
     }

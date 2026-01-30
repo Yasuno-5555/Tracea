@@ -39,8 +39,8 @@ fn main() {
     let kernel_id = runtime.compile(&source, "unified_gemm_kernel", backend).unwrap();
     
     // TTG for dispatch (L1/L2 tile map)
-    let num_m_tiles = (m + 64 - 1) / 64;
-    let num_n_tiles = (n + 64 - 1) / 64;
+    let num_m_tiles = m.div_ceil(64);
+    let num_n_tiles = n.div_ceil(64);
     let num_tiles = num_m_tiles * num_n_tiles;
     
     // Create simple L1 map (identity)

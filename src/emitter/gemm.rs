@@ -35,7 +35,7 @@ extern "C" __global__ void unified_gemm_kernel(const half* A, const half* B, flo
     int row = blockIdx.y * MT;
     int col = blockIdx.x * NT;
 
-    for (int k_step = 0; k_step < K; k_step += KT) {{
+    for (int k_step = 0; k_step < K; k_step += 16) {{
         wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::row_major> frag_a;
         wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::row_major> frag_b;
         

@@ -1,8 +1,6 @@
-use tracea::core::config::PipelineConfig;
 use tracea::policy::types::{GraphTopology, OperatorTopology};
 use tracea::runtime::manager::{RuntimeManager, DeviceBackend};
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::Instant;
 
 fn main() {
@@ -44,7 +42,7 @@ fn main() {
     manager.init_arena(arena_size, DeviceBackend::Metal).expect("Arena init failed");
     
     // Alloc inputs manually
-    let input_size = 1 * 64 * 56 * 56 * 2; // FP16
+    let input_size = 64 * 56 * 56 * 2; // FP16
     let weight_size = 64 * 64 * 3 * 3 * 2; // FP16
     
     let buf_in = manager.alloc(input_size, DeviceBackend::Metal).expect("Alloc input failed");

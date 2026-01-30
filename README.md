@@ -4,15 +4,13 @@
 
 ---
 
-## 🚀 Latest Benchmark Results (v4.0 - Universal Abstraction)
+## 🚀 Latest Benchmark Results (Jan 2026 - v0.1.0)
 
-| Operation | Hardware | Performance | Notes |
-|-----------|----------|-------------|-------|
-| **Fused Conv2d** | RTX 3070 (Simulated) | **~13.36 TFLOPS** | **Universal Emitter**, Fused BN+ReLU, Competitive with cuDNN |
-| **GEMM** | RTX 3070 | >20 TFLOPS | Tensor Core MMA, 2-stage pipeline |
-| **Low-Rank MLP** | RTX 3070 | 18.2 TFLOPS | **Policy Engine** Guided, TTG Dispatch |
-| **Conv2d** | RTX 3070 | 22.73 TFLOPS | **Implicit GEMM**, 3-stage Pipeline, 78% Peak |
-| **ResNet Block** | **Apple M1** | **17.65 ms** | **Fused (Conv+BN+ReLU)**, Metal Backend |
+| Operation | Hardware | Performance | Vs. PyTorch | Notes |
+|-----------|----------|-------------|-------------|-------|
+| **GEMM (4096³)** | RTX 3070 | **65.43 TFLOPS** | **1.9x Faster** 🏆 | High-Occupancy Polyhedral Tiling |
+| **Fused Conv2d** | RTX 3070 | 8.62 TFLOPS | 0.6x | Implicit GEMM (Winograd planned for v0.2) |
+| **ResNet Block** | Apple M1 | 17.65 ms | N/A | Fused (Conv+BN+ReLU), Metal Backend |
 
 ---
 

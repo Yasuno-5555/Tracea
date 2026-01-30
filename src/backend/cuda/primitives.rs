@@ -29,7 +29,7 @@ __device__ __forceinline__ void cp_async_ampere(void* smem_ptr, const void* glob
     // Let's stick to generating the DEFINITIONS first, as fa2.rs embeds them at the top.
     
     pub fn all_definitions() -> String {
-        let mut code = String::new();
+        let mut code = String::from("\ntypedef unsigned int uint32_t;\ntypedef unsigned long long uint64_t;\n");
         code.push_str(Self::ldmatrix_def().as_str());
         code.push_str(Self::mma_def().as_str());
         code.push_str(Self::mbarrier_defs().as_str());

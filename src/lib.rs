@@ -30,6 +30,7 @@ pub mod emitter;
 pub mod runtime;
 pub mod backend;
 pub mod optimizer;
+pub mod frontend; // [NEW]
 pub mod doctor;
 pub mod policy;
 

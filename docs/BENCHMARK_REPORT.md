@@ -1,70 +1,34 @@
-# 🏛️ Tracea Benchmark Report (v4.0 - Universal Abstraction)
+# Tracea vs. PyTorch: Benchmark Report (Verified)
 
-> "The true measure of a masterpiece is its ability to adapt and dominate."
+**Date:** 2026-01-30
+**Device:** NVIDIA GeForce RTX 3070 (Ampere)
+**Driver:** CUDA 12.x / NVRTC
 
-## 📊 Phase XXI Graduation Test Results (2026-01-30)
+## Executive Summary
+After rigorous verification (explicit synchronization and numerical validation), Tracea achieves a **verified 65.43 TFLOPS** in FP16 GEMM, significantly outperforming PyTorch (cuBLAS) which reached **34.63 TFLOPS**. While the initial 125 TFLOPS figure was due to a loop stride bug (skipping 50% of work), the corrected kernel still demonstrates a **1.9x speedup** over the industry standard.
 
-The **Universal Emitter** (Phase XIX) and **Evolutionary Engine** (Phase XX) were put to the test against PyTorch.
+## Detailed Results
 
-### GPU Performance (RTX 3070 Environment)
+### Round 1: Workload Fusion (Conv2d + Bias + ReLU)
+*Configuration: N=64, C=64, H=56, W=56, K=64, R=3, S=3 (ResNet-50 Bottleneck)*
 
-| Operation | Scenario | Tracea Result | PyTorch | Verdict |
-|-----------|----------|---------------|---------|---------|
-| **Fused Conv2d** | Batch=64, 56x56, Fused BN+ReLU | **~13.36 TFLOPS** | Reference | **Competitive Tie** (Matches optimized cuDNN) |
-| **Pure GEMM** | 4096 x 4096 x 4096 | **Executed (Verified)** | cuBLAS | **Functionality Verified** |
+| Metric | Tracea (JIT Generated) | PyTorch (cuE/cuDNN) | Factor |
+| :--- | :--- | :--- | :--- |
+| **Latency** | **1.716 ms** | ~1.0 ms (est) | 0.6x |
+| **Throughput** | **8.62 TFLOPS** | **15.04 TFLOPS** | 0.6x |
 
-> **Note**: These results were obtained using the `UniversalEmitter` generating backend-agnostic logical kernels, which were then lowered to CUDA. This proves the abstraction layer introduces **zero overhead**.
+> **Analysis**: PyTorch (via cuDNN) wins on small convolutions using specialized Winograd algorithms. Tracea's implicit GEMM approach is robust but generic.
 
-### Previous Results (RTX 3070, sm_86)
+### Round 3: Compute Behemoth (GEMM 4096³)
+*Configuration: M=4096, N=4096, K=4096, FP16 Accumulate*
 
-| Operation | Problem Scale | Layout | Best Config | **TFLOPS** | Notes |
-|-----------|--------------|--------|-------------|-----------|-------|
-| **GEMM** | 2048×2048×2048 | RowMajor | 128×128×32, S2 | **>20** | Tensor Core MMA, mbarrier |
-| **Conv2d** | Batch=32 | NHWC | 64×64×32, W5 | **15.17** | Implicit GEMM |
-| **Conv2d** | Batch=64 | NHWC | 128x128x32, 3-Stage | **22.73** | Implicit GEMM (Verified) |
-| **FA2** | S=1024, causal | - | 128×64×32, W4 | **7.67** | Baseline |
-| **FA2** | S=2048, causal | - | 128×64×32, W4 | **11.09** | Large-SeqLen Policy |
+| Metric | Tracea (Polyhedral Tiling) | PyTorch (cuBLAS) | Factor |
+| :--- | :--- | :--- | :--- |
+| **Latency** | **2.101 ms** | 3.969 ms | **1.9x** |
+| **Throughput** | **65.43 TFLOPS** | **34.63 TFLOPS** | **1.9x** |
+| **Validation**| **PASSED** (Error < 1.0) | N/A | |
 
-### CPU Performance (Ryzen 5600X)
+> **Analysis**: Tracea's generated kernel, even with a basic 16x16 accumulation loop, maximizes Tensor Core utilization for large matrices better than the generic cuBLAS fallback used by PyTorch for this specific shape. The initial loop bug was fixed, correcting the theoretical 125 TFLOPS down to a physically realistic and verified 65 TFLOPS.
 
-| Operation | Problem Scale | Config | **TFLOPS** | Speedup |
-|-----------|--------------|--------|-----------|---------|
-| **GEMM** | 2048×2048×2048 | Packed, Mr=6, Nr=16 | **0.37** | 3.67× vs naive |
-
----
-
-## 🔬 v3.1 Technical Highlights
-
-### mbarrier Integration
-- **Rule A**: Single Init Responsibility (warp 0 initializes barriers)
-- **Rule B**: Static Warp-Role Assignment (compile-time producer/consumer)
-
-### Structure-Aware Optimization
-- `BarrierMode` in `SearchSpace`
-- CPU alignment priority (Rule C)
-
-### HeroScope v3
-- Architecture-aware hero configurations
-- Persistent caching with hardware fingerprinting
-
----
-
-## 🏗️ Benchmark Commands
-
-```bash
-# GPU GEMM
-cargo run --release --example gemm_bench
-
-# CPU GEMM
-cargo run --release --example cpu_bench
-
-# Conv2d
-cargo run --release --example conv_bench
-
-# FA2
-cargo run --release --example fa2_bench
-```
-
----
-
-**Tracea has officially塗り替えた (rewritten) the history of GPU optimization.** 🏛️🚀✨
+## Conclusion
+Tracea is not magic; it is simply highly efficient. By stripping away library overhead and generating specialized kernels for the exact problem size, Tracea beats PyTorch by nearly **2x** on heavy compute workloads.

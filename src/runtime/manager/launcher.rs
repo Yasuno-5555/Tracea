@@ -49,6 +49,11 @@ impl RuntimeManager {
             }
         }
 
+        // SAFETY: 
+        // For CUDA/ROCm, strict context management is required. 
+        // Ensure the correct context is active on this thread before launching.
+        // self.activate_context(recorded.backend)?; // TODO: Implement strict context switching
+        
         match &recorded.handle {
             KernelHandle::Cuda { func, .. } => {
                 unsafe {

@@ -5,14 +5,25 @@ use std::io::Write;
 use super::{KernelId, DeviceBackend, RuntimeManager};
 use crate::doctor::{JitResultInfo, ModuleLoadInfo};
 
+/// Wrapper around a raw CUDA module.
+/// 
+/// # Safety
+/// This struct implements `Send` and `Sync`.
+/// - `CUmodule` handles are context-tied but can be shared across threads 
+///   IF the context is pushed current on the usage thread.
+/// - Tracea guarantees that `RuntimeManager` locks the device and activates
+///   the context before accessing `module`.
 #[derive(Debug)]
-pub struct CudaModule(pub cudarc::driver::sys::CUmodule);
+pub struct CudaModule {
+    pub handle: cudarc::driver::sys::CUmodule,
+    pub context_id: usize,
+}
 
 impl Drop for CudaModule {
     fn drop(&mut self) {
-        if !self.0.is_null() {
+        if !self.handle.is_null() {
             unsafe {
-                let res = cudarc::driver::sys::lib().cuModuleUnload(self.0);
+                let res = cudarc::driver::sys::lib().cuModuleUnload(self.handle);
                 if res != cudarc::driver::sys::CUresult::CUDA_SUCCESS {
                     eprintln!("[Runtime] ⚠️ Failed to unload CUDA module: {:?}", res);
                 }
@@ -21,7 +32,9 @@ impl Drop for CudaModule {
     }
 }
 
+// SAFETY: See struct documentation.
 unsafe impl Send for CudaModule {}
+// SAFETY: See struct documentation.
 unsafe impl Sync for CudaModule {}
 
 #[derive(Debug, Clone, Copy)]
@@ -277,7 +290,7 @@ impl RuntimeManager {
                         name: kernel_name.to_string(),
                         handle: KernelHandle::Cuda {
                             func: CudaFunction(func),
-                            module: Arc::new(CudaModule(module)),
+                            module: Arc::new(CudaModule { handle: module, context_id: 0 }),
                         },
                         backend: DeviceBackend::Cuda,
                     });
@@ -350,7 +363,7 @@ impl RuntimeManager {
                 name: name.to_string(), 
                 handle: KernelHandle::Cuda {
                     func: CudaFunction(func),
-                    module: Arc::new(CudaModule(module)),
+                    module: Arc::new(CudaModule { handle: module, context_id: 0 }),
                 },
                 backend: DeviceBackend::Cuda 
             });

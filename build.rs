@@ -22,7 +22,7 @@ fn main() {
             .flag("-O3")
             .flag("--use_fast_math")
             .flag("-gencode")
-            .flag(&format!("arch=compute_{},code={}", &arch[3..], arch))
+            .flag(format!("arch=compute_{},code={}", &arch[3..], arch))
             .include("src/kernels/gpu")
             .compile("tracea_kernels");
 

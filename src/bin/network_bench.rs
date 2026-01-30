@@ -51,7 +51,7 @@ fn run_resnet18_benchmark(runtime: &RuntimeManager, backend: DeviceBackend) {
 
     // 3. ReLU
     operators.push(OperatorTopology::Relu {
-        op_id: op_id_counter, name: "stem_relu".into(), n: 1 * 64 * 56 * 56,
+        op_id: op_id_counter, name: "stem_relu".into(), n: 64 * 56 * 56,
     });
     dependencies.push((current_id, op_id_counter));
     current_id = op_id_counter;
@@ -71,7 +71,7 @@ fn run_resnet18_benchmark(runtime: &RuntimeManager, backend: DeviceBackend) {
         
         for i in 0..2 {
             let block_stride = if i == 0 { *stride } else { 1 };
-            let out_size = (block_size + 2 * 1 - 3) / block_stride + 1;
+            let out_size = (block_size + 2 - 3) / block_stride + 1;
             
             // Start of Block
             let shortcut_id = current_id;
@@ -98,7 +98,7 @@ fn run_resnet18_benchmark(runtime: &RuntimeManager, backend: DeviceBackend) {
             // ReLU 1
             operators.push(OperatorTopology::Relu {
                 op_id: op_id_counter, name: format!("layer_{}_block_{}_relu1", out_c, i),
-                n: (1 * out_c * out_size * out_size) as usize,
+                n: (*out_c * out_size * out_size) as usize,
             });
             dependencies.push((current_id, op_id_counter));
             current_id = op_id_counter;
@@ -150,7 +150,7 @@ fn run_resnet18_benchmark(runtime: &RuntimeManager, backend: DeviceBackend) {
             operators.push(OperatorTopology::Elementwise {
                 op_id: op_id_counter, name: format!("layer_{}_block_{}_add", out_c, i),
                 kind: "Add".into(),
-                n: (1 * out_c * out_size * out_size) as usize,
+                n: (*out_c * out_size * out_size) as usize,
             });
             dependencies.push((main_path_id, op_id_counter));
             dependencies.push((final_shortcut_id, op_id_counter));
@@ -160,7 +160,7 @@ fn run_resnet18_benchmark(runtime: &RuntimeManager, backend: DeviceBackend) {
             // ReLU 2
             operators.push(OperatorTopology::Relu {
                 op_id: op_id_counter, name: format!("layer_{}_block_{}_relu2", out_c, i),
-                n: (1 * out_c * out_size * out_size) as usize,
+                n: (*out_c * out_size * out_size) as usize,
             });
             dependencies.push((current_id, op_id_counter));
             current_id = op_id_counter;
@@ -195,7 +195,7 @@ fn run_resnet18_benchmark(runtime: &RuntimeManager, backend: DeviceBackend) {
     println!("[Graph] Generated ResNet-18 with {} operators", graph.operators.len());
 
     let mut inputs = HashMap::new();
-    inputs.insert(input_id, runtime.alloc(1*3*224*224*2, backend).unwrap());
+    inputs.insert(input_id, runtime.alloc(3*224*224*2, backend).unwrap());
 
     println!("[Benchmark] Running ResNet-18 warmup...");
     let result = runtime.execute_graph(&graph, &inputs, backend);
@@ -250,7 +250,7 @@ fn run_downsample_test(runtime: &RuntimeManager, backend: DeviceBackend) {
 
     // 3. ReLU
     operators.push(OperatorTopology::Relu {
-        op_id: 4, name: "main_relu".into(), n: 1 * 128 * 7 * 7,
+        op_id: 4, name: "main_relu".into(), n: 128 * 7 * 7,
     });
     dependencies.push((3, 4));
 
@@ -283,21 +283,21 @@ fn run_downsample_test(runtime: &RuntimeManager, backend: DeviceBackend) {
     operators.push(OperatorTopology::Elementwise {
         op_id: 7, name: "add".into(),
         kind: "Add".into(),
-        n: 1 * 128 * 7 * 7,
+        n: 128 * 7 * 7,
     });
     dependencies.push((4, 7));
     dependencies.push((6, 7));
 
     // 7. ReLU
     operators.push(OperatorTopology::Relu {
-        op_id: 8, name: "out_relu".into(), n: 1 * 128 * 7 * 7,
+        op_id: 8, name: "out_relu".into(), n: 128 * 7 * 7,
     });
     dependencies.push((7, 8));
 
     let graph = GraphTopology { operators, dependencies };
 
     let mut inputs = HashMap::new();
-    inputs.insert(1, runtime.alloc(1*64*14*14*2, backend).unwrap()); // FP16
+    inputs.insert(1, runtime.alloc(64*14*14*2, backend).unwrap()); // FP16
     
     // BatchNorm weights
     inputs.insert(301, runtime.alloc(128*4, backend).unwrap());
@@ -357,8 +357,8 @@ fn run_head_test(runtime: &RuntimeManager, backend: DeviceBackend) {
     let graph = GraphTopology { operators, dependencies };
 
     let mut inputs = HashMap::new();
-    inputs.insert(1, runtime.alloc(1*512*7*7*4, backend).unwrap()); // FP32 for Pool Input
-    inputs.insert(102, runtime.alloc(1*512*1000*2, backend).unwrap()); // FP16 for Weights
+    inputs.insert(1, runtime.alloc(512*7*7*4, backend).unwrap()); // FP32 for Pool Input
+    inputs.insert(102, runtime.alloc(512*1000*2, backend).unwrap()); // FP16 for Weights
 
     println!("[Benchmark] Running Head warmup...");
     let result = runtime.execute_graph(&graph, &inputs, backend);
@@ -444,14 +444,14 @@ fn run_resnet_block(runtime: &RuntimeManager, backend: DeviceBackend) {
 
     // 6. ReLU1
     operators.push(OperatorTopology::Relu {
-        op_id: 4, name: "relu1".into(), n: 1 * 32 * 64 * 64
+        op_id: 4, name: "relu1".into(), n: 32 * 64 * 64
     });
     dependencies.push((3, 4));
 
     let graph = GraphTopology { operators, dependencies };
 
     let mut inputs = HashMap::new();
-    inputs.insert(1, runtime.alloc(1*32*64*64*2, backend).unwrap());
+    inputs.insert(1, runtime.alloc(32*64*64*2, backend).unwrap());
     inputs.insert(102, runtime.alloc(32*32*3*3*2, backend).unwrap());
     inputs.insert(1031, runtime.alloc(32*2, backend).unwrap());
     inputs.insert(1032, runtime.alloc(32*2, backend).unwrap());
@@ -495,7 +495,7 @@ fn run_fork_join_test(runtime: &RuntimeManager, backend: DeviceBackend) {
     operators.push(OperatorTopology::Elementwise {
         op_id: 3, name: "skip_add".into(),
         kind: "Add".into(),
-        n: 1 * 32 * 64 * 64
+        n: 32 * 64 * 64
     });
     dependencies.push((2, 3));
     dependencies.push((1, 3)); // Second consumer of Input (id 1)
@@ -503,7 +503,7 @@ fn run_fork_join_test(runtime: &RuntimeManager, backend: DeviceBackend) {
     let graph = GraphTopology { operators, dependencies };
 
     let mut inputs = HashMap::new();
-    inputs.insert(1, runtime.alloc(1*32*64*64*2, backend).unwrap());
+    inputs.insert(1, runtime.alloc(32*64*64*2, backend).unwrap());
     inputs.insert(102, runtime.alloc(32*32*3*3*2, backend).unwrap());
 
     println!("[Benchmark] Running Fork & Join warmup...");

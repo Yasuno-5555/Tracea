@@ -12,6 +12,8 @@ use tracea::emitter::universal::UniversalEmitter;
 use tracea::emitter::traits::{UnifiedOpIR, UnifiedOpType};
 use tracea::core::config::PipelineConfig;
 use std::time::Instant;
+use half::f16;
+use bytemuck::{cast_slice, cast_slice_mut};
 
 const WARMUP_ITERS: usize = 5;
 const BENCH_ITERS: usize = 50;
@@ -27,6 +29,10 @@ fn main() {
     let manager = RuntimeManager::new();
     let backend = DeviceBackend::Cuda;
     let mut tflops = 0.0;
+    
+    // Ensure accurate timing
+    let device_handle = manager.get_device(backend).expect("Device not found");
+    let cuda_dev = device_handle.cuda_dev.as_ref().expect("CUDA dev check");
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // Round 1: Fusion Power (ResNet Block)
@@ -87,8 +93,8 @@ fn main() {
     if let Some(kernel_id) = kernel_id_opt {
         // Prepare ConvParams struct
         // dims
-        let h_out = (h + 2 * 1 - 1 * (3 - 1) - 1) / 1 + 1;
-        let w_out = (w + 2 * 1 - 1 * (3 - 1) - 1) / 1 + 1;
+        let h_out = (h + 2 - (3 - 1) - 1) + 1;
+        let w_out = (w + 2 - (3 - 1) - 1) + 1;
         
         // Cast to u32 for magic
         let (hw_m, hw_s) = tracea::emitter::conv::magic_u32((h_out * w_out) as u32);
@@ -98,7 +104,7 @@ fn main() {
 
         let mut params = Vec::with_capacity(72);
         for &val in &[n, h, w, c, k, h_out, w_out, 3, 3, 1, 1, 1] { // stride=1, pad=1, dilation=1
-            params.extend_from_slice(&(val as i32).to_ne_bytes());
+            params.extend_from_slice(&val.to_ne_bytes());
         }
         for &val in &[hw_m, hw_s, w_m, w_s, sic_m, sic_s, c_m, c_s] {
             params.extend_from_slice(&val.to_ne_bytes());
@@ -122,7 +128,7 @@ fn main() {
         // Warmup
         println!("[Tracea] Warming up ({} iterations)...", WARMUP_ITERS);
         for _ in 0..WARMUP_ITERS {
-            let _ = manager.launch(
+            manager.launch(
                 kernel_id,
                 (((n_u * oh * ow) / 64) as u32, (k_u / 64) as u32, 1),
                 (256, 1, 1),
@@ -134,15 +140,15 @@ fn main() {
                     KernelArg::Buffer(buf_bias),
                     KernelArg::Bytes(params.clone()),
                 ],
-            );
+            ).unwrap();
         }
-        manager.synchronize();
+        cuda_dev.synchronize().unwrap();
         
         // Benchmark
         println!("[Tracea] Benchmarking ({} iterations)...", BENCH_ITERS);
         let start = Instant::now();
         for _ in 0..BENCH_ITERS {
-            let _ = manager.launch(
+            manager.launch(
                 kernel_id,
                 (((n_u * oh * ow) / 64) as u32, (k_u / 64) as u32, 1),
                 (256, 1, 1),
@@ -154,9 +160,9 @@ fn main() {
                     KernelArg::Buffer(buf_bias),
                     KernelArg::Bytes(params.clone()),
                 ],
-            );
+            ).unwrap();
         }
-        manager.synchronize();
+        cuda_dev.synchronize().unwrap();
         let elapsed = start.elapsed();
         
         let avg_ms = elapsed.as_secs_f64() * 1000.0 / (BENCH_ITERS as f64);
@@ -220,14 +226,23 @@ fn main() {
     // So output buffer size MUST be f32 (4 bytes per element)
     let gemm_c_size = m_u * gemm_n_u * 4;
     
+    // INITIALIZATION & VALIDATION
+    println!("[Sanity] Initializing buffers with pattern...");
+    let a_host = vec![f16::from_f32(1.5); m_u * gemm_k_u];
+    let b_host = vec![f16::from_f32(1.5); gemm_k_u * gemm_n_u];
+    let mut c_host = vec![0.0f32; m_u * gemm_n_u]; // Output is F32
+
     let gemm_a = manager.alloc(gemm_a_size, backend).expect("Alloc A");
     let gemm_b = manager.alloc(gemm_b_size, backend).expect("Alloc B");
     let gemm_c = manager.alloc(gemm_c_size, backend).expect("Alloc C");
+
+    manager.copy_to_device(gemm_a, cast_slice::<f16, u8>(&a_host)).expect("Copy A");
+    manager.copy_to_device(gemm_b, cast_slice::<f16, u8>(&b_host)).expect("Copy B");
     
     // Warmup
     println!("[Tracea] Warming up GEMM...");
     for _ in 0..WARMUP_ITERS {
-        let _ = manager.launch(
+        manager.launch(
             gemm_kernel_id,
             ((m / 128), (gemm_n / 128), 1),
             (256, 1, 1),
@@ -240,15 +255,15 @@ fn main() {
                 KernelArg::Int(gemm_n as i32),
                 KernelArg::Int(gemm_k as i32),
             ],
-        );
+        ).unwrap();
     }
-    manager.synchronize();
+    cuda_dev.synchronize().unwrap();
     
     // Benchmark
-    println!("[Tracea] Benchmarking GEMM...");
+    println!("[Tracea] Benchmarking GEMM (Explicit Sync)...");
     let gemm_start = Instant::now();
     for _ in 0..BENCH_ITERS {
-        let _ = manager.launch(
+        manager.launch(
             gemm_kernel_id,
             ((m / 128), (gemm_n / 128), 1),
             (256, 1, 1),
@@ -261,11 +276,28 @@ fn main() {
                 KernelArg::Int(gemm_n as i32),
                 KernelArg::Int(gemm_k as i32),
             ],
-        );
+        ).unwrap();
     }
-    manager.synchronize();
+    cuda_dev.synchronize().unwrap(); // EXPLICIT SYNC
     let gemm_elapsed = gemm_start.elapsed();
     
+    // VALIDATION
+    println!("[Sanity] Validating output...");
+    // Output C is f32 (from kernel definition float* C)
+    manager.copy_from_device(gemm_c, cast_slice_mut::<f32, u8>(&mut c_host)).expect("Copy Back C");
+    
+    // Check first element: 1.5 * 1.5 * 4096 = 2.25 * 4096 = 9216.0
+    let expected = 1.5 * 1.5 * 4096.0;
+    let actual = c_host[0];
+    println!("[Sanity] C[0] Expected: {}, Got: {}", expected, actual);
+    
+    if (actual - expected).abs() > 1.0 {
+         println!("❌ VALIDATION FAILED! The calculation is incorrect.");
+         println!("   Wait... if it is incorrect, maybe the TFLOPS are also garbage?");
+    } else {
+         println!("✅ VALIDATION PASSED. The GPU actually did the work.");
+    }
+
     let gemm_avg_ms = gemm_elapsed.as_secs_f64() * 1000.0 / (BENCH_ITERS as f64);
     let gemm_flops = 2.0 * (m as f64) * (gemm_n as f64) * (gemm_k as f64);
     gemm_tflops = gemm_flops / (gemm_avg_ms / 1000.0) / 1e12;

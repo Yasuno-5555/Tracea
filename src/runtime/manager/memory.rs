@@ -1,6 +1,7 @@
 use std::sync::Mutex;
 use cudarc::driver::{CudaSlice, DevicePtr, DeviceSlice};
 use super::{BufferId, RuntimeManager, DeviceBackend};
+use bytemuck::{Pod, cast_slice, cast_slice_mut};
 #[cfg(feature = "vulkan")]
 use ash::vk;
 
@@ -184,15 +185,13 @@ impl RuntimeManager {
         Ok(id)
     }
 
-    pub fn copy_to_device<T: Copy>(&self, id: BufferId, data: &[T]) -> Result<(), String> {
+    pub fn copy_to_device<T: Pod>(&self, id: BufferId, data: &[T]) -> Result<(), String> {
         let mut bufs = self.buffers.lock().map_err(|_| "Lock".to_string())?;
         match bufs.get_mut(&id).ok_or("No buffer".to_string())? {
             DeviceBuffer::Cuda(slice) => {
                 let devs = self.devices.lock().map_err(|_| "Lock".to_string())?;
                 let _ = devs.get(&DeviceBackend::Cuda).ok_or("No CUDA".to_string())?.cuda_dev.as_ref().ok_or("No CUDA".to_string())?;
-                let u8_slice = unsafe {
-                    std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * std::mem::size_of::<T>())
-                };
+                let u8_slice: &[u8] = cast_slice(data);
                 unsafe {
                     let res = cudarc::driver::sys::lib().cuMemcpyHtoD_v2(*slice.device_ptr(), u8_slice.as_ptr() as *const _, u8_slice.len());
                     if res != cudarc::driver::sys::CUresult::CUDA_SUCCESS { return Err(format!("cuMemcpyHtoD failed: {:?}", res)); }
@@ -201,7 +200,7 @@ impl RuntimeManager {
             }
             #[cfg(target_os = "macos")]
             DeviceBuffer::Metal(buf) => {
-                 let len_bytes = data.len() * std::mem::size_of::<T>();
+                 let len_bytes = std::mem::size_of_val(data);
                  let void_ptr = buf.contents();
                  if void_ptr.is_null() {
                      return Err("Metal buffer contents() is NULL".to_string());
@@ -209,9 +208,7 @@ impl RuntimeManager {
                  let dst_slice = unsafe {
                      std::slice::from_raw_parts_mut(void_ptr as *mut u8, len_bytes)
                  };
-                 let src_slice = unsafe {
-                     std::slice::from_raw_parts(data.as_ptr() as *const u8, len_bytes)
-                 };
+                 let src_slice: &[u8] = cast_slice(data);
                  dst_slice.copy_from_slice(src_slice);
                  Ok(())
             }
@@ -220,12 +217,12 @@ impl RuntimeManager {
     }
 
     /// Copy data to device buffer at a specific offset (for arena-based allocation)
-    pub fn copy_to_device_at_offset<T: Copy>(&self, id: BufferId, offset: usize, data: &[T]) -> Result<(), String> {
+    pub fn copy_to_device_at_offset<T: Pod>(&self, id: BufferId, offset: usize, data: &[T]) -> Result<(), String> {
         let bufs = self.buffers.lock().map_err(|_| "Lock".to_string())?;
         match bufs.get(&id).ok_or("No buffer".to_string())? {
             #[cfg(target_os = "macos")]
             DeviceBuffer::Metal(buf) => {
-                 let len_bytes = data.len() * std::mem::size_of::<T>();
+                 let len_bytes = std::mem::size_of_val(data);
                  let buf_len = buf.length() as usize;
                  if offset + len_bytes > buf_len {
                      return Err(format!("Offset {} + len {} > buffer size {}", offset, len_bytes, buf_len));
@@ -245,9 +242,7 @@ impl RuntimeManager {
                  Ok(())
             }
             DeviceBuffer::Cuda(slice) => {
-                let u8_slice = unsafe {
-                    std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * std::mem::size_of::<T>())
-                };
+                let u8_slice: &[u8] = cast_slice(data);
                 let dst_ptr = *slice.device_ptr() + offset as u64;
                 unsafe {
                     let res = cudarc::driver::sys::lib().cuMemcpyHtoD_v2(dst_ptr, u8_slice.as_ptr() as *const _, u8_slice.len());
@@ -259,15 +254,13 @@ impl RuntimeManager {
         }
     }
 
-    pub fn copy_from_device<T: Copy>(&self, id: BufferId, data: &mut [T]) -> Result<(), String> {
+    pub fn copy_from_device<T: Pod>(&self, id: BufferId, data: &mut [T]) -> Result<(), String> {
         let bufs = self.buffers.lock().map_err(|_| "Lock".to_string())?;
         match bufs.get(&id).ok_or("No buffer".to_string())? {
             DeviceBuffer::Cuda(slice) => {
                 let devs = self.devices.lock().map_err(|_| "Lock".to_string())?;
                 let _ = devs.get(&DeviceBackend::Cuda).ok_or("No CUDA".to_string())?;
-                let u8_slice = unsafe {
-                    std::slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u8, data.len() * std::mem::size_of::<T>())
-                };
+                let u8_slice: &mut [u8] = cast_slice_mut(data);
                 unsafe {
                     let res = cudarc::driver::sys::lib().cuMemcpyDtoH_v2(u8_slice.as_mut_ptr() as *mut _, *slice.device_ptr(), u8_slice.len());
                     if res != cudarc::driver::sys::CUresult::CUDA_SUCCESS { return Err(format!("cuMemcpyDtoH failed: {:?}", res)); }
@@ -276,7 +269,7 @@ impl RuntimeManager {
             }
             #[cfg(target_os = "macos")]
             DeviceBuffer::Metal(buf) => {
-                 let len_bytes = data.len() * std::mem::size_of::<T>();
+                 let len_bytes = std::mem::size_of_val(data);
                  let void_ptr = buf.contents();
                  unsafe {
                      std::ptr::copy_nonoverlapping(void_ptr as *const _, data.as_mut_ptr() as *mut _, len_bytes);
