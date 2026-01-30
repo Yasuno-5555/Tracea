@@ -159,6 +159,7 @@ impl MicroBenchmark for NVRTCBenchmark {
              precison: "f16".to_string(),
              tiling: config.clone(),
              conv_magic_strategy: None,
+             polyhedral_strategy: None,
          };
          let source = emitter.generate(ir.clone());
          
@@ -240,6 +241,7 @@ impl MicroBenchmark for NVRTCBenchmark {
             precison: "f16".to_string(),
             tiling: config.clone(),
             conv_magic_strategy: None,
+            polyhedral_strategy: None,
         };
         let source = emitter.generate(ir.clone());
 
@@ -711,6 +713,7 @@ impl Conv2dBenchmark for NVRTCConvBenchmark {
             precison: "f16".to_string(),
             tiling: config.base.clone(),
             conv_magic_strategy: Some(config.magic_strategy),
+            polyhedral_strategy: None,
         };
         
         let source = emitter.generate(ir);
@@ -751,6 +754,7 @@ impl Conv2dBenchmark for NVRTCConvBenchmark {
             precison: "f16".to_string(),
             tiling: config.base.clone(),
             conv_magic_strategy: Some(config.magic_strategy),
+            polyhedral_strategy: None,
         };
         
         let source = emitter.generate(ir);
@@ -992,6 +996,7 @@ impl MicroBenchmark for FlashAttentionBenchmark {
             precison: "f16".to_string(),
             tiling: config.clone(),
             conv_magic_strategy: None,
+            polyhedral_strategy: None,
         });
         
         match self.runtime.compile(&source, "unified_attention_kernel", backend) {
@@ -1019,6 +1024,7 @@ impl MicroBenchmark for FlashAttentionBenchmark {
             precison: "f16".to_string(),
             tiling: config.clone(),
             conv_magic_strategy: None,
+            polyhedral_strategy: None,
         });
 
         let kernel_id = match self.runtime.compile(&source, "unified_attention_kernel", backend) {

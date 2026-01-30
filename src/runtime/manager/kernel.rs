@@ -37,7 +37,7 @@ impl Drop for RocmModule {
     fn drop(&mut self) {
         if !self.0.is_null() {
             if let Some(api) = crate::emitter::rocm_driver::RocmDriverApi::get() {
-                unsafe { (api.hipModuleUnload)(self.0); }
+                unsafe { (api.hip_module_unload)(self.0); }
             }
         }
     }
@@ -293,10 +293,10 @@ impl RuntimeManager {
                 let api = crate::emitter::rocm_driver::RocmDriverApi::get().ok_or("ROCm Driver API not found")?;
                 let mut module_ptr: *mut c_void = std::ptr::null_mut();
                 unsafe {
-                    let _ = (api.hipModuleLoadData)(&mut module_ptr, binary.as_ptr() as *const _);
+                    let _ = (api.hip_module_load_data)(&mut module_ptr, binary.as_ptr() as *const _);
                     let mut func_ptr: *mut c_void = std::ptr::null_mut();
                     let name_c = CString::new(kernel_name).unwrap();
-                    let _ = (api.hipModuleGetFunction)(&mut func_ptr, module_ptr, name_c.as_ptr());
+                    let _ = (api.hip_module_get_function)(&mut func_ptr, module_ptr, name_c.as_ptr());
                     let id = self.generate_kernel_id()?;
                     self.kernels.lock().map_err(|_| "Poisoned")?.insert(id, RecordedKernel {
                         name: kernel_name.to_string(),
@@ -362,11 +362,11 @@ impl RuntimeManager {
         let api = crate::emitter::rocm_driver::RocmDriverApi::get().ok_or("ROCm API not found")?;
         let mut module_ptr: *mut c_void = std::ptr::null_mut();
         unsafe {
-            let res = (api.hipModuleLoadData)(&mut module_ptr, binary.as_ptr() as *const _);
+            let res = (api.hip_module_load_data)(&mut module_ptr, binary.as_ptr() as *const _);
             if res != 0 { return Err(format!("hipModuleLoadData failed: {}", res)); }
             let mut func_ptr: *mut c_void = std::ptr::null_mut();
             let name_c = CString::new(name).unwrap();
-            let _ = (api.hipModuleGetFunction)(&mut func_ptr, module_ptr, name_c.as_ptr());
+            let _ = (api.hip_module_get_function)(&mut func_ptr, module_ptr, name_c.as_ptr());
             let id = self.generate_kernel_id()?;
             self.kernels.lock().map_err(|_| "Poisoned")?.insert(id, RecordedKernel { 
                 name: name.to_string(), 

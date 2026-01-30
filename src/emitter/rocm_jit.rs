@@ -1,4 +1,5 @@
 
+#![allow(static_mut_refs)]
 use libloading::{Library, Symbol};
 use std::ffi::{CString, c_void};
 use std::ptr;
@@ -16,11 +17,11 @@ pub type HiprtcDestroyProgram = unsafe extern "system" fn(*mut *mut c_void) -> i
 
 pub struct RocmJitApi {
     pub lib: &'static Library,
-    pub hiprtcCreateProgram: Symbol<'static, HiprtcCreateProgram>,
-    pub hiprtcCompileProgram: Symbol<'static, HiprtcCompileProgram>,
-    pub hiprtcGetCodeSize: Symbol<'static, HiprtcGetCodeSize>,
-    pub hiprtcGetCode: Symbol<'static, HiprtcGetCode>,
-    pub hiprtcDestroyProgram: Symbol<'static, HiprtcDestroyProgram>,
+    pub hiprtc_create_program: Symbol<'static, HiprtcCreateProgram>,
+    pub hiprtc_compile_program: Symbol<'static, HiprtcCompileProgram>,
+    pub hiprtc_get_code_size: Symbol<'static, HiprtcGetCodeSize>,
+    pub hiprtc_get_code: Symbol<'static, HiprtcGetCode>,
+    pub hiprtc_destroy_program: Symbol<'static, HiprtcDestroyProgram>,
 }
 
 static mut ROCM_JIT_API: Option<RocmJitApi> = None;
@@ -45,11 +46,11 @@ impl RocmJitApi {
                 ) {
                     ROCM_JIT_API = Some(RocmJitApi {
                         lib: lib_ref,
-                        hiprtcCreateProgram: create,
-                        hiprtcCompileProgram: compile,
-                        hiprtcGetCodeSize: get_size,
-                        hiprtcGetCode: get_code,
-                        hiprtcDestroyProgram: destroy,
+                        hiprtc_create_program: create,
+                        hiprtc_compile_program: compile,
+                        hiprtc_get_code_size: get_size,
+                        hiprtc_get_code: get_code,
+                        hiprtc_destroy_program: destroy,
                     });
                     return ROCM_JIT_API.as_ref();
                 }
@@ -74,25 +75,25 @@ impl ROCMJITCompiler {
         
         let mut prog: *mut c_void = ptr::null_mut();
         unsafe {
-            let res = (self.api.hiprtcCreateProgram)(&mut prog, source_c.as_ptr(), name_c.as_ptr(), 0, ptr::null(), ptr::null());
+            let res = (self.api.hiprtc_create_program)(&mut prog, source_c.as_ptr(), name_c.as_ptr(), 0, ptr::null(), ptr::null());
             if res != 0 { return Err(format!("hiprtcCreateProgram failed: {}", res)); }
             
             let opts_c: Vec<CString> = options.into_iter().map(|s| CString::new(s).unwrap()).collect();
             let opts_ptr: Vec<*const i8> = opts_c.iter().map(|s| s.as_ptr()).collect();
             
-            let res = (self.api.hiprtcCompileProgram)(prog, opts_ptr.len() as i32, opts_ptr.as_ptr());
+            let res = (self.api.hiprtc_compile_program)(prog, opts_ptr.len() as i32, opts_ptr.as_ptr());
             if res != 0 {
                 // TODO: Log compile log
-                (self.api.hiprtcDestroyProgram)(&mut prog);
+                (self.api.hiprtc_destroy_program)(&mut prog);
                 return Err(format!("hiprtcCompileProgram failed: {}", res));
             }
             
             let mut size: usize = 0;
-            (self.api.hiprtcGetCodeSize)(prog, &mut size);
+            (self.api.hiprtc_get_code_size)(prog, &mut size);
             let mut code = vec![0u8; size];
-            (self.api.hiprtcGetCode)(prog, code.as_mut_ptr() as *mut i8);
+            (self.api.hiprtc_get_code)(prog, code.as_mut_ptr() as *mut i8);
             
-            (self.api.hiprtcDestroyProgram)(&mut prog);
+            (self.api.hiprtc_destroy_program)(&mut prog);
             Ok(code)
         }
     }

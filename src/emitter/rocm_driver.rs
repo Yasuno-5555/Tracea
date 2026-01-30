@@ -1,4 +1,4 @@
-
+#![allow(static_mut_refs)]
 use libloading::{Library, Symbol};
 use std::ffi::c_void;
 
@@ -29,18 +29,18 @@ pub type HipModuleUnload = unsafe extern "system" fn(*mut c_void) -> i32;
 
 pub struct RocmDriverApi {
     pub lib: &'static Library,
-    pub hipGetDeviceCount: Symbol<'static, HipGetDeviceCount>,
-    pub hipDeviceGetAttribute: Symbol<'static, HipDeviceGetAttribute>,
-    pub hipGetDeviceProperties: Symbol<'static, HipGetDeviceProperties>,
-    pub hipMalloc: Symbol<'static, HipMalloc>,
-    pub hipFree: Symbol<'static, HipFree>,
-    pub hipMemcpyHtoD: Symbol<'static, HipMemcpyHtoD>,
-    pub hipMemcpyDtoD: Symbol<'static, HipMemcpyDtoD>,
-    pub hipModuleLoadData: Symbol<'static, HipModuleLoadData>,
-    pub hipModuleGetFunction: Symbol<'static, HipModuleGetFunction>,
-    pub hipModuleLaunchKernel: Symbol<'static, HipModuleLaunchKernel>,
-    pub hipDeviceSynchronize: Symbol<'static, HipDeviceSynchronize>,
-    pub hipModuleUnload: Symbol<'static, HipModuleUnload>,
+    pub hip_get_device_count: Symbol<'static, HipGetDeviceCount>,
+    pub hip_device_get_attribute: Symbol<'static, HipDeviceGetAttribute>,
+    pub hip_get_device_properties: Symbol<'static, HipGetDeviceProperties>,
+    pub hip_malloc: Symbol<'static, HipMalloc>,
+    pub hip_free: Symbol<'static, HipFree>,
+    pub hip_memcpy_hto_d: Symbol<'static, HipMemcpyHtoD>,
+    pub hip_memcpy_dto_d: Symbol<'static, HipMemcpyDtoD>,
+    pub hip_module_load_data: Symbol<'static, HipModuleLoadData>,
+    pub hip_module_get_function: Symbol<'static, HipModuleGetFunction>,
+    pub hip_module_launch_kernel: Symbol<'static, HipModuleLaunchKernel>,
+    pub hip_device_synchronize: Symbol<'static, HipDeviceSynchronize>,
+    pub hip_module_unload: Symbol<'static, HipModuleUnload>,
 }
 
 static mut ROCM_DRIVER_API: Option<RocmDriverApi> = None;
@@ -73,18 +73,18 @@ impl RocmDriverApi {
                    (get_count, get_attr, get_props, malloc, free, h2d, d2d, load, get_func, launch, sync, unload) {
                     ROCM_DRIVER_API = Some(RocmDriverApi {
                         lib: lib_ref,
-                        hipGetDeviceCount: count,
-                        hipDeviceGetAttribute: attr,
-                        hipGetDeviceProperties: props,
-                        hipMalloc: m,
-                        hipFree: f,
-                        hipMemcpyHtoD: h,
-                        hipMemcpyDtoD: d,
-                        hipModuleLoadData: l,
-                        hipModuleGetFunction: gf,
-                        hipModuleLaunchKernel: launch,
-                        hipDeviceSynchronize: sync,
-                        hipModuleUnload: unload,
+                        hip_get_device_count: count,
+                        hip_device_get_attribute: attr,
+                        hip_get_device_properties: props,
+                        hip_malloc: m,
+                        hip_free: f,
+                        hip_memcpy_hto_d: h,
+                        hip_memcpy_dto_d: d,
+                        hip_module_load_data: l,
+                        hip_module_get_function: gf,
+                        hip_module_launch_kernel: launch,
+                        hip_device_synchronize: sync,
+                        hip_module_unload: unload,
                     });
                     return ROCM_DRIVER_API.as_ref();
                 }

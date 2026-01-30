@@ -301,7 +301,7 @@ impl GraphExecutor {
 
         #[cfg(not(target_os = "macos"))]
         {
-            let _ = plan; let _ = inputs; let _ = manager;
+            let _ = plan; let _ = _inputs; let _ = manager;
             Err("Capture only supported on macOS".into())
         }
     }

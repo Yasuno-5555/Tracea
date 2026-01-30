@@ -196,7 +196,7 @@ impl RuntimeManager {
         // Sync ROCm
         if let Some(_) = devices.get(&DeviceBackend::Rocm) {
             if let Some(api) = crate::emitter::rocm_driver::RocmDriverApi::get() {
-                unsafe { (api.hipDeviceSynchronize)(); }
+                unsafe { (api.hip_device_synchronize)(); }
             }
         }
 

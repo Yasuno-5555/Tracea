@@ -1,1 +1,1 @@
-{"block":[256,1,1],"grid":[2,1,1],"kernel":"conv2d_implicit_gemm","smem":0,"timestamp":1769752025}
+{"block":[256,1,1],"grid":[32,32,1],"kernel":"unified_gemm_kernel","smem":65536,"timestamp":1769766906}

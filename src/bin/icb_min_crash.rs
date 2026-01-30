@@ -1,5 +1,9 @@
+// src/bin/icb_min_crash.rs
+
+#[cfg(target_os = "macos")]
 use metal;
 
+#[cfg(target_os = "macos")]
 fn main() {
     println!("[ICB Min] Starting minimal ICB test...");
     let device = metal::Device::system_default().expect("No Metal device");
@@ -34,10 +38,14 @@ fn main() {
     let pipeline = device.new_compute_pipeline_state_with_function(&func).expect("PSO failed");
 
     println!("[ICB Min] Getting command 0...");
-    // We use the binding first, if it crashes, we know for sure.
     let cmd = icb.indirect_compute_command_at_index(0);
     println!("[ICB Min] Setting pipeline...");
     cmd.set_compute_pipeline_state(&pipeline);
     
     println!("[ICB Min] SUCCESS. ICB might actually work if simple?");
+}
+
+#[cfg(not(target_os = "macos"))]
+fn main() {
+    println!("[ICB Min] This test is only available on macOS.");
 }

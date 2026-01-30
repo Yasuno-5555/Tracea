@@ -235,6 +235,7 @@ impl JITCompiler {
             precison: "f16".to_string(),
             tiling: crate::PipelineConfig::new(2, 64, 64, op.dh.as_static().unwrap_or(64)),
             conv_magic_strategy: None,
+            polyhedral_strategy: None,
         };
         
         let source = self.emitter.generate_from_ir(&ir);

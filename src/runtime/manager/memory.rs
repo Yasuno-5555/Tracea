@@ -83,7 +83,7 @@ impl Drop for RocmBuffer {
     fn drop(&mut self) {
         if self.ptr != 0 {
              if let Some(api) = crate::emitter::rocm_driver::RocmDriverApi::get() {
-                 unsafe { (api.hipFree)(self.ptr); }
+                 unsafe { (api.hip_free)(self.ptr); }
              }
         }
     }
@@ -136,7 +136,7 @@ impl RuntimeManager {
                 let api = crate::emitter::rocm_driver::RocmDriverApi::get().ok_or("No ROCm API")?;
                 let mut ptr: u64 = 0;
                 unsafe {
-                    let res = (api.hipMalloc)(&mut ptr, size_bytes);
+                    let res = (api.hip_malloc)(&mut ptr, size_bytes);
                     if res != 0 { return Err(format!("hipMalloc failed: {}", res)); }
                 }
                 DeviceBuffer::Rocm(RocmBuffer { ptr })

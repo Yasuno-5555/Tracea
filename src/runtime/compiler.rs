@@ -366,6 +366,7 @@ impl GraphCompiler {
             precison: "fp16".to_string(),
             tiling,
             conv_magic_strategy: None,
+            polyhedral_strategy: None,
         })
     }
 

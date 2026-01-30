@@ -90,7 +90,7 @@ impl RuntimeManager {
             KernelHandle::Rocm { func, .. } => {
                 let api = crate::emitter::rocm_driver::RocmDriverApi::get().ok_or("ROCm API not found")?;
                 unsafe {
-                    let res = (api.hipModuleLaunchKernel)(
+                    let res = (api.hip_module_launch_kernel)(
                         func.0,
                         grid.0, grid.1, grid.2,
                         block.0, block.1, block.2,

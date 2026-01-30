@@ -1,3 +1,4 @@
+#![allow(warnings)]
 #![allow(unused_unsafe)]
 #![allow(unsafe_op_in_unsafe_fn)]
 

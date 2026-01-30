@@ -16,17 +16,17 @@ impl ROCMEmitter {
 
         if let Some(api) = RocmDriverApi::get() {
             let mut count = 0;
-            unsafe { (api.hipGetDeviceCount)(&mut count); }
+            unsafe { (api.hip_get_device_count)(&mut count); }
             if count > 0 {
                 let mut major = 0;
                 let mut minor = 0;
                 let mut wf = 64;
                 let mut lds = 0;
                 unsafe {
-                    (api.hipDeviceGetAttribute)(&mut major, HIP_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR, 0);
-                    (api.hipDeviceGetAttribute)(&mut minor, HIP_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR, 0);
-                    (api.hipDeviceGetAttribute)(&mut wf, HIP_DEVICE_ATTRIBUTE_WAVEFRONT_SIZE, 0);
-                    (api.hipDeviceGetAttribute)(&mut lds, HIP_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK, 0);
+                    (api.hip_device_get_attribute)(&mut major, HIP_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR, 0);
+                    (api.hip_device_get_attribute)(&mut minor, HIP_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR, 0);
+                    (api.hip_device_get_attribute)(&mut wf, HIP_DEVICE_ATTRIBUTE_WAVEFRONT_SIZE, 0);
+                    (api.hip_device_get_attribute)(&mut lds, HIP_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK, 0);
                 }
                 
                 // Construct approximation of ISA name
