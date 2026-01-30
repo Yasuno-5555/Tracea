@@ -1,8 +1,44 @@
-use std::sync::{Arc, Mutex};
-use cudarc::driver::CudaSlice;
-use crate::runtime::manager::{BufferId, RuntimeManager, DeviceBackend};
+use std::sync::Mutex;
+use cudarc::driver::{CudaSlice, DevicePtr, DeviceSlice};
+use super::{BufferId, RuntimeManager, DeviceBackend};
 #[cfg(feature = "vulkan")]
 use ash::vk;
+
+/// Arena-style memory allocation for reducing runtime malloc overhead.
+/// Allocates one large buffer at startup and provides offset-based slices.
+#[derive(Debug)]
+pub struct MemoryArena {
+    pub buffer_id: BufferId,
+    pub total_size: usize,
+    pub backend: DeviceBackend,
+}
+
+impl MemoryArena {
+    /// Get the offset-based slice info (used for kernel args)
+    pub fn slice(&self, offset: usize, size: usize) -> Result<ArenaSlice, String> {
+        if offset + size > self.total_size {
+            return Err(format!(
+                "Arena overflow: offset {} + size {} > total {}", 
+                offset, size, self.total_size
+            ));
+        }
+        // Align offset to 256 bytes (Metal requirement)
+        let aligned_offset = (offset + 255) & !255;
+        Ok(ArenaSlice {
+            arena_buffer_id: self.buffer_id,
+            offset: aligned_offset,
+            size,
+        })
+    }
+}
+
+/// A slice of the arena buffer, referenced by offset
+#[derive(Debug, Clone, Copy)]
+pub struct ArenaSlice {
+    pub arena_buffer_id: BufferId,
+    pub offset: usize,
+    pub size: usize,
+}
 
 #[derive(Debug)]
 pub enum DeviceBuffer {
@@ -112,7 +148,7 @@ impl RuntimeManager {
                 let backend = handle.metal_dev.as_ref().ok_or("No Metal Backend")?;
                 
                 let options = metal::MTLResourceOptions::StorageModeShared;
-                println!("[Runtime] Metal Alloc: {} bytes", size_bytes);
+                // println!("[Runtime] Metal Alloc: {} bytes", size_bytes);
                 let buffer = backend.device.new_buffer(size_bytes as u64, options);
                 DeviceBuffer::Metal(buffer)
             }
@@ -178,6 +214,46 @@ impl RuntimeManager {
                  };
                  dst_slice.copy_from_slice(src_slice);
                  Ok(())
+            }
+            _ => Err("Not implemented for this backend".to_string()),
+        }
+    }
+
+    /// Copy data to device buffer at a specific offset (for arena-based allocation)
+    pub fn copy_to_device_at_offset<T: Copy>(&self, id: BufferId, offset: usize, data: &[T]) -> Result<(), String> {
+        let bufs = self.buffers.lock().map_err(|_| "Lock".to_string())?;
+        match bufs.get(&id).ok_or("No buffer".to_string())? {
+            #[cfg(target_os = "macos")]
+            DeviceBuffer::Metal(buf) => {
+                 let len_bytes = data.len() * std::mem::size_of::<T>();
+                 let buf_len = buf.length() as usize;
+                 if offset + len_bytes > buf_len {
+                     return Err(format!("Offset {} + len {} > buffer size {}", offset, len_bytes, buf_len));
+                 }
+                 let void_ptr = buf.contents();
+                 if void_ptr.is_null() {
+                     return Err("Metal buffer contents() is NULL".to_string());
+                 }
+                 unsafe {
+                     let dst_ptr = (void_ptr as *mut u8).add(offset);
+                     std::ptr::copy_nonoverlapping(
+                         data.as_ptr() as *const u8,
+                         dst_ptr,
+                         len_bytes
+                     );
+                 }
+                 Ok(())
+            }
+            DeviceBuffer::Cuda(slice) => {
+                let u8_slice = unsafe {
+                    std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * std::mem::size_of::<T>())
+                };
+                let dst_ptr = *slice.device_ptr() + offset as u64;
+                unsafe {
+                    let res = cudarc::driver::sys::lib().cuMemcpyHtoD_v2(dst_ptr, u8_slice.as_ptr() as *const _, u8_slice.len());
+                    if res != cudarc::driver::sys::CUresult::CUDA_SUCCESS { return Err(format!("cuMemcpyHtoD failed: {:?}", res)); }
+                }
+                Ok(())
             }
             _ => Err("Not implemented for this backend".to_string()),
         }
@@ -253,5 +329,30 @@ impl RuntimeManager {
 
     pub fn alloc_f16(&self, size: usize, backend: DeviceBackend) -> Result<BufferId, String> {
         self.alloc(size * 2, backend)
+    }
+    pub fn memcpy_d2d(&self, src: BufferId, src_offset: usize, dst: BufferId, dst_offset: usize, size: usize) -> Result<(), String> {
+        let bufs = self.buffers.lock().map_err(|_| "Lock")?;
+        let src_buf = bufs.get(&src).ok_or("No src buffer")?;
+        let dst_buf = bufs.get(&dst).ok_or("No dst buffer")?;
+
+        match (src_buf, dst_buf) {
+            #[cfg(target_os = "macos")]
+            (DeviceBuffer::Metal(s), DeviceBuffer::Metal(d)) => {
+                 let devs = self.devices.lock().map_err(|_| "Lock")?;
+                 let handle = devs.get(&DeviceBackend::Metal).ok_or("No Metal Device")?;
+                 let backend = handle.metal_dev.as_ref().ok_or("No Metal Backend")?;
+                 
+                 let cb = backend.queue.new_command_buffer();
+                 let blit = cb.new_blit_command_encoder();
+                 blit.copy_from_buffer(s, src_offset as u64, d, dst_offset as u64, size as u64);
+                 blit.end_encoding();
+                 cb.commit();
+                 Ok(())
+            }
+            #[cfg(target_os = "macos")]
+            _ => Err("memcpy_d2d only implemented for Metal -> Metal".into()),
+            #[cfg(not(target_os = "macos"))]
+            _ => Err("memcpy_d2d not implemented for non-Metal".into()),
+        }
     }
 }

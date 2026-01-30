@@ -219,6 +219,9 @@ impl crate::optimizer::benchmark::MicroBenchmark for CudaGemmAdapter {
             mean_tflops: tflops,
             std_dev: 0.0,
             latency_ms: if tflops > 0.0 { (2.0 * self.problem.m as f32 * self.problem.n as f32 * self.problem.k as f32) / (tflops * 1e9) * 1000.0 } else { 0.0 },
+            observation: self.observe_hardware(config),
         }
     }
+
+    fn observe_hardware(&self, _config: &PipelineConfig) -> Option<crate::optimizer::model::HardwareObservation> { None }
 }

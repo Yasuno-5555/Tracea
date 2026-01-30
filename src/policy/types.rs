@@ -7,6 +7,11 @@ use serde::{Deserialize, Serialize};
 // ===============================
 
 pub use crate::core::device::{DeviceProfile, BackendType as DeviceBackend};
+use std::hash::{Hash, Hasher};
+
+fn hash_f32<H: Hasher>(x: &f32, state: &mut H) {
+    x.to_bits().hash(state);
+}
 
 #[derive(Debug, Clone)]
 pub struct ModelTopology {
@@ -14,7 +19,7 @@ pub struct ModelTopology {
     pub layer_count: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum TopologyKind {
     Dense,
     LowRank { r: u32 },
@@ -89,7 +94,98 @@ pub enum OperatorTopology {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl Hash for OperatorTopology {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(self).hash(state);
+        match self {
+            OperatorTopology::Gemm { op_id, name, m, n, k, batch, kind, epilogue } => {
+                op_id.hash(state); name.hash(state); m.hash(state); n.hash(state); k.hash(state); batch.hash(state); kind.hash(state); epilogue.hash(state);
+            },
+            OperatorTopology::Attention { op_id, name, b, s, h, d } => {
+                op_id.hash(state); name.hash(state); b.hash(state); s.hash(state); h.hash(state); d.hash(state);
+            },
+            OperatorTopology::Conv2d { op_id, name, n, c, h, w, k, r, s, stride, padding, epilogue } => {
+                op_id.hash(state); name.hash(state); n.hash(state); c.hash(state); h.hash(state); w.hash(state); k.hash(state); r.hash(state); s.hash(state); stride.hash(state); padding.hash(state); epilogue.hash(state);
+            },
+            OperatorTopology::Relu { op_id, name, n } => {
+                op_id.hash(state); name.hash(state); n.hash(state);
+            },
+            OperatorTopology::Elementwise { op_id, name, kind, n } => {
+                op_id.hash(state); name.hash(state); kind.hash(state); n.hash(state);
+            },
+            OperatorTopology::Input { op_id, name } => {
+                op_id.hash(state); name.hash(state);
+            },
+            OperatorTopology::Softmax { op_id, name, axis } => {
+                op_id.hash(state); name.hash(state); axis.hash(state);
+            },
+            OperatorTopology::BatchNorm { op_id, name, n, c, h, w, epsilon, momentum } => {
+                op_id.hash(state); name.hash(state); n.hash(state); c.hash(state); h.hash(state); w.hash(state);
+                hash_f32(epsilon, state); hash_f32(momentum, state);
+            },
+            OperatorTopology::GlobalAveragePool { op_id, name, n, c, h, w } => {
+                op_id.hash(state); name.hash(state); n.hash(state); c.hash(state); h.hash(state); w.hash(state);
+            },
+            OperatorTopology::Linear { op_id, name, batch, m, n, k, epilogue } => {
+                op_id.hash(state); name.hash(state); batch.hash(state); m.hash(state); n.hash(state); k.hash(state); epilogue.hash(state);
+            },
+        }
+    }
+}
+
+// Implement PartialEq manually for OperatorTopology to handle floats if needed, 
+// or rely on a wrapper. For now, we assume simple equality is sufficient if we hash properly.
+// However, strictly speaking, f32 doesn't implement Eq. We need Eq for HashMap keys.
+impl PartialEq for OperatorTopology {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (OperatorTopology::Gemm { op_id: a, name: b, m: c, n: d, k: e, batch: f, kind: g, epilogue: h },
+             OperatorTopology::Gemm { op_id: i, name: j, m: k, n: l, k: m, batch: n, kind: o, epilogue: p }) => {
+                 a == i && b == j && c == k && d == l && e == m && f == n && g == o && h == p
+            },
+            (OperatorTopology::Attention { op_id: a, name: b, b: c, s: d, h: e, d: f },
+             OperatorTopology::Attention { op_id: g, name: h, b: i, s: j, h: k, d: l }) => {
+                 a == g && b == h && c == i && d == j && e == k && f == l
+            },
+            (OperatorTopology::Conv2d { op_id: a, name: b, n: c, c: d, h: e, w: f, k: g, r: h, s: i, stride: j, padding: k, epilogue: l },
+             OperatorTopology::Conv2d { op_id: m, name: n, n: o, c: p, h: q, w: r, k: s, r: t, s: u, stride: v, padding: w, epilogue: x }) => {
+                 a == m && b == n && c == o && d == p && e == q && f == r && g == s && h == t && i == u && j == v && k == w && l == x
+            },
+            (OperatorTopology::Relu { op_id: a, name: b, n: c },
+             OperatorTopology::Relu { op_id: d, name: e, n: f }) => {
+                 a == d && b == e && c == f
+            },
+            (OperatorTopology::Elementwise { op_id: a, name: b, kind: c, n: d },
+             OperatorTopology::Elementwise { op_id: e, name: f, kind: g, n: h }) => {
+                 a == e && b == f && c == g && d == h
+            },
+            (OperatorTopology::Input { op_id: a, name: b },
+             OperatorTopology::Input { op_id: c, name: d }) => {
+                 a == c && b == d
+            },
+            (OperatorTopology::Softmax { op_id: a, name: b, axis: c },
+             OperatorTopology::Softmax { op_id: d, name: e, axis: f }) => {
+                 a == d && b == e && c == f
+            },
+            (OperatorTopology::BatchNorm { op_id: a, name: b, n: c, c: d, h: e, w: f, epsilon: g, momentum: h },
+             OperatorTopology::BatchNorm { op_id: i, name: j, n: k, c: l, h: m, w: n, epsilon: o, momentum: p }) => {
+                 a == i && b == j && c == k && d == l && e == m && f == n && g.to_bits() == o.to_bits() && h.to_bits() == p.to_bits()
+            },
+            (OperatorTopology::GlobalAveragePool { op_id: a, name: b, n: c, c: d, h: e, w: f },
+             OperatorTopology::GlobalAveragePool { op_id: g, name: h, n: i, c: j, h: k, w: l }) => {
+                 a == g && b == h && c == i && d == j && e == k && f == l
+            },
+            (OperatorTopology::Linear { op_id: a, name: b, batch: c, m: d, n: e, k: f, epilogue: g },
+             OperatorTopology::Linear { op_id: h, name: i, batch: j, m: k, n: l, k: m, epilogue: n }) => {
+                 a == h && b == i && c == j && d == k && e == l && f == m && g == n
+            },
+            _ => false,
+        }
+    }
+}
+impl Eq for OperatorTopology {}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Hash, PartialEq, Eq)]
 pub struct GraphTopology {
     pub operators: Vec<OperatorTopology>,
     pub dependencies: Vec<(u64, u64)>, // (producer, consumer)
@@ -108,6 +204,21 @@ impl OperatorTopology {
             OperatorTopology::BatchNorm { op_id, .. } => *op_id,
             OperatorTopology::GlobalAveragePool { op_id, .. } => *op_id,
             OperatorTopology::Linear { op_id, .. } => *op_id,
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        match self {
+            OperatorTopology::Gemm { name, .. } => name,
+            OperatorTopology::Attention { name, .. } => name,
+            OperatorTopology::Conv2d { name, .. } => name,
+            OperatorTopology::Relu { name, .. } => name,
+            OperatorTopology::Elementwise { name, .. } => name,
+            OperatorTopology::Input { name, .. } => name,
+            OperatorTopology::Softmax { name, .. } => name,
+            OperatorTopology::BatchNorm { name, .. } => name,
+            OperatorTopology::GlobalAveragePool { name, .. } => name,
+            OperatorTopology::Linear { name, .. } => name,
         }
     }
 }
@@ -184,6 +295,11 @@ pub enum TilePolicy {
     },
     Conv {
         operator_id: u64,
+        tile_m: u32,          // Output tile height
+        tile_n: u32,          // Output tile width
+        tile_c: u32,          // Input channel tile
+        use_simd: bool,       // Use simd_matrix_multiply
+        use_double_buffer: bool,
     },
     Elementwise {
         operator_id: u64,

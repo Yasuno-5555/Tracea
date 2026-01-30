@@ -1,6 +1,7 @@
 use crate::backend::Backend;
 
 pub mod primitives;
+pub mod capture;
 
 #[cfg(target_os = "macos")]
 use metal;

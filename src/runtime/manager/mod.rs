@@ -1,19 +1,24 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
 
 use crate::doctor::Doctor;
+use crate::runtime::compiler::GraphCompiler;
+use crate::runtime::executor::GraphExecutor;
+use crate::optimizer::tuner::MetaTuner;
 
 // Re-export submodules
 pub mod memory;
 pub mod kernel;
 pub mod launcher;
 pub mod graph;
+pub mod cache;
 
 pub use memory::*;
 pub use kernel::*;
 pub use launcher::*;
 pub use graph::*;
+pub use cache::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum KernelArgKind {
@@ -67,6 +72,15 @@ pub struct RuntimeManager {
     pub next_buffer_id: Mutex<u64>,
     pub compatibility_log: Mutex<Vec<String>>,
     pub doctor: Arc<Doctor>,
+    /// Pre-allocated arena for graph execution (reduces malloc overhead)
+    pub arena: Mutex<Option<MemoryArena>>,
+    /// Graph Execution Plan Cache
+    pub graph_cache: RwLock<GraphCache>,
+    
+    // Components
+    pub compiler: Mutex<GraphCompiler>, 
+    pub executor: GraphExecutor,
+    pub tuner: Arc<MetaTuner>,
 }
 
 static INSTANCE: Mutex<Option<Arc<RuntimeManager>>> = Mutex::new(None);
@@ -142,7 +156,10 @@ impl RuntimeManager {
         let doctor = Doctor::global();
         doctor.diagnose_environment();
 
-        let instance = Arc::new(Self {
+        let instance = Arc::new_cyclic(|me| {
+            let tuner = Arc::new(MetaTuner::new(me.clone()));
+            
+            Self {
             devices: Mutex::new(devices),
             kernels: Mutex::new(HashMap::new()),
             source_cache: Mutex::new(HashMap::new()),
@@ -150,7 +167,13 @@ impl RuntimeManager {
             next_kernel_id: Mutex::new(0),
             next_buffer_id: Mutex::new(0),
             compatibility_log: Mutex::new(Vec::new()),
-            doctor,
+            doctor: Arc::new(Doctor::new(crate::doctor::diagnosis::DoctorConfig::default())),
+            arena: Mutex::new(None),
+            graph_cache: RwLock::new(GraphCache::new()),
+            compiler: Mutex::new(GraphCompiler::new()),
+            executor: GraphExecutor::new(),
+            tuner,
+            }
         });
         *cache = Some(Arc::clone(&instance));
         Ok(instance)
@@ -202,5 +225,61 @@ impl RuntimeManager {
         let mut id = self.next_buffer_id.lock().map_err(|_| "Lock".to_string())?;
         *id += 1;
         Ok(BufferId(*id))
+    }
+
+    /// Initialize the memory arena with a single large allocation.
+    /// Call this once before graph execution to avoid per-kernel allocs.
+    pub fn init_arena(&self, size: usize, backend: DeviceBackend) -> Result<(), String> {
+        let mut arena_guard = self.arena.lock().map_err(|_| "Arena lock")?;
+        
+        // Skip if already allocated with sufficient size
+        if let Some(ref existing) = *arena_guard {
+            if existing.total_size >= size && existing.backend == backend {
+                return Ok(());
+            }
+        }
+        
+        // Align to 4KB page size for better performance
+        let aligned_size = (size + 4095) & !4095;
+        println!("[Arena] Allocating {} MB workspace", aligned_size / (1024 * 1024));
+        
+        let buffer_id = self.alloc(aligned_size, backend)?;
+        
+        *arena_guard = Some(MemoryArena {
+            buffer_id,
+            total_size: aligned_size,
+            backend,
+        });
+        
+        Ok(())
+    }
+
+    /// Get a slice of the arena buffer at the specified offset.
+    /// Returns the arena's buffer ID and the offset for use in kernel launch.
+    pub fn get_arena_slice(&self, offset: usize, size: usize) -> Result<ArenaSlice, String> {
+        let arena_guard = self.arena.lock().map_err(|_| "Arena lock")?;
+        let arena = arena_guard.as_ref().ok_or("Arena not initialized")?;
+        arena.slice(offset, size)
+    }
+
+    /// Get the underlying Metal buffer from the arena for direct binding
+    #[cfg(target_os = "macos")]
+    pub fn get_arena_metal_buffer(&self, required_size: usize) -> Result<(BufferId, usize), String> {
+        // Init arena if needed!
+        // This helper assumes arena is sufficient. But for robustness, we should check/init.
+        // But `init_arena` requires mutable access or lock.
+        // Let's assume the Caller ensures `init_arena` was called, OR we check here.
+        
+        let mut arena_guard = self.arena.lock().map_err(|_| "Arena lock")?;
+        if arena_guard.is_none() || arena_guard.as_ref().unwrap().total_size < required_size {
+             drop(arena_guard);
+             // Default 256MB if not present? Or use required_size.
+             // But we need backend. Assume Metal since this is Metal specific fn.
+             self.init_arena(std::cmp::max(required_size, 256*1024*1024), DeviceBackend::Metal)?;
+             arena_guard = self.arena.lock().map_err(|_| "Arena lock")?;
+        }
+        
+        let arena = arena_guard.as_ref().ok_or("Arena not initialized")?;
+        Ok((arena.buffer_id, arena.total_size))
     }
 }

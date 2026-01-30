@@ -77,7 +77,12 @@ impl Default for AsmParams {
 pub enum LayerType {
     #[default]
     Gemm,
-    Conv2d(Layout),
+    Conv2d {
+        layout: Layout,
+        h: usize, w: usize, c: usize, k: usize, r: usize, s: usize,
+        stride: usize,
+        padding: usize,
+    },
     FlashAttention(Fa2Variant),
 }
 
@@ -101,10 +106,15 @@ impl ProblemDescriptor {
         }
     }
     
-    pub fn new_conv2d(batch: usize, h: usize, w: usize, c: usize, k: usize, r: usize, s: usize, layout: Layout) -> Self {
+    pub fn new_conv2d(batch: usize, h: usize, w: usize, c: usize, k: usize, r: usize, s: usize, stride: usize, padding: usize, layout: Layout) -> Self {
          Self {
             device: Device::default(),
-            layer_type: LayerType::Conv2d(layout),
+            layer_type: LayerType::Conv2d {
+                layout,
+                h, w, c, k, r, s,
+                stride,
+                padding,
+            },
             shape: Shape {
                 m: batch * h * w,
                 n: k,
@@ -133,6 +143,11 @@ impl ProblemDescriptor {
 
     pub fn with_device(mut self, device: Device) -> Self {
         self.device = device;
+        self
+    }
+    
+    pub fn named(mut self, name: String) -> Self {
+        self.name = name;
         self
     }
 }

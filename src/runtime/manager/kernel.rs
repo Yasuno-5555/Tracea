@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 use std::hash::{Hash, Hasher};
 use std::ffi::{c_void, CString};
 use std::io::Write;
-use crate::runtime::manager::{KernelId, RecordedKernel, DeviceBackend, RuntimeManager};
+use super::{KernelId, DeviceBackend, RuntimeManager};
 use crate::doctor::{JitResultInfo, ModuleLoadInfo};
 
 #[derive(Debug)]
@@ -121,13 +121,19 @@ impl RecordedKernel {
 
 impl RuntimeManager {
     pub fn compile(&self, source: &str, kernel_name: &str, backend: DeviceBackend) -> Result<KernelId, String> {
-        println!("[Runtime] Debug: compile called for {}", kernel_name);
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        std::hash::Hash::hash(source, &mut hasher);
+        let hash = std::hash::Hasher::finish(&hasher);
+        let cache_key = format!("{}_{:x}", kernel_name, hash);
+
         {
             let cache = self.source_cache.lock().map_err(|_| "Lock")?;
-            if let Some(id) = cache.get(source) {
+            if let Some(id) = cache.get(&cache_key) {
                 return Ok(*id);
             }
         }
+        
+        println!("[Runtime] Debug: compiling {} (Hash: {:x})", kernel_name, hash);
 
         let id = match backend {
             #[cfg(feature = "vulkan")]
@@ -153,18 +159,6 @@ impl RuntimeManager {
                 let devices = self.devices.lock().map_err(|_| "Lock")?;
                 let handle = devices.get(&DeviceBackend::Metal).ok_or("No Metal Device")?;
                 let backend = handle.metal_dev.as_ref().ok_or("No Metal Backend instance")?;
-                
-                let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                source.hash(&mut hasher);
-                let hash = hasher.finish();
-                let cache_key = format!("{}_{:x}", kernel_name, hash);
-
-                {
-                    let cache = self.source_cache.lock().map_err(|_| "Lock")?;
-                    if let Some(id) = cache.get(&cache_key) {
-                        return Ok(*id);
-                    }
-                }
                 
                 let compile_options = metal::CompileOptions::new();
                 let library = backend.device.new_library_with_source(source, &compile_options).map_err(|e| format!("Metal Compile Error: {}", e))?;

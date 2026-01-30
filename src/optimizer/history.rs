@@ -12,6 +12,7 @@ pub struct HistoryEntry {
     pub explanation: String,
 }
 
+#[derive(Debug)]
 pub struct TuningHistory {
     pub entries: HashMap<String, HistoryEntry>, // Key: "HardwareId:OpFingerprint:Precision"
     path: String,

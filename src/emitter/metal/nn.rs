@@ -8,12 +8,12 @@ struct TileMetadata {{
 }};
 
 kernel void batchnorm_forward(
-    device const float* Input [[buffer(0)]],
-    device const float* Gamma [[buffer(1)]],
-    device const float* Beta [[buffer(2)]],
-    device const float* Mean [[buffer(3)]],
-    device const float* Var [[buffer(4)]],
-    device float* Output [[buffer(5)]],
+    device const half* Input [[buffer(0)]],
+    device const half* Gamma [[buffer(1)]],
+    device const half* Beta [[buffer(2)]],
+    device const half* Mean [[buffer(3)]],
+    device const half* Var [[buffer(4)]],
+    device half* Output [[buffer(5)]],
     constant float& epsilon [[buffer(6)]],
     device const uint* l1_map [[buffer(7)]],
     device const TileMetadata* l2_table [[buffer(8)]],
@@ -29,14 +29,14 @@ kernel void batchnorm_forward(
     
     uint c_idx = idx % {c}; 
     
-    float val = Input[idx];
-    float mean = Mean[c_idx];
-    float var = Var[c_idx];
-    float gamma = Gamma[c_idx];
-    float beta = Beta[c_idx];
+    half val = Input[idx];
+    half mean = Mean[c_idx];
+    half var = Var[c_idx];
+    half gamma = Gamma[c_idx];
+    half beta = Beta[c_idx];
     
-    float inv_std = rsqrt(var + epsilon);
-    float out = (val - mean) * inv_std * gamma + beta;
+    float inv_std = rsqrt((float)var + epsilon);
+    half out = (val - mean) * (half)inv_std * gamma + beta;
     
     Output[idx] = out;
 }}

@@ -9,6 +9,7 @@ pub use problem::{ProblemDescriptor, LayerType, HeroConfig, ArchHint, HeroScope,
 use crate::optimizer::policy::{TuningPolicy, PolicyFactory, SamplingPlan, TuningContext, SearchSpace};
 
 pub mod heroscope;
+pub mod model;
 use heroscope::{HeroScopeV3, get_cpu_id};
 
 #[derive(Debug, Clone)]
@@ -269,6 +270,7 @@ pub mod problem;
 pub mod orchestrator;
 pub mod semantic;
 pub mod history;
+pub mod tuner;
 
 use benchmark::{MicroBenchmark, Observation, BenchmarkResult, Conv2dBenchmark, ConvConfig, Conv2dProblem};
 use cache::{TuningCache, CacheKey};
@@ -466,7 +468,7 @@ pub struct AutoTuner {
     pub gp: GaussianProcess,
     pub best_config: Option<PipelineConfig>,
     pub device: Device,
-    pub runtime: Option<Arc<crate::runtime::RuntimeManager>>, 
+    pub runtime: Option<std::sync::Weak<crate::runtime::RuntimeManager>>, 
     pub heroscope: HeroScopeV3,
     pub hardware_id: String,
     pub stats: TuningStats,
@@ -501,7 +503,7 @@ impl AutoTuner {
     }
     
     pub fn with_runtime(mut self, runtime: Arc<crate::runtime::RuntimeManager>) -> Self {
-        self.runtime = Some(runtime);
+        self.runtime = Some(Arc::downgrade(&runtime));
         self
     }
     
@@ -524,7 +526,7 @@ impl AutoTuner {
         let p = benchmark.problem();
         let layout = Layout::NHWC; // Assume NHWC
         
-        let problem = ProblemDescriptor::new_conv2d(p.batch, p.h_in, p.w_in, p.c_in, p.c_out, p.kernel_h, p.kernel_w, layout)
+        let problem = ProblemDescriptor::new_conv2d(p.batch, p.h_in, p.w_in, p.c_in, p.c_out, p.kernel_h, p.kernel_w, p.stride, p.pad, layout)
             .with_device(self.device);
         eprintln!("[Adapter] optimize_conv -> optimize_v2 for Conv2d {}", problem.name);
         
@@ -571,6 +573,14 @@ impl<'a, B: Conv2dBenchmark> MicroBenchmark for ConvBenchmarkAdapter<'a, B> {
     fn n(&self) -> u32 { self.inner.problem().gemm_dims().1 as u32 }
     fn k(&self) -> u32 { self.inner.problem().gemm_dims().2 as u32 }
     fn device_info(&self) -> benchmark::EnvironmentInfo { self.inner.device_info() }
+    fn observe_hardware(&self, config: &PipelineConfig) -> Option<model::HardwareObservation> {
+        self.inner.observe_hardware(&crate::optimizer::benchmark::ConvConfig {
+            base: config.clone(),
+            use_tensor_core: true,
+            use_nhwc: true,
+            magic_strategy: self.magic_strategy,
+        })
+    }
 }
 
 
@@ -585,12 +595,14 @@ impl AutoTuner {
         
         let engine = StandardPolicyEngine::new();
         let topology = match problem.layer_type {
-            LayerType::Conv2d(_) => OperatorTopology::Conv2d { 
+            LayerType::Conv2d { h, w, c, k, r, s, stride, padding, .. } => OperatorTopology::Conv2d { 
                 op_id: 0,
                 name: problem.name.clone(),
-                n: problem.shape.m as u32 / (problem.shape.n as u32),
-                h: 0, w: 0, c: 0, k: 0, 
-                r: 0, s: 0, stride: 0, padding: 0,
+                n: problem.shape.batch as u32,
+                h: h as u32, w: w as u32, c: c as u32, k: k as u32,
+                r: r as u32, s: s as u32, 
+                stride: stride as u32, 
+                padding: padding as u32,
                 epilogue: vec![],
              },
             _ => OperatorTopology::Gemm { 
@@ -608,7 +620,7 @@ impl AutoTuner {
         // 1. Generate Candidates
         let device_profile = self.gpu.to_device_profile();
         let candidates = match problem.layer_type {
-            LayerType::Conv2d(_) => engine.propose_conv_configs(&device_profile),
+            LayerType::Conv2d { .. } => engine.propose_conv_configs(&device_profile),
             _ => engine.propose_gemm_configs(&device_profile),
         };
         

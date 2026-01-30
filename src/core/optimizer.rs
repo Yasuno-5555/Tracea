@@ -51,7 +51,8 @@ impl GraphOptimizer {
                                     let producers = reverse_adj.get(&consumer_id).cloned().unwrap_or_default();
                                     
                                     let can_fuse = match epilogue_op {
-                                        EpilogueOp::BatchNorm { .. } | EpilogueOp::ReLU => producers.len() == 1,
+                                        EpilogueOp::ReLU => producers.len() == 1,
+                                        EpilogueOp::BatchNorm { .. } => producers.len() == 5,
                                         EpilogueOp::ResidualAdd { .. } => producers.len() == 2,
                                         _ => false,
                                     };
@@ -72,6 +73,17 @@ impl GraphOptimizer {
                                             if let Some(mut rev) = reverse_adj.get_mut(&c_of_c) {
                                                 rev.retain(|&x| x != consumer_id);
                                                 rev.push(op_id);
+                                            }
+                                        }
+
+                                        // Update dependencies for side-inputs (params)
+                                        if let Some(consumer_producers) = reverse_adj.get(&consumer_id).cloned() {
+                                            for &prod_id in &consumer_producers {
+                                                if prod_id != op_id {
+                                                    // This is a side-input (e.g. Gamma). Redirect to Fused Op.
+                                                    adj.entry(prod_id).or_default().push(op_id);
+                                                    reverse_adj.entry(op_id).or_default().push(prod_id);
+                                                }
                                             }
                                         }
 

@@ -25,6 +25,7 @@ fn test_policy_cuda_defaults() {
         k: 1024,
         batch: 1,
         kind: TopologyKind::Dense,
+        epilogue: vec![],
     };
     let history = ExecutionHistory { last_latency_us: None };
     let ctx = PolicyContext {
@@ -68,6 +69,7 @@ fn test_policy_metal_defaults() {
         k: 1024,
         batch: 1,
         kind: TopologyKind::Dense,
+        epilogue: vec![],
     };
     let history = ExecutionHistory { last_latency_us: None };
     let ctx = PolicyContext {

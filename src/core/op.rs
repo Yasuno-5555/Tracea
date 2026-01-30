@@ -33,7 +33,19 @@ impl DimExpr {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Scalar(pub f32);
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl PartialEq for Scalar {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.to_bits() == other.0.to_bits()
+    }
+}
+impl Eq for Scalar {}
+impl std::hash::Hash for Scalar {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.to_bits().hash(state);
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct GemmOp {
     pub m: DimExpr,
     pub n: DimExpr,
@@ -54,7 +66,7 @@ impl GemmOp {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum EpilogueOp {
     None,
     BiasAdd { bias_ptr: usize },
@@ -77,7 +89,43 @@ pub enum EpilogueOp {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)] // Cannot derive PartialEq, Eq, Hash due to Scalar(f32) in GemmOp
+impl PartialEq for EpilogueOp {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (EpilogueOp::None, EpilogueOp::None) => true,
+            (EpilogueOp::BiasAdd { bias_ptr: a }, EpilogueOp::BiasAdd { bias_ptr: b }) => a == b,
+            (EpilogueOp::ReLU, EpilogueOp::ReLU) => true,
+            (EpilogueOp::Gelu, EpilogueOp::Gelu) => true,
+            (EpilogueOp::SiLU, EpilogueOp::SiLU) => true,
+            (EpilogueOp::ResidualAdd { residual_ptr: a }, EpilogueOp::ResidualAdd { residual_ptr: b }) => a == b,
+            (EpilogueOp::BiasAddSiLU { bias_ptr: a }, EpilogueOp::BiasAddSiLU { bias_ptr: b }) => a == b,
+            (EpilogueOp::BatchNorm { op_id: a, gamma_id: b, beta_id: c, mean_id: d, var_id: e, epsilon: f },
+             EpilogueOp::BatchNorm { op_id: g, gamma_id: h, beta_id: i, mean_id: j, var_id: k, epsilon: l }) => {
+                 a == g && b == h && c == i && d == j && e == k && f.to_bits() == l.to_bits()
+            },
+            _ => false,
+        }
+    }
+}
+impl Eq for EpilogueOp {}
+impl std::hash::Hash for EpilogueOp {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(self).hash(state);
+        match self {
+            EpilogueOp::None | EpilogueOp::ReLU | EpilogueOp::Gelu | EpilogueOp::SiLU => {},
+            EpilogueOp::BiasAdd { bias_ptr } | EpilogueOp::ResidualAdd { residual_ptr: bias_ptr } | EpilogueOp::BiasAddSiLU { bias_ptr } => {
+                bias_ptr.hash(state);
+            },
+            EpilogueOp::BatchNorm { op_id, gamma_id, beta_id, mean_id, var_id, epsilon } => {
+                op_id.hash(state); gamma_id.hash(state); beta_id.hash(state); mean_id.hash(state); var_id.hash(state);
+                epsilon.to_bits().hash(state);
+            }
+        }
+    }
+}
+
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct FusedGemmOp {
     pub base: GemmOp,
     pub epilogue: Vec<EpilogueOp>,
@@ -97,7 +145,7 @@ impl FusedGemmOp {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct LinearOp {
 
     pub batch_size: DimExpr,
@@ -115,7 +163,7 @@ pub struct AttentionOp {
     pub causal: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum NNOp {
     Linear(LinearOp),
     Attention(AttentionOp),

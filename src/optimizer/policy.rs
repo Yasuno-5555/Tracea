@@ -142,7 +142,7 @@ impl TuningPolicy for Conv2dPolicy {
         }
 
         let layout = match self.problem.layer_type {
-            LayerType::Conv2d(l) => l,
+            LayerType::Conv2d { layout, .. } => layout,
             _ => Layout::NHWC,
         };
         let is_small_batch = self.problem.shape.batch <= 32;
@@ -522,7 +522,7 @@ impl PolicyFactory {
                     Box::new(GemmPolicy::new(problem))
                 }
             }
-            LayerType::Conv2d(_) => Box::new(Conv2dPolicy::new(problem)),
+            LayerType::Conv2d { .. } => Box::new(Conv2dPolicy::new(problem)),
             LayerType::FlashAttention(v) => Box::new(Fa2Policy::new(problem, v)),
         }
     }

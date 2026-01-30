@@ -1,85 +1,86 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use tracea::runtime::manager::{RuntimeManager, DeviceBackend, BufferId, KernelArg};
-use tracea::policy::types::{OperatorTopology, GraphTopology, TopologyKind};
-use std::collections::HashMap;
+use tracea::core::config::PipelineConfig;
+use tracea::emitter::traits::{UnifiedOpIR, UnifiedOpType, Emitter};
 use std::sync::Arc;
 
 fn bench_gemm_execute(c: &mut Criterion) {
     #[cfg(target_os = "macos")]
     {
         let runtime = Arc::new(RuntimeManager::new());
-        let m = 2048; let n = 2048; let k = 2048;
+        let m = 2048usize; let n = 2048usize; let k = 2048usize;
         
         let a_buf = runtime.alloc(m * k * 2, DeviceBackend::Metal).unwrap();
         let b_buf = runtime.alloc(k * n * 2, DeviceBackend::Metal).unwrap();
+        let c_buf = runtime.alloc(m * n * 4, DeviceBackend::Metal).unwrap();
 
-        let mut input_buffers = HashMap::<u64, BufferId>::new();
-        input_buffers.insert(100, a_buf);
-        input_buffers.insert(101, b_buf);
-
-        let graph = GraphTopology {
-            operators: vec![
-                OperatorTopology::Elementwise { op_id: 100, name: "a_in".into(), kind: "Identity".into() },
-                OperatorTopology::Elementwise { op_id: 101, name: "b_in".into(), kind: "Identity".into() },
-                OperatorTopology::Gemm {
-                    op_id: 1, name: "gemm".into(),
-                    m: m as u32, n: n as u32, k: k as u32, kind: TopologyKind::Dense,
-                }
-            ],
-            dependencies: vec![
-                (100, 1), (101, 1)
-            ],
-        };
-
-        let _ = runtime.execute_graph(&graph, &input_buffers, DeviceBackend::Metal).unwrap();
-
-        let device = tracea::core::device::DeviceProfile::from_backend(DeviceBackend::Metal);
-        let mut engine = tracea::policy::standard::StandardPolicyEngine::new();
-        let ctx = tracea::policy::types::GraphContext { device: &device, graph: &graph };
-        let decision = tracea::policy::scheduler::StandardScheduler::schedule(&mut engine, &ctx);
-        
-        let tp = decision.tile_policies.iter().find(|p| p.operator_id() == 1).unwrap().clone();
-        let ep = decision.exec_policies.iter().find(|p| p.operator_id == 1).unwrap().clone();
-        let op = graph.operators.iter().find(|o| o.op_id() == 1).unwrap().clone();
-
-        let output_buf = runtime.alloc(m * n * 4, DeviceBackend::Metal).unwrap(); // fp32
-        
-        // Compile once
-        let ir = tracea::emitter::traits::UnifiedOpIR {
-            op_type: tracea::emitter::traits::UnifiedOpType::Gemm { m: m as u32, n: n as u32, k: k as u32 },
+        // Generate kernel with double-buffer GEMM
+        let ir = UnifiedOpIR {
+            op_type: UnifiedOpType::Gemm { 
+                m: m as u32, n: n as u32, k: k as u32, 
+                batch: 1, epilogue: vec![] 
+            },
             precison: "fp16".to_string(),
-            tiling: tracea::core::config::PipelineConfig {
-                 m_tile: 32, n_tile: 32, k_tile: 32,
-                 gemm_variant: tracea::core::config::GemmVariant::Tiled,
-                 ..Default::default()
+            tiling: PipelineConfig {
+                m_tile: 64, n_tile: 64, k_tile: 32,
+                double_buffer: true,
+                ..Default::default()
             },
             conv_magic_strategy: None,
         };
-        use tracea::emitter::traits::Emitter;
+        
         let emitter = tracea::emitter::metal::MetalEmitter::detect();
         let source = emitter.generate_from_ir(&ir);
-        let kernel_id = runtime.compile(&source, "gemm_tiled_kernel", DeviceBackend::Metal).unwrap();
+        let kernel_id = runtime.compile(&source, "unified_gemm_kernel", DeviceBackend::Metal).unwrap();
 
-        let mut group = c.benchmark_group("metal_gemm_hot");
+        // Pre-allocate TTG buffers (L1/L2 tile maps)
+        let num_m_tiles = (m + 64 - 1) / 64;
+        let num_n_tiles = (n + 64 - 1) / 64;
+        let num_tiles = num_m_tiles * num_n_tiles;
         
+        let l1_map: Vec<u32> = (0..num_tiles as u32).collect();
+        let l1_bytes: Vec<u8> = l1_map.iter().flat_map(|x| x.to_ne_bytes().to_vec()).collect();
+        let l1_buf = runtime.alloc(l1_bytes.len(), DeviceBackend::Metal).unwrap();
+        runtime.copy_to_device(l1_buf, &l1_bytes).unwrap();
+        
+        let mut l2_bytes = Vec::new();
+        for tile_id in 0..num_tiles {
+            let region_m = (tile_id / num_n_tiles) as u32;
+            let region_n = (tile_id % num_n_tiles) as u32;
+            l2_bytes.extend_from_slice(&region_m.to_ne_bytes());
+            l2_bytes.extend_from_slice(&region_n.to_ne_bytes());
+            l2_bytes.extend_from_slice(&0u32.to_ne_bytes());
+            l2_bytes.extend_from_slice(&(k as u32).to_ne_bytes());
+            l2_bytes.extend_from_slice(&0u32.to_ne_bytes());
+        }
+        let l2_buf = runtime.alloc(l2_bytes.len(), DeviceBackend::Metal).unwrap();
+        runtime.copy_to_device(l2_buf, &l2_bytes).unwrap();
+
         let args = vec![
             KernelArg::Buffer(a_buf),
             KernelArg::Buffer(b_buf),
-            KernelArg::Buffer(output_buf),
+            KernelArg::Buffer(c_buf),
+            KernelArg::Int(m as i32),
+            KernelArg::Int(n as i32),
+            KernelArg::Int(k as i32),
         ];
+        
+        let grid = (num_n_tiles as u32, num_m_tiles as u32, 1);
+        let block = (128, 1, 1);
+        let smem = 48 * 1024u32;
 
-        group.bench_function("launch_hot_gemm", |bencher| {
+        // Warmup
+        for _ in 0..3 {
+            runtime.launch(kernel_id, grid, block, smem, args.clone()).unwrap();
+        }
+
+        let mut group = c.benchmark_group("metal_gemm");
+        group.sample_size(20); // Reduce samples since each takes ~40ms
+        
+        group.bench_function("gemm_2048_sync", |bencher| {
             bencher.iter(|| {
-                runtime.launch_with_policy(
-                    kernel_id.clone(),
-                    args.clone(),
-                    &op,
-                    &tp,
-                    &ep,
-                    vec![],
-                    DeviceBackend::Metal
-                ).unwrap();
-                runtime.synchronize();
+                // launch() already includes wait_until_completed()
+                runtime.launch(kernel_id, grid, block, smem, args.clone()).unwrap();
             });
         });
         group.finish();

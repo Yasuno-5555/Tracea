@@ -162,6 +162,54 @@ impl StandardPolicyEngine {
         }
         best_variant
     }
+
+    /// Query TuningCache for best Conv2d configuration
+    fn get_conv_tuned_params(op: &OperatorTopology, device: &DeviceProfile) -> Option<(u32, u32, u32, bool, bool)> {
+        use crate::core::tuning::get_tuning_cache;
+        
+        let cache = get_tuning_cache();
+        let config = cache.get_cached_config(op, device)?;
+        
+        // Extract Conv params from PipelineConfig
+        Some((
+            config.m_tile as u32,  // tile_m
+            config.n_tile as u32,  // tile_n
+            config.k_tile as u32,  // tile_c
+            true,                   // use_simd (always for tuned)
+            true,                   // use_double_buffer
+        ))
+    }
+
+    /// Default Conv2d parameters based on shape heuristics
+    fn get_conv_default_params(h: u32, w: u32, c: u32, k: u32, r: u32, s: u32) -> (u32, u32, u32, bool, bool) {
+        // Heuristics for optimal tiling based on shape
+        let output_size = h * w;
+        let input_channels = c;
+        
+        // Small spatial dims → smaller tiles
+        let (tile_m, tile_n) = if output_size >= 56 * 56 {
+            (64, 64)  // Large spatial: aggressive tiling
+        } else if output_size >= 14 * 14 {
+            (32, 32)  // Medium spatial
+        } else {
+            (16, 16)  // Small spatial
+        };
+        
+        // Channel tiling based on filter count
+        let tile_c = if k >= 256 {
+            32
+        } else if k >= 64 {
+            16
+        } else {
+            8
+        };
+        
+        // Use SIMD and double buffering for 3x3 convs with sufficient channels
+        let use_simd = r == 3 && s == 3 && c >= 32;
+        let use_double_buffer = input_channels >= 64;
+        
+        (tile_m, tile_n, tile_c, use_simd, use_double_buffer)
+    }
 }
 
 impl PolicyEngine for StandardPolicyEngine {
@@ -206,8 +254,20 @@ impl PolicyEngine for StandardPolicyEngine {
                          variant,
                      }
                 },
-                OperatorTopology::Conv2d { op_id, .. } => {
-                     TilePolicy::Conv { operator_id: *op_id }
+                OperatorTopology::Conv2d { op_id, h, w, c, k, r, s, .. } => {
+                     // Try tuning cache first, fallback to optimized defaults
+                     let (tile_m, tile_n, tile_c, use_simd, use_double_buffer) = 
+                         Self::get_conv_tuned_params(op, ctx.device)
+                             .unwrap_or_else(|| Self::get_conv_default_params(*h, *w, *c, *k, *r, *s));
+                     
+                     TilePolicy::Conv { 
+                         operator_id: *op_id,
+                         tile_m,
+                         tile_n,
+                         tile_c,
+                         use_simd,
+                         use_double_buffer,
+                     }
                 },
                 OperatorTopology::Relu { op_id, .. } | OperatorTopology::Elementwise { op_id, .. } => {
                      TilePolicy::Elementwise { operator_id: *op_id }

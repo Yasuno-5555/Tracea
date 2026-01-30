@@ -11,8 +11,9 @@
 | **GEMM** | RTX 3070 | >20 TFLOPS | Tensor Core MMA, 2-stage pipeline |
 | **Low-Rank MLP** | RTX 3070 | 18.2 TFLOPS | **Policy Engine** Guided, TTG Dispatch |
 | **Conv2d** | RTX 3070 | 22.73 TFLOPS | **Implicit GEMM**, 3-stage Pipeline, 78% Peak |
-| **FA2** | RTX 3070 | 11.09 TFLOPS | S=2048, causal masking |
-| **CPU GEMM** | Ryzen 5600X | 0.37 TFLOPS | 3.67x vs naive (SIMD packing) |
+| **ResNet Block** | **Apple M1** | **17.65 ms** | **Fused (Conv+BN+ReLU)**, Metal Backend |
+| **Fork & Join** | **Apple M1** | **12.37 ms** | **Fused (Conv+Add)**, Zero-Copy |
+| **Classif. Head** | **Apple M1** | **0.61 ms** | **Fused Epilogue**, Fused Attention Ready |
 
 ---
 

@@ -1,5 +1,5 @@
 use std::ffi::c_void;
-use crate::runtime::manager::{KernelId, KernelArg, RuntimeManager, DeviceBackend, RecordedKernel, KernelHandle, BufferId};
+use super::{KernelId, RuntimeManager, DeviceBackend, KernelHandle, BufferId};
 use crate::doctor::KernelLaunchInfo;
 #[cfg(feature = "vulkan")]
 use ash::vk;
@@ -8,7 +8,7 @@ impl RuntimeManager {
     pub fn launch(&self, id: KernelId, grid: (u32, u32, u32), block: (u32, u32, u32), smem: u32, args: Vec<KernelArg>) -> Result<(), String> {
         let recorded = self.kernels.lock().map_err(|_| "Lock")?.get(&id).ok_or("No kernel")?.clone();
         
-        println!("[Runtime] Launching {}: Grid{:?}, Block{:?}, Smem: {}", recorded.name, grid, block, smem);
+        // println!("[Runtime] Launching {}: Grid{:?}, Block{:?}, Smem: {}", recorded.name, grid, block, smem);
 
         let mut arg_store = [0u64; 64]; 
         let mut kernel_params = [std::ptr::null_mut() as *mut c_void; 64];
@@ -39,6 +39,12 @@ impl RuntimeManager {
                 }
                 KernelArg::Bytes(bytes) => {
                     kernel_params[i] = bytes.as_ptr() as *mut c_void;
+                }
+                KernelArg::BufferOffset(bid, offset) => {
+                    let ptr_val = self.get_device_ptr(*bid)?;
+                    let ptr = &mut arg_store[i] as *mut u64;
+                    unsafe { *ptr = ptr_val + (*offset as u64); }
+                    kernel_params[i] = ptr as *mut c_void;
                 }
             }
         }
@@ -142,10 +148,34 @@ impl RuntimeManager {
                                 encoder.set_buffer(i as u64, None, 0);
                             } else {
                                 let buf_guards = self.buffers.lock().map_err(|_| "Lock")?;
-                                if let Some(crate::runtime::manager::DeviceBuffer::Metal(b)) = buf_guards.get(bid) {
-                                    encoder.set_buffer(i as u64, Some(b), 0);
+                                if let Some(buf) = buf_guards.get(bid) {
+                                    match buf {
+                                        #[cfg(target_os = "macos")]
+                                        crate::runtime::manager::memory::DeviceBuffer::Metal(b) => {
+                                            encoder.set_buffer(i as u64, Some(b), 0);
+                                        }
+                                        _ => return Err(format!("Arg {} is not a Metal buffer", i)),
+                                    }
                                 } else {
-                                    return Err(format!("Arg {} is not a Metal buffer", i));
+                                    return Err(format!("Arg {} (BufferId {:?}) not found", i, bid));
+                                }
+                            }
+                        }
+                        KernelArg::BufferOffset(bid, offset) => {
+                            if *bid == BufferId(0) {
+                                encoder.set_buffer(i as u64, None, *offset as u64);
+                            } else {
+                                let buf_guards = self.buffers.lock().map_err(|_| "Lock")?;
+                                if let Some(buf) = buf_guards.get(bid) {
+                                    match buf {
+                                        #[cfg(target_os = "macos")]
+                                        crate::runtime::manager::memory::DeviceBuffer::Metal(b) => {
+                                            encoder.set_buffer(i as u64, Some(b), *offset as u64);
+                                        }
+                                        _ => return Err(format!("Arg {} is not a Metal buffer", i)),
+                                    }
+                                } else {
+                                    return Err(format!("Arg {} (BufferId {:?}) not found", i, bid));
                                 }
                             }
                         }
@@ -181,7 +211,7 @@ impl RuntimeManager {
                     block: (block.0, block.1, block.2),
                     smem,
                 });
-                command_buffer.wait_until_completed();
+                // command_buffer.wait_until_completed(); // Removed to enable async pipelining
             }
             _ => return Err("Unsupported backend".to_string()),
         }
@@ -198,8 +228,8 @@ impl RuntimeManager {
         epilogue_args: Vec<KernelArg>
     ) -> Result<(), String> {
         let mut final_args = base_args;
-        final_args.push(KernelArg::Buffer(ttg.l1_buffer));
-        final_args.push(KernelArg::Buffer(ttg.l2_buffer));
+        final_args.push(KernelArg::BufferOffset(ttg.l1_buffer, ttg.l1_offset));
+        final_args.push(KernelArg::BufferOffset(ttg.l2_buffer, ttg.l2_offset));
         final_args.extend(epilogue_args);
 
         let grid = (ttg.num_active_tiles, 1, 1);
@@ -222,10 +252,51 @@ impl RuntimeManager {
         let smem = 48 * 1024;
         self.launch_ttg(kernel_id, block, smem as u32, args, &device_ttg, epilogue_args)
     }
+
+    /// Launch with pre-allocated TTG workspace in arena (zero runtime malloc)
+    pub fn launch_with_arena(
+        &self,
+        kernel_id: KernelId,
+        args: Vec<KernelArg>,
+        op: &crate::policy::types::OperatorTopology,
+        t_policy: &crate::policy::types::TilePolicy,
+        e_policy: &crate::policy::types::ExecPolicy,
+        epilogue_args: Vec<KernelArg>,
+        arena_buffer: BufferId,
+        ttg_l1_offset: usize,
+        ttg_l2_offset: usize,
+    ) -> Result<(), String> {
+        let layout = crate::runtime::ttg_builder::TTGBuilder::from_policy(op, t_policy);
+        
+        // Use arena-based TTG (no malloc)
+        let device_ttg = crate::runtime::ttg::DeviceTTG::new_from_arena(
+            self,
+            &layout,
+            arena_buffer,
+            ttg_l1_offset,
+            ttg_l2_offset,
+        )?;
+        
+        let block = e_policy.backend_hint.preferred_block_dim;
+        let smem = 48 * 1024;
+        self.launch_ttg(kernel_id, block, smem as u32, args, &device_ttg, epilogue_args)
+    }
+    pub fn launch_kernel_by_id(
+        &self, 
+        kernel_id: KernelId, 
+        grid: (u32, u32, u32), 
+        block: (u32, u32, u32), 
+        smem: u32, 
+        args: Vec<KernelArg>
+    ) -> Result<(), String> {
+        self.launch(kernel_id, grid, block, smem, args)
+    }
 }
 
+#[derive(Debug, Clone)]
 pub enum KernelArg {
     Buffer(BufferId),
+    BufferOffset(BufferId, usize),
     Int(i32),
     Float(f32),
     Usize(usize),

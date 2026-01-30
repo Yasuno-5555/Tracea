@@ -208,7 +208,9 @@ fn run_resnet18_benchmark(runtime: &RuntimeManager, backend: DeviceBackend) {
     let iters = 5;
     for _ in 0..iters {
         runtime.execute_graph(&graph, &inputs, backend).unwrap();
+        runtime.synchronize();
     }
+    // runtime.synchronize(); // Wait for completion
     let avg_latency = start.elapsed().as_secs_f32() / iters as f32 * 1000.0;
     println!("📊 ResNet-18 Average Latency: {:.3} ms", avg_latency);
     println!("📊 Est. Throughput: {:.1} images/sec", 1000.0 / avg_latency);
@@ -319,6 +321,7 @@ fn run_downsample_test(runtime: &RuntimeManager, backend: DeviceBackend) {
     for _ in 0..10 {
         runtime.execute_graph(&graph, &inputs, backend).unwrap();
     }
+    runtime.synchronize();
     let avg_latency = start.elapsed().as_secs_f32() / 10.0 * 1000.0;
     println!("📊 Downsample Average Latency: {:.3} ms", avg_latency);
 }
@@ -368,6 +371,7 @@ fn run_head_test(runtime: &RuntimeManager, backend: DeviceBackend) {
     for _ in 0..10 {
         runtime.execute_graph(&graph, &inputs, backend).unwrap();
     }
+    runtime.synchronize();
     let avg_latency = start.elapsed().as_secs_f32() / 10.0 * 1000.0;
     println!("📊 Head Average Latency: {:.3} ms", avg_latency);
 }
@@ -461,6 +465,7 @@ fn run_resnet_block(runtime: &RuntimeManager, backend: DeviceBackend) {
     for _ in 0..10 {
         runtime.execute_graph(&graph, &inputs, backend).unwrap();
     }
+    runtime.synchronize(); // Wait for all kernels to complete
     let avg_latency = start.elapsed().as_secs_f32() / 10.0 * 1000.0;
     println!("📊 ResNet Block Average Latency: {:.3} ms", avg_latency);
 }
@@ -512,6 +517,7 @@ fn run_fork_join_test(runtime: &RuntimeManager, backend: DeviceBackend) {
     for _ in 0..10 {
         runtime.execute_graph(&graph, &inputs, backend).unwrap();
     }
+    runtime.synchronize();
     let avg_latency = start.elapsed().as_secs_f32() / 10.0 * 1000.0;
     println!("📊 Fork & Join Average Latency: {:.3} ms", avg_latency);
 }

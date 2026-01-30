@@ -1,6 +1,7 @@
 use crate::core::config::{PipelineConfig, MagicNumberStrategy};
 use crate::runtime::{RuntimeManager, BufferId, KernelArg, DeviceBackend};
 use crate::runtime::ttg_builder::TTGBuilder; 
+use crate::optimizer::model::HardwareObservation;
 use std::sync::Arc;
 
 pub struct BenchmarkResult {
@@ -8,6 +9,7 @@ pub struct BenchmarkResult {
     pub mean_tflops: f32,
     pub std_dev: f32,
     pub latency_ms: f32,
+    pub observation: Option<HardwareObservation>,
 }
 
 /// Trait for measuring the actual performance of a generated kernel
@@ -26,6 +28,7 @@ pub trait MicroBenchmark {
     fn n(&self) -> u32;
     fn k(&self) -> u32;
     fn device_info(&self) -> EnvironmentInfo;
+    fn observe_hardware(&self, config: &PipelineConfig) -> Option<HardwareObservation>;
 }
 
 /// Simulated benchmark for testing the Auto-tuner without a physical GPU
@@ -45,7 +48,8 @@ impl MicroBenchmark for SimulatedBenchmark {
              tflops, 
              mean_tflops: tflops,
              std_dev: 0.0,
-             latency_ms 
+             latency_ms,
+             observation: None
         }
     }
     fn validate_config(&self, _config: &PipelineConfig) -> bool { true }
@@ -60,6 +64,7 @@ impl MicroBenchmark for SimulatedBenchmark {
             arch: "simulated".to_string(),
         }
     }
+    fn observe_hardware(&self, _config: &PipelineConfig) -> Option<HardwareObservation> { None }
 }
 
 #[derive(Debug, Clone)]
@@ -242,7 +247,7 @@ impl MicroBenchmark for NVRTCBenchmark {
 
         let kernel_id = match self.runtime.compile(&source, kernel_name, self.backend) {
             Ok(k) => k,
-            Err(_) => return BenchmarkResult { tflops: 0.0, mean_tflops: 0.0, std_dev: 0.0, latency_ms: 1e9 },
+            Err(_) => return BenchmarkResult { tflops: 0.0, mean_tflops: 0.0, std_dev: 0.0, latency_ms: 1e9, observation: None },
         };
 
         let (mut grid_dim, block_dim, smem_size) = self.get_launch_params(config);
@@ -299,7 +304,7 @@ impl MicroBenchmark for NVRTCBenchmark {
         for i in 0..iterations {
              if let Err(e) = self.runtime.launch(kernel_id, grid_dim, block_dim, smem_size as u32, args.clone()) {
                   eprintln!("[Tracea] ⚠️  Launch Failed on iteration {}: {:?}", i, e);
-                  return BenchmarkResult { tflops: 0.0, mean_tflops: 0.0, std_dev: 0.0, latency_ms: 1e9 };
+                  return BenchmarkResult { tflops: 0.0, mean_tflops: 0.0, std_dev: 0.0, latency_ms: 1e9, observation: None };
              }
         }
         
@@ -312,7 +317,8 @@ impl MicroBenchmark for NVRTCBenchmark {
              tflops, 
              mean_tflops: tflops,
              std_dev: 0.0,
-             latency_ms 
+             latency_ms,
+             observation: self.observe_hardware(config)
         }
     }
     
@@ -363,7 +369,28 @@ impl MicroBenchmark for NVRTCBenchmark {
                     arch: "x86_64".to_string(),
                 }
             }
+            _ => panic!("Unknown backend"),
         }
+    }
+
+    fn observe_hardware(&self, _config: &PipelineConfig) -> Option<HardwareObservation> {
+        #[cfg(target_os = "macos")]
+        if self.backend == crate::runtime::DeviceBackend::Metal {
+             let kernels = self.runtime.kernels.lock().unwrap();
+             for record in kernels.values() {
+                 if let crate::runtime::manager::kernel::KernelHandle::Metal { pipeline, .. } = &record.handle {
+                      return Some(HardwareObservation {
+                          latency_ns: 0, 
+                          throughput_tflops: 0.0,
+                          thread_execution_width: pipeline.thread_execution_width() as u32,
+                          max_threads_per_threadgroup: pipeline.max_total_threads_per_threadgroup() as u32,
+                          static_threadgroup_memory_len: pipeline.static_threadgroup_memory_length() as u32,
+                          estimated_occupancy: 0.0,
+                      });
+                 }
+             }
+        }
+        None
     }
 }
 
@@ -580,6 +607,7 @@ pub trait Conv2dBenchmark {
     fn validate_config(&self, config: &ConvConfig) -> bool;
     fn problem(&self) -> &Conv2dProblem;
     fn device_info(&self) -> EnvironmentInfo;
+    fn observe_hardware(&self, config: &ConvConfig) -> Option<HardwareObservation>;
 }
 
 /// NVRTC-based Conv2d benchmark using implicit GEMM
@@ -729,7 +757,7 @@ impl Conv2dBenchmark for NVRTCConvBenchmark {
         
         let kernel_id = match self.runtime.compile(&source, "conv2d_implicit_gemm", backend) {
             Ok(k) => k,
-            Err(_) => return BenchmarkResult { tflops: 0.0, mean_tflops: 0.0, std_dev: 0.0, latency_ms: 1e9 },
+            Err(_) => return BenchmarkResult { tflops: 0.0, mean_tflops: 0.0, std_dev: 0.0, latency_ms: 1e9, observation: None },
         };
         
         let (grid, block, smem) = self.get_launch_params(config);
@@ -763,14 +791,14 @@ impl Conv2dBenchmark for NVRTCConvBenchmark {
         // Pass 1: Warmup + Rapid 1st Measurement
         for _ in 0..2 {
             if let Err(_) = self.runtime.launch(kernel_id, grid, block, smem, args.clone()) {
-                return BenchmarkResult { tflops: 0.0, mean_tflops: 0.0, std_dev: 0.0, latency_ms: 1e9 };
+                return BenchmarkResult { tflops: 0.0, mean_tflops: 0.0, std_dev: 0.0, latency_ms: 1e9, observation: None };
             }
         }
         self.runtime.synchronize();
         
         let start = std::time::Instant::now();
         if let Err(_) = self.runtime.launch(kernel_id, grid, block, smem, args.clone()) {
-            return BenchmarkResult { tflops: 0.0, mean_tflops: 0.0, std_dev: 0.0, latency_ms: 1e9 };
+            return BenchmarkResult { tflops: 0.0, mean_tflops: 0.0, std_dev: 0.0, latency_ms: 1e9, observation: None };
         }
         self.runtime.synchronize();
         let first_dur = start.elapsed().as_secs_f64();
@@ -811,7 +839,8 @@ impl Conv2dBenchmark for NVRTCConvBenchmark {
             tflops: mean, 
             mean_tflops: mean,
             std_dev,
-            latency_ms: (self.problem.flops() / (mean as f64 * 1e12 + 1e-6) * 1000.0) as f32
+            latency_ms: (self.problem.flops() / (mean as f64 * 1e12 + 1e-6) * 1000.0) as f32,
+            observation: self.observe_hardware(config),
         }
     }
 
@@ -820,22 +849,60 @@ impl Conv2dBenchmark for NVRTCConvBenchmark {
     }
 
     fn device_info(&self) -> EnvironmentInfo {
-        let d = self.runtime.get_device(crate::runtime::DeviceBackend::Cuda)
-            .expect("No CUDA Device");
-        let dev = d.cuda_dev.as_ref().expect("No CUDA Device");
-        
-        let mut driver_ver: i32 = 0;
-        unsafe { cudarc::driver::sys::lib().cuDriverGetVersion(&mut driver_ver) };
-        
-        let sm_major = dev.attribute(cudarc::driver::sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR).unwrap_or(0);
-        let sm_minor = dev.attribute(cudarc::driver::sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR).unwrap_or(0);
-        
-        EnvironmentInfo {
-            backend: crate::runtime::DeviceBackend::Cuda,
-            api_version: format!("{}.{}", driver_ver / 1000, (driver_ver % 1000) / 10),
-            driver_version: format!("{}.{}", driver_ver / 1000, (driver_ver % 1000) / 10),
-            arch: format!("sm_{}{}", sm_major, sm_minor),
+        match self.backend {
+            crate::runtime::DeviceBackend::Cuda => {
+                let d = self.runtime.get_device(crate::runtime::DeviceBackend::Cuda)
+                    .expect("No CUDA Device");
+                let dev = d.cuda_dev.as_ref().expect("No CUDA Device");
+                
+                let mut driver_ver: i32 = 0;
+                unsafe { cudarc::driver::sys::lib().cuDriverGetVersion(&mut driver_ver) };
+                
+                let sm_major = dev.attribute(cudarc::driver::sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR).unwrap_or(0);
+                let sm_minor = dev.attribute(cudarc::driver::sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR).unwrap_or(0);
+                
+                EnvironmentInfo {
+                    backend: crate::runtime::DeviceBackend::Cuda,
+                    api_version: format!("{}.{}", driver_ver / 1000, (driver_ver % 1000) / 10),
+                    driver_version: format!("{}.{}", driver_ver / 1000, (driver_ver % 1000) / 10),
+                    arch: format!("sm_{}{}", sm_major, sm_minor),
+                }
+            }
+            crate::runtime::DeviceBackend::Metal => {
+                EnvironmentInfo {
+                    backend: crate::runtime::DeviceBackend::Metal,
+                    api_version: "Metal 3.0".to_string(),
+                    driver_version: "macOS 14".to_string(),
+                    arch: "Apple M3".to_string(),
+                }
+            }
+            _ => EnvironmentInfo {
+                    backend: self.backend,
+                    api_version: "N/A".to_string(),
+                    driver_version: "N/A".to_string(),
+                    arch: "N/A".to_string(),
+                }
         }
+    }
+
+    fn observe_hardware(&self, _config: &ConvConfig) -> Option<HardwareObservation> {
+        #[cfg(target_os = "macos")]
+        if self.backend == crate::runtime::DeviceBackend::Metal {
+             let kernels = self.runtime.kernels.lock().unwrap();
+             for record in kernels.values() {
+                 if let crate::runtime::manager::kernel::KernelHandle::Metal { pipeline, .. } = &record.handle {
+                      return Some(HardwareObservation {
+                          latency_ns: 0, 
+                          throughput_tflops: 0.0,
+                          thread_execution_width: pipeline.thread_execution_width() as u32,
+                          max_threads_per_threadgroup: pipeline.max_total_threads_per_threadgroup() as u32,
+                          static_threadgroup_memory_len: pipeline.static_threadgroup_memory_length() as u32,
+                          estimated_occupancy: 0.0,
+                      });
+                 }
+             }
+        }
+        None
     }
 }
 
@@ -956,7 +1023,7 @@ impl MicroBenchmark for FlashAttentionBenchmark {
 
         let kernel_id = match self.runtime.compile(&source, "unified_attention_kernel", backend) {
             Ok(k) => k,
-            Err(_) => return BenchmarkResult { tflops: 0.0, mean_tflops: 0.0, std_dev: 0.0, latency_ms: 1e9 },
+            Err(_) => return BenchmarkResult { tflops: 0.0, mean_tflops: 0.0, std_dev: 0.0, latency_ms: 1e9, observation: None },
         };
         
         // Launch Params
@@ -989,7 +1056,7 @@ impl MicroBenchmark for FlashAttentionBenchmark {
         
         for _ in 0..iterations {
              if let Err(_) = self.runtime.launch(kernel_id, grid, block, smem, args.clone()) {
-                 return BenchmarkResult { tflops: 0.0, mean_tflops: 0.0, std_dev: 0.0, latency_ms: 1e9 };
+                  return BenchmarkResult { tflops: 0.0, mean_tflops: 0.0, std_dev: 0.0, latency_ms: 1e9, observation: None };
              }
         }
         self.runtime.synchronize();
@@ -1002,6 +1069,7 @@ impl MicroBenchmark for FlashAttentionBenchmark {
             mean_tflops: tflops,
             std_dev: 0.0,
             latency_ms: (dur * 1000.0) as f32,
+            observation: None,
         }
     }
     
@@ -1018,4 +1086,6 @@ impl MicroBenchmark for FlashAttentionBenchmark {
             arch: "M1/Ampere".to_string(),
         }
     }
+
+    fn observe_hardware(&self, _config: &PipelineConfig) -> Option<HardwareObservation> { None }
 }

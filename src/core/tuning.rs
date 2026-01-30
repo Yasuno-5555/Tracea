@@ -68,12 +68,24 @@ impl TuningCache {
             OperatorTopology::Gemm { m, n, k, .. } => {
                 Some(format!("gemm_{}_{}_{}_{}", m, n, k, device.name))
             },
-            OperatorTopology::Conv2d { name, n: batch, h, w, c, k, r, s, stride, .. } => {
-                // Conv key: conv_NAME_B_H_W_C_K_R_S_STRIDE_device
-                Some(format!("conv_{}_{}_{}_{}_{}_{}_{}_{}_{}_{}", name, batch, h, w, c, k, r, s, stride, device.name))
+            OperatorTopology::Conv2d { n: batch, h, w, c, k, r, s, stride, padding, .. } => {
+                // Conv key: conv_B_H_W_C_K_R_S_STRIDE_PAD_device
+                Some(format!("conv_{}_{}_{}_{}_{}_{}_{}_{}_{}_{}", batch, h, w, c, k, r, s, stride, padding, device.name))
             },
             _ => None
         }
+    }
+
+    /// Get cached entry by key string (public accessor)
+    pub fn get_entry(&self, key: &str) -> Option<CacheEntry> {
+        let cache = self.cache.lock().ok()?;
+        cache.get(key).cloned()
+    }
+
+    /// Get cached entry for an operator
+    pub fn get_cached_config(&self, op: &OperatorTopology, device: &DeviceProfile) -> Option<PipelineConfig> {
+        let key = Self::make_key_str(op, device)?;
+        self.get_entry(&key).map(|e| e.config)
     }
 
     /// The "God" method: Get best config or run extensive tuning
