@@ -33,3 +33,15 @@ check_output.txt
 failed_source.cu
 resnet_bench_results.csv
 .venv/
+
+# More junk files
+*.err
+*.err.txt
+bench_errors.txt
+build_*.txt
+compile_*.txt
+experiment_log*.txt
+last_kernel.cu
+test_output.txt
+build_output.txt
+example_check.txt

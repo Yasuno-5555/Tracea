@@ -1,4 +1,4 @@
-use std::sync::Once;
+use std::sync::OnceLock;
 use std::ffi::c_void;
 use libloading::{Library, Symbol};
 
@@ -31,12 +31,11 @@ pub struct DriverApi {
     pub cu_device_get_attribute: Symbol<'static, CuDeviceGetAttribute>,
 }
 
-static mut DRIVER_API: Option<DriverApi> = None;
-static INIT: Once = Once::new();
+static DRIVER_API: OnceLock<Option<DriverApi>> = OnceLock::new();
 
 pub fn get_driver_api() -> Result<&'static DriverApi, String> {
-    unsafe {
-        INIT.call_once(|| {
+    DRIVER_API.get_or_init(|| {
+        unsafe {
             let lib_res = Library::new("nvcuda.dll");
             match lib_res {
                 Ok(lib) => {
@@ -49,27 +48,26 @@ pub fn get_driver_api() -> Result<&'static DriverApi, String> {
                     let get_dev_attr_res: Result<Symbol<CuDeviceGetAttribute>, _> = lib_ref.get(b"cuDeviceGetAttribute");
                     
                     if let (Ok(launch), Ok(set_attr), Ok(get_attr), Ok(get_ver), Ok(get_dev_attr)) = (launch_res, set_attr_res, get_attr_res, get_ver_res, get_dev_attr_res) {
-                        DRIVER_API = Some(DriverApi {
+                        Some(DriverApi {
                             lib: lib_ref, 
                             launch_kernel: std::mem::transmute(launch),
                             cu_func_set_attribute: std::mem::transmute(set_attr),
                             cu_func_get_attribute: std::mem::transmute(get_attr),
                             cu_driver_get_version: std::mem::transmute(get_ver),
                             cu_device_get_attribute: std::mem::transmute(get_dev_attr),
-                        });
+                        })
                     } else {
                         println!("Tracea Error: Some Driver symbols could not be loaded.");
+                        None
                     }
                 },
-                Err(e) => println!("Tracea Error: Failed to load nvcuda.dll: {}", e),
+                Err(e) => {
+                    println!("Tracea Error: Failed to load nvcuda.dll: {}", e);
+                    None
+                },
             }
-        });
-        
-        match &DRIVER_API {
-            Some(api) => Ok(api),
-            None => Err("Driver API not initialized".to_string()),
         }
-    }
+    }).as_ref().ok_or("Driver API not initialized".to_string())
 }
 
 // Safety wrapper for global statics
