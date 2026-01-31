@@ -20,7 +20,6 @@
 //! - `cpp`: Enables C-ABI export functions for C++ integration.
 
 pub mod interface;
-// pub mod bindings; // REMOVED
 pub mod kernels;
 pub mod core;
 pub(crate) mod semantic;
@@ -67,7 +66,6 @@ fn tracea(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<interface::python::PyDoctorArtifacts>()?;
     m.add_class::<interface::python::PyTuner>()?;
 
-    // Register NN module
     // Register NN module
     interface::nn::register_nn_module(_py, m)?;
 

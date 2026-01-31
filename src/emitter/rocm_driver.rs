@@ -1,6 +1,7 @@
 
 use libloading::{Library, Symbol};
 use std::ffi::c_void;
+use std::sync::OnceLock;
 
 #[allow(non_snake_case)]
 pub type HipGetDeviceCount = unsafe extern "system" fn(*mut i32) -> i32;
@@ -43,54 +44,51 @@ pub struct RocmDriverApi {
     pub hipModuleUnload: Symbol<'static, HipModuleUnload>,
 }
 
-static mut ROCM_DRIVER_API: Option<RocmDriverApi> = None;
+static ROCM_DRIVER_API: OnceLock<Option<RocmDriverApi>> = OnceLock::new();
 
 impl RocmDriverApi {
     pub fn get() -> Option<&'static Self> {
-        unsafe {
-            if ROCM_DRIVER_API.is_some() {
-                return ROCM_DRIVER_API.as_ref();
-            }
+        ROCM_DRIVER_API.get_or_init(|| {
+            unsafe {
+                let lib_res = Library::new("amdhip64.dll"); // Windows name
+                if let Ok(lib) = lib_res {
+                    let lib_ref: &'static Library = Box::leak(Box::new(lib));
 
-            let lib_res = Library::new("amdhip64.dll"); // Windows name
-            if let Ok(lib) = lib_res {
-                let lib_ref: &'static Library = Box::leak(Box::new(lib));
-                
-                let get_count = lib_ref.get(b"hipGetDeviceCount");
-                let get_attr = lib_ref.get(b"hipDeviceGetAttribute");
-                let get_props = lib_ref.get(b"hipGetDeviceProperties");
-                let malloc = lib_ref.get(b"hipMalloc");
-                let free = lib_ref.get(b"hipFree");
-                let h2d = lib_ref.get(b"hipMemcpyHtoD");
-                let d2d = lib_ref.get(b"hipMemcpyDtoD");
-                let load = lib_ref.get(b"hipModuleLoadData");
-                let get_func = lib_ref.get(b"hipModuleGetFunction");
-                let launch = lib_ref.get(b"hipModuleLaunchKernel");
-                let sync = lib_ref.get(b"hipDeviceSynchronize");
-                let unload = lib_ref.get(b"hipModuleUnload");
-                
-                if let (Ok(count), Ok(attr), Ok(props), Ok(m), Ok(f), Ok(h), Ok(d), Ok(l), Ok(gf), Ok(launch), Ok(sync), Ok(unload)) = 
-                   (get_count, get_attr, get_props, malloc, free, h2d, d2d, load, get_func, launch, sync, unload) {
-                    ROCM_DRIVER_API = Some(RocmDriverApi {
-                        lib: lib_ref,
-                        hipGetDeviceCount: count,
-                        hipDeviceGetAttribute: attr,
-                        hipGetDeviceProperties: props,
-                        hipMalloc: m,
-                        hipFree: f,
-                        hipMemcpyHtoD: h,
-                        hipMemcpyDtoD: d,
-                        hipModuleLoadData: l,
-                        hipModuleGetFunction: gf,
-                        hipModuleLaunchKernel: launch,
-                        hipDeviceSynchronize: sync,
-                        hipModuleUnload: unload,
-                    });
-                    return ROCM_DRIVER_API.as_ref();
+                    let get_count = lib_ref.get(b"hipGetDeviceCount");
+                    let get_attr = lib_ref.get(b"hipDeviceGetAttribute");
+                    let get_props = lib_ref.get(b"hipGetDeviceProperties");
+                    let malloc = lib_ref.get(b"hipMalloc");
+                    let free = lib_ref.get(b"hipFree");
+                    let h2d = lib_ref.get(b"hipMemcpyHtoD");
+                    let d2d = lib_ref.get(b"hipMemcpyDtoD");
+                    let load = lib_ref.get(b"hipModuleLoadData");
+                    let get_func = lib_ref.get(b"hipModuleGetFunction");
+                    let launch = lib_ref.get(b"hipModuleLaunchKernel");
+                    let sync = lib_ref.get(b"hipDeviceSynchronize");
+                    let unload = lib_ref.get(b"hipModuleUnload");
+
+                    if let (Ok(count), Ok(attr), Ok(props), Ok(m), Ok(f), Ok(h), Ok(d), Ok(l), Ok(gf), Ok(launch), Ok(sync), Ok(unload)) =
+                       (get_count, get_attr, get_props, malloc, free, h2d, d2d, load, get_func, launch, sync, unload) {
+                        return Some(RocmDriverApi {
+                            lib: lib_ref,
+                            hipGetDeviceCount: count,
+                            hipDeviceGetAttribute: attr,
+                            hipGetDeviceProperties: props,
+                            hipMalloc: m,
+                            hipFree: f,
+                            hipMemcpyHtoD: h,
+                            hipMemcpyDtoD: d,
+                            hipModuleLoadData: l,
+                            hipModuleGetFunction: gf,
+                            hipModuleLaunchKernel: launch,
+                            hipDeviceSynchronize: sync,
+                            hipModuleUnload: unload,
+                        });
+                    }
                 }
+                None
             }
-            None
-        }
+        }).as_ref()
     }
 }
 
