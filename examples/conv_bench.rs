@@ -23,14 +23,14 @@ fn main() {
 }
 
 fn run_autotuner_test(runtime: &std::sync::Arc<tracea::runtime::manager::RuntimeManager>, n: usize, h: usize, w: usize, c: usize, k: usize, r: usize, s: usize, stride: usize, pad: usize, dilation: usize) {
-    use tracea::optimizer::{AutoTuner, GPUInfo, OptimizationGoal};
+    use tracea::optimizer::{AutoTuner, HardwareProfile, OptimizationGoal};
     use tracea::optimizer::benchmark::NVRTCConvBenchmark;
     use tracea::optimizer::benchmark::Conv2dProblem;
 
     let problem = Conv2dProblem::new("Hero-Test-B32", n, h, w, c, k, r, s, stride, pad, dilation);
     let benchmark = NVRTCConvBenchmark::new(std::sync::Arc::clone(runtime), problem);
     
-    let mut tuner = AutoTuner::new(GPUInfo::rtx3070());
+    let mut tuner = AutoTuner::new(HardwareProfile::rtx3070());
     let config = tuner.optimize_conv(&benchmark, 5, OptimizationGoal::MaximizeTFLOPS);
     
     println!("[Result] Best Config: {:?}", config.base);
@@ -47,11 +47,13 @@ fn run_bench(runtime: &RuntimeManager, n: usize, h: usize, w: usize, c: usize, k
     let ir = UnifiedOpIR {
         op_type: UnifiedOpType::Conv2d { 
             n, h, w, c, k, r, s, stride, pad, dilation,
-            layout: LayoutPolicy::NHWC
+            layout: LayoutPolicy::NHWC,
+            epilogue: vec![],
         },
         precison: "f16".to_string(),
         tiling: conv_config(),
         conv_magic_strategy: None,
+        polyhedral_strategy: None,
     };
 
     let emitter = UniversalEmitter::new(DeviceBackend::Cuda);
