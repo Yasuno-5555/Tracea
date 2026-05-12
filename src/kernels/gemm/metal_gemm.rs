@@ -94,7 +94,7 @@ impl TunableKernel for MetalGemmAdapter {
         };
 
         let emitter = UniversalEmitter::new(DeviceBackend::Metal);
-        let source = emitter.generate(ir);
+        let source = emitter.generate(ir).unwrap();
         let kernel_name = "gemm_metal_kernel";
 
         let kernel_id = match self.runtime.compile(&source, kernel_name, DeviceBackend::Metal) {

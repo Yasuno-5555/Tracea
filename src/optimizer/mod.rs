@@ -30,6 +30,11 @@ pub struct HardwareProfile {
     pub max_threadgroup_memory: usize, // Metal: 32KB on some devices
     pub preferred_tile_shape: [usize; 3], // [M, N, K] hint
     pub simd_width: usize, // Warp/Wave/SimdGroup width
+    
+    // Performance roofline metrics
+    pub peak_tflops_standard: f32,
+    pub peak_tflops_tensor: f32,
+    pub mem_bw_gbps: f32,
 }
 
 impl HardwareProfile {
@@ -51,6 +56,9 @@ impl HardwareProfile {
             max_threadgroup_memory: 0,
             preferred_tile_shape: [128, 128, 32], 
             simd_width: 32,
+            peak_tflops_standard: 20.3,
+            peak_tflops_tensor: 40.6,
+            mem_bw_gbps: 448.0,
         }
     }
 
@@ -72,6 +80,9 @@ impl HardwareProfile {
             max_threadgroup_memory: 64 * 1024, // LDS size approximation
             preferred_tile_shape: [256, 128, 16], // MI250 prefers large tiles
             simd_width: 64,
+            peak_tflops_standard: 47.9,
+            peak_tflops_tensor: 383.0,
+            mem_bw_gbps: 1600.0,
         }
     }
 
@@ -93,6 +104,9 @@ impl HardwareProfile {
             max_threadgroup_memory: 0,
             preferred_tile_shape: [128, 256, 32],
             simd_width: 32,
+            peak_tflops_standard: 19.5,
+            peak_tflops_tensor: 312.0,
+            mem_bw_gbps: 1555.0,
         }
     }
 
@@ -114,6 +128,9 @@ impl HardwareProfile {
             max_threadgroup_memory: 32 * 1024,
             preferred_tile_shape: [64, 64, 32],
             simd_width: 32,
+            peak_tflops_standard: 2.6,
+            peak_tflops_tensor: 5.2,
+            mem_bw_gbps: 68.0,
         }
     }
 }
@@ -335,39 +352,116 @@ impl GaussianProcess {
         }
     }
 
+    fn get_full_features(&self, obs: &Observation) -> Vec<f32> {
+        let shape = self.shape_features(obs.m, obs.n, obs.k);
+        let config_feats = self.config_features(&obs.config, obs.m, obs.n, obs.k);
+        shape.into_iter().chain(config_feats).collect()
+    }
+
+    fn get_full_features_from_parts(&self, m: u32, n: u32, k: u32, config: &PipelineConfig) -> Vec<f32> {
+        let shape = self.shape_features(m, n, k);
+        let config_feats = self.config_features(config, m, n, k);
+        shape.into_iter().chain(config_feats).collect()
+    }
+
     fn marginal_log_likelihood(&self, gpu: &HardwareProfile) -> f32 {
+        use nalgebra::{DMatrix, DVector};
         if self.observations.is_empty() { return 0.0; }
         let n = self.observations.len();
-        let mut sum_sq_error = 0.0;
-        let mut sum_variance = 0.0;
+        
+        let mut K = DMatrix::zeros(n, n);
+        let mut y = DVector::zeros(n);
+        let mut prior_means = DVector::zeros(n);
+        
         for i in 0..n {
-            let obs = &self.observations[i];
-            let (mu, sigma) = self.predict_excluding(obs.m, obs.n, obs.k, &obs.config, i, gpu);
-            let error = obs.score - mu;
-            sum_sq_error += error.powi(2);
-            sum_variance += sigma.powi(2) + self.noise_sigma.powi(2);
+            let features_i = self.get_full_features(&self.observations[i]);
+            y[i] = self.observations[i].score;
+            prior_means[i] = self.roofline_prior(self.observations[i].m, self.observations[i].n, self.observations[i].k, &self.observations[i].config, gpu);
+            
+            for j in 0..n {
+                let features_j = self.get_full_features(&self.observations[j]);
+                let mut k_val = (-self.ard_distance_sq(&features_i, &features_j) / 2.0).exp();
+                if i == j {
+                    k_val += self.noise_sigma.powi(2);
+                }
+                K[(i, j)] = k_val;
+            }
         }
-        -sum_sq_error / sum_variance.max(1e-6)
+        
+        if let Some(cholesky) = K.cholesky() {
+            let L = cholesky.l();
+            let diff = &y - &prior_means;
+            if let Some(beta) = L.solve_lower_triangular(&diff) {
+                let term1 = -0.5 * beta.dot(&beta);
+                let term2 = -L.diagonal().map(|v| v.ln()).sum();
+                let term3 = -0.5 * n as f32 * (2.0 * std::f32::consts::PI).ln();
+                term1 + term2 + term3
+            } else {
+                -1e9
+            }
+        } else {
+            -1e9
+        }
     }
     
     fn predict_excluding(&self, m: u32, n: u32, k: u32, config: &PipelineConfig, exclude_idx: usize, gpu: &HardwareProfile) -> (f32, f32) {
+        use nalgebra::{DMatrix, DVector};
         let prior_mean = self.roofline_prior(m, n, k, config, gpu);
         if self.observations.len() <= 1 { return (prior_mean, 1.0); }
-        let mut mean_diff = 0.0;
-        let mut total_weight = 0.0;
-        let cur_features: Vec<f32> = self.shape_features(m, n, k).into_iter().chain(self.config_features(config, m, n, k)).collect();
-        for (i, obs) in self.observations.iter().enumerate() {
-            if i == exclude_idx { continue; }
-            let obs_features: Vec<f32> = self.shape_features(obs.m, obs.n, obs.k).into_iter().chain(self.config_features(&obs.config, obs.m, obs.n, obs.k)).collect();
-            let dist_sq = self.ard_distance_sq(&cur_features, &obs_features);
-            let weight = (-dist_sq / 2.0).exp();
-            let obs_prior = self.roofline_prior(obs.m, obs.n, obs.k, &obs.config, gpu);
-            mean_diff += weight * (obs.score - obs_prior);
-            total_weight += weight;
+        
+        let n_total = self.observations.len();
+        let n_obs = n_total - 1;
+        let cur_features = self.get_full_features_from_parts(m, n, k, config);
+        
+        let mut K = DMatrix::zeros(n_obs, n_obs);
+        let mut y = DVector::zeros(n_obs);
+        let mut prior_means = DVector::zeros(n_obs);
+        
+        let mut idx_map = Vec::with_capacity(n_obs);
+        for i in 0..n_total {
+            if i != exclude_idx {
+                idx_map.push(i);
+            }
         }
-        let mu = prior_mean + mean_diff / (total_weight + self.noise_sigma);
-        let sigma = 1.0 / (total_weight + 1.0).sqrt();
-        (mu, sigma)
+        
+        for i in 0..n_obs {
+            let orig_i = idx_map[i];
+            let features_i = self.get_full_features(&self.observations[orig_i]);
+            y[i] = self.observations[orig_i].score;
+            prior_means[i] = self.roofline_prior(self.observations[orig_i].m, self.observations[orig_i].n, self.observations[orig_i].k, &self.observations[orig_i].config, gpu);
+            
+            for j in 0..n_obs {
+                let orig_j = idx_map[j];
+                let features_j = self.get_full_features(&self.observations[orig_j]);
+                let mut k_val = (-self.ard_distance_sq(&features_i, &features_j) / 2.0).exp();
+                if i == j {
+                    k_val += self.noise_sigma.powi(2);
+                }
+                K[(i, j)] = k_val;
+            }
+        }
+        
+        if let Some(cholesky) = K.cholesky() {
+            let L = cholesky.l();
+            let diff = &y - &prior_means;
+            if let Some(beta) = L.solve_lower_triangular(&diff) {
+                if let Some(alpha) = L.transpose().solve_upper_triangular(&beta) {
+                    let mut k_star = DVector::zeros(n_obs);
+                    for i in 0..n_obs {
+                        let orig_i = idx_map[i];
+                        let features_i = self.get_full_features(&self.observations[orig_i]);
+                        k_star[i] = (-self.ard_distance_sq(&cur_features, &features_i) / 2.0).exp();
+                    }
+                    
+                    let pred_mean = prior_mean + k_star.dot(&alpha);
+                    if let Some(v) = L.solve_lower_triangular(&k_star) {
+                        let pred_var = (1.0 - v.dot(&v)).max(1e-6);
+                        return (pred_mean, pred_var.sqrt());
+                    }
+                }
+            }
+        }
+        (prior_mean, 1.0)
     }
     
     fn ard_distance_sq(&self, a: &[f32], b: &[f32]) -> f32 {
@@ -389,17 +483,14 @@ impl GaussianProcess {
     
     fn roofline_prior(&self, m: u32, n: u32, k: u32, config: &PipelineConfig, gpu: &HardwareProfile) -> f32 {
          let is_tc = config.instruction != crate::core::config::SpecializedInstruction::None;
-         let (peak_tflops, mem_bw) = match gpu.backend {
-             DeviceBackend::Metal => (5.0, 68.0),
-             DeviceBackend::Rocm => (180.0, 1600.0),
-             _ => (if is_tc { 160.0 } else { 20.0 }, 448.0),
-         };
+         let peak_tflops = if is_tc { gpu.peak_tflops_tensor } else { gpu.peak_tflops_standard };
+         let mem_bw = gpu.mem_bw_gbps;
          let ops = 2.0 * m as f64 * n as f64 * k as f64;
          let bytes = (m as f64 * k as f64 + k as f64 * n as f64 + m as f64 * n as f64) * 2.0;
          let intensity = (ops / bytes) as f32;
          let bw_limit = (mem_bw * intensity) / 1000.0;
          f32::min(peak_tflops, bw_limit)
-    }
+     }
 
     fn shape_features(&self, m: u32, n: u32, k: u32) -> Vec<f32> {
         vec![
@@ -412,32 +503,52 @@ impl GaussianProcess {
     }
 
     pub fn predict(&self, m: u32, n: u32, k: u32, config: &PipelineConfig, gpu: &HardwareProfile) -> (f32, f32) {
-         let prior_mean = self.roofline_prior(m, n, k, config, gpu);
-         if self.observations.is_empty() { return (prior_mean, 1.0); }
+        use nalgebra::{DMatrix, DVector};
+        let prior_mean = self.roofline_prior(m, n, k, config, gpu);
+        if self.observations.is_empty() { return (prior_mean, 1.0); }
          
-         let cur_shape = self.shape_features(m, n, k);
-         let cur_config = self.config_features(config, m, n, k);
-         let cur_features: Vec<f32> = cur_shape.iter().chain(cur_config.iter()).cloned().collect();
+        let n_obs = self.observations.len();
+        let cur_features = self.get_full_features_from_parts(m, n, k, config);
 
-         let mut mean_diff = 0.0;
-         let mut total_weight = 0.0;
+        let mut K = DMatrix::zeros(n_obs, n_obs);
+        let mut y = DVector::zeros(n_obs);
+        let mut prior_means = DVector::zeros(n_obs);
+        
+        for i in 0..n_obs {
+            let features_i = self.get_full_features(&self.observations[i]);
+            y[i] = self.observations[i].score;
+            prior_means[i] = self.roofline_prior(self.observations[i].m, self.observations[i].n, self.observations[i].k, &self.observations[i].config, gpu);
+            
+            for j in 0..n_obs {
+                let features_j = self.get_full_features(&self.observations[j]);
+                let mut k_val = (-self.ard_distance_sq(&features_i, &features_j) / 2.0).exp();
+                if i == j {
+                    k_val += self.noise_sigma.powi(2);
+                }
+                K[(i, j)] = k_val;
+            }
+        }
          
-         for obs in &self.observations {
-             let obs_shape = self.shape_features(obs.m, obs.n, obs.k);
-             let obs_config = self.config_features(&obs.config, obs.m, obs.n, obs.k);
-             let obs_features: Vec<f32> = obs_shape.iter().chain(obs_config.iter()).cloned().collect();
-             
-             if cur_features.len() != obs_features.len() { continue; }
-             let dist_sq = self.ard_distance_sq(&cur_features, &obs_features);
-             let weight = (-dist_sq / 2.0).exp();
-             let obs_prior = self.roofline_prior(obs.m, obs.n, obs.k, &obs.config, gpu);
-             mean_diff += weight * (obs.score - obs_prior);
-             total_weight += weight;
-         }
-         
-         let mu = prior_mean + mean_diff / (total_weight + self.noise_sigma);
-         let sigma = 1.0 / (total_weight + 1.0).sqrt();
-         (mu, sigma)
+        if let Some(cholesky) = K.cholesky() {
+            let L = cholesky.l();
+            let diff = &y - &prior_means;
+            if let Some(beta) = L.solve_lower_triangular(&diff) {
+                if let Some(alpha) = L.transpose().solve_upper_triangular(&beta) {
+                    let mut k_star = DVector::zeros(n_obs);
+                    for i in 0..n_obs {
+                        let features_i = self.get_full_features(&self.observations[i]);
+                        k_star[i] = (-self.ard_distance_sq(&cur_features, &features_i) / 2.0).exp();
+                    }
+                     
+                    let pred_mean = prior_mean + k_star.dot(&alpha);
+                    if let Some(v) = L.solve_lower_triangular(&k_star) {
+                        let pred_var = (1.0 - v.dot(&v)).max(1e-6);
+                        return (pred_mean, pred_var.sqrt());
+                    }
+                }
+            }
+        }
+        (prior_mean, 1.0)
     }
 
     pub fn expected_improvement(&self, m: u32, n: u32, k: u32, config: &PipelineConfig, current_best_y: f32, gpu: &HardwareProfile) -> f32 {

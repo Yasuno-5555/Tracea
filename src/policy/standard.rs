@@ -28,44 +28,43 @@ impl StandardPolicyEngine {
 
     /// Generate candidate GEMM configurations for autotuning grid search.
     /// Returns a list of PipelineConfig candidates sorted by priority.
+    /// Delegates to TTGBuilder for hardware-aware tile optimization.
     pub fn propose_gemm_configs(&self, device: &DeviceProfile) -> Vec<crate::PipelineConfig> {
+        use crate::runtime::ttg_builder::TTGBuilder;
         use crate::core::config::{SpecializedInstruction, PipelineConfig};
-        
-        let mut configs = Vec::new();
-        
-        // Metal-specific configurations
+
         let is_metal = device.backend == crate::core::device::BackendType::Metal;
-        
-        // Tile size candidates based on device capabilities
+
+        // TTG optimizer generates hardware-aware tile configs
+        let ttg_configs = TTGBuilder::optimize_tile_configs(device, 2048, 2048, 2048);
+
+        // For Metal, use TTG-optimized configs directly
+        if is_metal {
+            return ttg_configs;
+        }
+
+        // For CUDA/ROCm: existing heuristic tile configs (unchanged)
+        let mut configs = Vec::new();
         let m_tiles = if device.local_memory_size >= 48 * 1024 { vec![64, 128] } else { vec![32, 64] };
         let n_tiles = if device.local_memory_size >= 48 * 1024 { vec![64, 128] } else { vec![32, 64] };
-        let k_tiles = vec![32];  // K=32 is usually optimal
-        
+
         for &mt in &m_tiles {
             for &nt in &n_tiles {
-                for &kt in &k_tiles {
-                    for &double_buffer in &[false, true] {
-                        // Skip double buffer if shared memory is limited
-                        if double_buffer && device.local_memory_size < 2 * (mt * kt + kt * nt) as usize * 2 {
-                            continue;
-                        }
-                        
-                        let mut config = PipelineConfig::new(2, mt, nt, kt);
-                        config.force_num_warps = Some(4);
-                        config.double_buffer = double_buffer;
-                        
-                        if is_metal {
-                            config.instruction = SpecializedInstruction::MetalSimdGroup;
-                        } else if device.has_tensor_cores {
-                            config.instruction = SpecializedInstruction::CudaMMA;
-                        }
-                        
-                        configs.push(config);
+                for &db in &[false, true] {
+                    let smem = (mt * 32 + 32 * nt) as usize * 2 * if db { 2 } else { 1 };
+                    if smem > device.local_memory_size { continue; }
+
+                    let mut config = PipelineConfig::new(2, mt, nt, 32);
+                    config.force_num_warps = Some(4);
+                    config.double_buffer = db;
+
+                    if device.has_tensor_cores {
+                        config.instruction = SpecializedInstruction::CudaMMA;
                     }
+                    configs.push(config);
                 }
             }
         }
-        
         configs
     }
 
@@ -475,6 +474,9 @@ mod tests {
         use crate::policy::engine::{PolicyFeedback};
         use crate::core::tuning::TuningCache;
         
+        // Ensure we start with a clean cache file
+        let _ = std::fs::remove_file(".tracea/tuning_cache_v2.json");
+        
         // 1. Setup
         let mut engine = StandardPolicyEngine::new();
         let device = DeviceProfile {
@@ -537,5 +539,8 @@ mod tests {
              _ => panic!("Wrong policy type"),
         };
         assert_eq!(variant2, crate::core::config::GemmVariant::Tiled);
+        
+        // Clean up
+        let _ = std::fs::remove_file(".tracea/tuning_cache_v2.json");
     }
 }

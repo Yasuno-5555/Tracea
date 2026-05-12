@@ -321,6 +321,12 @@ pub struct PipelineConfig {
     /// Enable Double Buffering for memory latency hiding
     pub double_buffer: bool,
     pub register_strategy: RegisterStrategy,
+    /// Bank conflict avoidance padding (e.g. 8 for shared memory)
+    pub bank_conflict_padding: u32,
+    /// Number of N-tiles to fuse in a single threadgroup (default: 1).
+    /// Fused tiles share A data across multiple N-tiles, reducing global memory reads.
+    /// Set by TTG topology when RowAdjacent edges are detected.
+    pub fusion_count: u32,
 }
 
 impl PipelineConfig {
@@ -350,7 +356,30 @@ impl PipelineConfig {
             gemm_variant: GemmVariant::Naive,
             double_buffer: false,
             register_strategy: RegisterStrategy::Array,
+            bank_conflict_padding: 8,
+            fusion_count: 1,
         }
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.m_tile % 16 != 0 {
+            return Err(format!("m_tile ({}) must be a multiple of 16", self.m_tile));
+        }
+        if self.n_tile % 16 != 0 {
+            return Err(format!("n_tile ({}) must be a multiple of 16", self.n_tile));
+        }
+        if self.num_stages < 2 {
+            return Err(format!("num_stages ({}) must be at least 2 to prevent pipeline hazards", self.num_stages));
+        }
+        if self.k_tile < 16 {
+            return Err(format!("k_tile ({}) must be at least 16", self.k_tile));
+        }
+        if let Some(warps) = self.force_num_warps {
+            if warps == 0 || warps > 32 {
+                return Err(format!("force_num_warps ({}) must be between 1 and 32", warps));
+            }
+        }
+        Ok(())
     }
 
     pub fn with_warps(mut self, nw: u32) -> Self {
@@ -368,56 +397,47 @@ impl PipelineConfig {
     }
 
     pub fn to_vector(&self) -> Vec<f32> {
-        vec![
-            self.num_stages as f32,
-            self.m_tile as f32,
-            self.n_tile as f32,
-            self.k_tile as f32,
-            self.instruction.to_f32(),
-            self.swizzle_mode.to_f32(),
-            self.quantization.to_f32(),
-            self.micro_m as f32,
-            self.micro_n as f32,
-            self.k_unroll as f32,
-            self.prefetch_distance as f32,
-            self.cp_async_distance as f32,
-            self.barrier_mode.to_f32(),
-            self.softmax_granularity.to_f32(),
-            if self.vectorize_epilogue { 1.0 } else { 0.0 },
-            if self.ttg_enabled { 1.0 } else { 0.0 },
-            self.attention_variant.to_f32(),
-            self.gemm_variant.to_f32(),
-            self.register_strategy.to_f32(),
-        ]
+        let value = serde_json::to_value(self).unwrap();
+        let mut vec = Vec::new();
+        
+        fn flatten_value(val: &serde_json::Value, vec: &mut Vec<f32>) {
+            match val {
+                serde_json::Value::Number(n) => {
+                    if let Some(f) = n.as_f64() {
+                        vec.push(f as f32);
+                    }
+                }
+                serde_json::Value::Bool(b) => {
+                    vec.push(if *b { 1.0 } else { 0.0 });
+                }
+                serde_json::Value::Array(arr) => {
+                    for v in arr {
+                        flatten_value(v, vec);
+                    }
+                }
+                serde_json::Value::Object(obj) => {
+                    let mut sorted_keys: Vec<_> = obj.keys().collect();
+                    sorted_keys.sort();
+                    for k in sorted_keys {
+                        flatten_value(&obj[k], vec);
+                    }
+                }
+                _ => {
+                    vec.push(0.0);
+                }
+            }
+        }
+        
+        flatten_value(&value, &mut vec);
+        vec
     }
 
-    pub fn from_vector(vec: &[f32]) -> Self {
-        Self {
-            double_buffer: false,
-            num_stages: vec[0] as u32,
-            m_tile: vec[1] as u32,
-            n_tile: vec[2] as u32,
-            k_tile: vec[3] as u32,
-            instruction: vec.get(4).map(|&v| SpecializedInstruction::from_f32(v)).unwrap_or(SpecializedInstruction::None),
-            swizzle_mode: vec.get(5).map(|&v| SwizzleMode::from_f32(v)).unwrap_or(SwizzleMode::None),
-            quantization: vec.get(6).map(|&v| QuantizationMode::from_f32(v)).unwrap_or(QuantizationMode::None),
-            layout_policy: Some(LayoutPolicy::RowMajor),
-            epilogue: Vec::new(),
-            force_num_warps: None,
-            micro_m: vec.get(7).map(|&v| v as u32).unwrap_or(1),
-            micro_n: vec.get(8).map(|&v| v as u32).unwrap_or(1),
-            k_unroll: vec.get(9).map(|&v| v as u32).unwrap_or(1),
-            prefetch_distance: vec.get(10).map(|&v| v as u32).unwrap_or(0),
-            cp_async_distance: vec.get(11).map(|&v| v as u32).unwrap_or(0),
-            barrier_mode: vec.get(12).map(|&v| BarrierMode::from_f32(v)).unwrap_or(BarrierMode::None),
-            softmax_granularity: vec.get(13).map(|&v| SoftmaxGranularity::from_f32(v)).unwrap_or(SoftmaxGranularity::PerTile),
-            intrinsic_shape: IntrinsicShape::None,
-            vectorize_epilogue: vec.get(14).map(|&v| v > 0.5).unwrap_or(true),
-            ttg_enabled: vec.get(15).map(|&v| v > 0.5).unwrap_or(false),
-            attention_variant: vec.get(16).map(|&v| AttentionVariant::from_f32(v)).unwrap_or(AttentionVariant::Naive),
-            gemm_variant: vec.get(17).map(|&v| GemmVariant::from_f32(v)).unwrap_or(GemmVariant::Naive),
-            register_strategy: vec.get(18).map(|&v| RegisterStrategy::from_f32(v)).unwrap_or(RegisterStrategy::Array),
-        }
+    pub fn to_json(&self) -> Result<String, String> {
+        serde_json::to_string(self).map_err(|e| e.to_string())
+    }
+
+    pub fn from_json(json: &str) -> Result<Self, String> {
+        serde_json::from_str(json).map_err(|e| e.to_string())
     }
 
     pub fn with_micro_tile(mut self, m: u32, n: u32) -> Self {
@@ -457,3 +477,60 @@ impl MagicNumberStrategy {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pipeline_config_validation() {
+        // Valid config
+        let valid = PipelineConfig::new(2, 64, 64, 16);
+        assert!(valid.validate().is_ok());
+
+        // Invalid m_tile
+        let invalid_m = PipelineConfig::new(2, 63, 64, 16);
+        assert!(invalid_m.validate().is_err());
+
+        // Invalid n_tile
+        let invalid_n = PipelineConfig::new(2, 64, 63, 16);
+        assert!(invalid_n.validate().is_err());
+
+        // Invalid stages
+        let invalid_stages = PipelineConfig::new(1, 64, 64, 16);
+        assert!(invalid_stages.validate().is_err());
+
+        // Invalid k_tile
+        let invalid_k = PipelineConfig::new(2, 64, 64, 15);
+        assert!(invalid_k.validate().is_err());
+
+        // Invalid force_num_warps
+        let mut invalid_warps = PipelineConfig::new(2, 64, 64, 16);
+        invalid_warps.force_num_warps = Some(0);
+        assert!(invalid_warps.validate().is_err());
+        invalid_warps.force_num_warps = Some(33);
+        assert!(invalid_warps.validate().is_err());
+    }
+
+    #[test]
+    fn test_pipeline_config_serde_roundtrip() {
+        let mut original = PipelineConfig::new(3, 128, 64, 32);
+        original.double_buffer = true;
+        original.bank_conflict_padding = 16;
+        original.vectorize_epilogue = false;
+
+        // Verify JSON roundtrip
+        let json_str = original.to_json().expect("to_json failed");
+        let deserialized = PipelineConfig::from_json(&json_str).expect("from_json failed");
+
+        assert_eq!(original, deserialized);
+        assert!(deserialized.double_buffer);
+        assert_eq!(deserialized.bank_conflict_padding, 16);
+        assert!(!deserialized.vectorize_epilogue);
+
+        // Verify vector flattening matches length expectation
+        let vec_repr = original.to_vector();
+        assert!(!vec_repr.is_empty());
+    }
+}
+

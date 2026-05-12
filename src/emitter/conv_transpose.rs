@@ -28,7 +28,7 @@ fn magic_u32(n: u32) -> (u32, u32) {
 /// - dilation = 1
 /// - padding_mode = "zeros"
 /// - dtype = FP32
-pub fn generate_conv_transpose(ir: &UnifiedOpIR) -> String {
+pub fn generate_conv_transpose(ir: &UnifiedOpIR) -> Result<String, crate::emitter::traits::EmissionError> {
     if let UnifiedOpType::ConvTranspose2d { 
         n: batch, h: h_in, w: w_in, c: c_in, k: k_out, 
         r, s, stride, pad, output_padding, layout: _ 
@@ -120,7 +120,7 @@ __device__ __forceinline__ void fast_divmod(int val, unsigned int magic, unsigne
             }
         }
 
-        format!(r#"
+        Ok(format!(r#"
 #include <cuda_fp16.h>
 #include <mma.h>
 #include <cuda_pipeline.h>
@@ -270,11 +270,6 @@ extern "C" __global__ void __launch_bounds__(N_WARPS * 32, 1) conv_transpose2d_i
         }}
     }}
 }}
-
-
-
-
-
 "#,
         primitives=CudaBackend::get_primitive_defs(), mt=mt, nt=nt, kt=kt, stages=stages, num_warps=num_warps, 
         a_stride=a_stride, b_stride=b_stride,
@@ -286,8 +281,14 @@ extern "C" __global__ void __launch_bounds__(N_WARPS * 32, 1) conv_transpose2d_i
         s_magic=s_magic, s_shift=s_shift,
         epilogue_defs=include_str!("../kernels/gpu/epilogue.cuh"),
         epilogue_args=epilogue_args,
-        epilogue_apply=epilogue_apply)
+        epilogue_apply=epilogue_apply))
     } else {
-        panic!("Using conv_transpose emitter for non-ConvTranspose2d op");
+        Err(crate::emitter::traits::EmissionError::UnsupportedOpType {
+            reason: "Using conv_transpose emitter for non-ConvTranspose2d op".to_string(),
+        })
     }
+}
+
+pub fn generate_conv_transpose_res(ir: &UnifiedOpIR) -> Result<String, crate::emitter::traits::EmissionError> {
+    generate_conv_transpose(ir)
 }

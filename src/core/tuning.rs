@@ -158,10 +158,22 @@ impl TuningCache {
         }
     }
 
-    pub fn update_entry(_key: TuningKey, _variant: GemmVariant) {
-        // No-op for now as we transitioned to PipelineConfig based cache
-        // Or we could map GemmVariant to a simple config and store it?
-        // Let's leave it no-op to avoid polluting the new high-quality cache with legacy variants.
+    pub fn update_entry(key: TuningKey, variant: GemmVariant) {
+        let instance = get_tuning_cache();
+        let key_str = format!("gemm_{}_{}_{}_{}", key.1, key.2, key.3, key.4);
+        
+        let mut config = PipelineConfig::new(2, 64, 64, 32);
+        config.gemm_variant = variant;
+        
+        {
+            let mut cache = instance.cache.lock().unwrap();
+            cache.insert(key_str, CacheEntry {
+                config,
+                score: 1.0,
+                timestamp: 0,
+            });
+        }
+        instance.save_cache();
     }
 }
 

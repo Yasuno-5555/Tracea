@@ -18,10 +18,10 @@ impl UniversalEmitter {
         atom: &crate::core::manifold::ComputeAtom,
         lattice: &crate::core::lattice::HardwareLattice,
         strategy: &crate::core::mapper::MappingStrategy,
-    ) -> String {
+    ) -> Result<String, String> {
         match self.backend {
-            DeviceBackend::Cuda => self.generate_cuda(atom, lattice, strategy),
-            _ => format!("// Universal generation not yet supported for {:?}", self.backend),
+            DeviceBackend::Cuda => Ok(self.generate_cuda(atom, lattice, strategy)),
+            _ => Err(format!("Universal generation not yet supported for {:?}", self.backend)),
         }
     }
 
@@ -186,35 +186,64 @@ impl UniversalEmitter {
         s
     }
 
-    pub fn generate(&self, ir: UnifiedOpIR) -> String {
+    pub fn generate(&self, ir: UnifiedOpIR) -> Result<String, crate::emitter::traits::EmissionError> {
+        use crate::emitter::traits::EmissionError;
         if let crate::emitter::traits::UnifiedOpType::Elementwise { .. } = ir.op_type {
-            return crate::emitter::elementwise::generate_elementwise(&ir, self.backend);
+            return Ok(crate::emitter::elementwise::generate_elementwise(&ir, self.backend));
         }
         if let crate::emitter::traits::UnifiedOpType::Conv2d { .. } = ir.op_type {
             match self.backend {
                 #[cfg(feature = "vulkan")]
                 DeviceBackend::Vulkan => {
-                    return crate::emitter::vulkan::generate_vulkan_conv(&ir);
+                    return Ok(crate::emitter::vulkan::generate_vulkan_conv(&ir));
                 }
                 DeviceBackend::Metal => {
                     let emitter = MetalEmitter::detect();
                     return emitter.generate_from_ir(&ir);
                 }
-                _ => return crate::emitter::conv::generate_conv(&ir),
+                DeviceBackend::Cuda => {
+                    return crate::emitter::cuda::conv::generate_conv(&ir);
+                }
+                _ => {
+                    return Err(EmissionError::UnsupportedOpType {
+                        reason: format!("Conv2d not supported on {:?}", self.backend),
+                    });
+                }
             }
         }
         if let crate::emitter::traits::UnifiedOpType::FusedAttention { .. } = ir.op_type {
-            return crate::emitter::attention::generate_attention(&ir, self.backend);
+            match self.backend {
+                DeviceBackend::Cuda => {
+                    if let crate::emitter::traits::UnifiedOpType::FusedAttention { h, dh, causal, .. } = ir.op_type {
+                        return crate::emitter::cuda::attention::generate_attention(h, dh, causal, &ir);
+                    }
+                }
+                DeviceBackend::Metal => {
+                    let emitter = MetalEmitter::detect();
+                    return emitter.generate_from_ir(&ir);
+                }
+                _ => {}
+            }
+            return Err(EmissionError::UnsupportedOpType {
+                reason: format!("FusedAttention not supported on {:?}", self.backend),
+            });
         }
         if let crate::emitter::traits::UnifiedOpType::Gemm { .. } = ir.op_type {
-            return crate::emitter::gemm::generate_gemm(&ir, self.backend);
-        }
-        if let crate::emitter::traits::UnifiedOpType::MatrixCore { .. } = ir.op_type {
-            #[cfg(feature = "vulkan")]
-            if self.backend == DeviceBackend::Vulkan {
-                return crate::emitter::vulkan::generate_vulkan_mma(&ir);
+            match self.backend {
+                DeviceBackend::Cuda => {
+                    if let crate::emitter::traits::UnifiedOpType::Gemm { m, n, k, .. } = ir.op_type {
+                        return crate::emitter::cuda::gemm::generate_gemm(m, n, k, &ir.tiling);
+                    }
+                }
+                DeviceBackend::Metal => {
+                    let emitter = MetalEmitter::detect();
+                    return emitter.generate_from_ir(&ir);
+                }
+                _ => {}
             }
-            // CUDA/Metal fallbacks to Gemm or specialized emitters
+            return Err(EmissionError::UnsupportedOpType {
+                reason: format!("Gemm not supported on {:?}", self.backend),
+            });
         }
 
         match self.backend {
@@ -231,8 +260,11 @@ impl UniversalEmitter {
                 emitter.generate_from_ir(&ir)
             }
             DeviceBackend::Cpu => {
-                "/* CPU implementation is static */".to_string()
+                Ok("/* CPU implementation is static */".to_string())
             }
+            _ => Err(EmissionError::UnsupportedOpType {
+                reason: format!("Backend {:?} not supported", self.backend),
+            })
         }
     }
 }

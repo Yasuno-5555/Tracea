@@ -1,4 +1,4 @@
-use crate::emitter::traits::{Emitter, UnifiedOpIR, UnifiedOpType};
+use crate::emitter::traits::{Emitter, UnifiedOpIR, UnifiedOpType, EmissionError};
 pub use crate::kernels::attention::cuda_emitter::FlashAttentionEmitter;
 use crate::core::config::{PipelineConfig, LayoutPolicy};
 use crate::core::op::EpilogueOp;
@@ -11,7 +11,16 @@ impl CUDAEmitter {
         Self {}
     }
 
-    fn generate_gemm(&self, _m: u32, _n: u32, _k: u32, config: &PipelineConfig) -> String {
+    pub fn emit(&self, ir: &UnifiedOpIR) -> Result<String, EmissionError> {
+        match &ir.op_type {
+            UnifiedOpType::Gemm { m, n, k, .. } => self.generate_gemm(*m, *n, *k, &ir.tiling),
+            _ => Err(EmissionError::UnsupportedOpType {
+                reason: format!("Direct CUDA emit is not supported for op type: {:?}", ir.op_type),
+            }),
+        }
+    }
+
+    pub fn generate_gemm(&self, _m: u32, _n: u32, _k: u32, config: &PipelineConfig) -> Result<String, EmissionError> {
         let mt = config.m_tile;
         let nt = config.n_tile;
         let kt = config.k_tile;
@@ -27,10 +36,12 @@ impl CUDAEmitter {
         };
         let num_warps = consumers + 1;
         
-        let a_stride = kt + 8;
-        let b_stride = nt + 8;
-        let smem_a_bytes = mt * a_stride * 2;
-        let smem_b_bytes = kt * b_stride * 2;
+        let padding = config.bank_conflict_padding;
+        let a_stride = kt + padding;
+        let b_stride = nt + padding;
+        let multiplier = if config.double_buffer { 2 } else { 1 };
+        let smem_a_bytes = mt * a_stride * multiplier;
+        let smem_b_bytes = kt * b_stride * multiplier;
         
         let a_smem_offset = 128; // Header
         let b_smem_offset = (a_smem_offset + smem_a_bytes * stages as u32 + 1023) & !1023;
@@ -75,11 +86,12 @@ impl CUDAEmitter {
         };
         // Verify valid tiling
         if mt / warp_m < 16 {
-             // Panic or fallback to safe config to avoid 0 M_FRAGS
-             panic!("Invalid Warp Partitioning: MT={} / WarpsM={} < 16. M_FRAGS would be 0.", mt, warp_m);
+             return Err(EmissionError::InvalidTileConfiguration {
+                 reason: format!("Invalid Warp Partitioning: MT={} / WarpsM={} < 16. M_FRAGS would be 0.", mt, warp_m),
+             });
         }
 
-        format!(r#"
+        Ok(format!(r#"
 #include <cuda_fp16.h>
 #include <mma.h>
 #include <cuda_pipeline.h>
@@ -346,7 +358,7 @@ epilogue_apply=epilogue_apply,
 swizzle_enabled=(if config.swizzle_mode != crate::core::config::SwizzleMode::None { 1 } else { 0 }),
 vectorize_epilogue=config.vectorize_epilogue,
 ttg_enabled=(if config.ttg_enabled { 1 } else { 0 }),
-warp_m=warp_m, warp_n=warp_n, a_smem_offset=a_smem_offset, b_smem_offset=b_smem_offset)
+warp_m=warp_m, warp_n=warp_n, a_smem_offset=a_smem_offset, b_smem_offset=b_smem_offset))
     }
 
     fn generate_softmax(_dim_size: usize, _total_elements: usize) -> String {
@@ -497,7 +509,8 @@ impl Emitter for CUDAEmitter {
                 let emitter = FlashAttentionEmitter::new(ir.tiling.clone());
                 emitter.generate_kernel(*h as usize, *dh as usize, *causal)
             }
-            UnifiedOpType::Gemm { m, n, k, .. } => self.generate_gemm(*m, *n, *k, &ir.tiling),
+            UnifiedOpType::Gemm { m, n, k, .. } => self.generate_gemm(*m, *n, *k, &ir.tiling)
+                .unwrap_or_else(|e| panic!("Emission failed: {:?}", e)),
             UnifiedOpType::Elementwise { .. } => {
                 panic!("Elementwise Ops should be handled by UniversalEmitter.");
             }

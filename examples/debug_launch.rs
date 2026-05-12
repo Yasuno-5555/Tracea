@@ -1,6 +1,6 @@
 use tracea::runtime::manager::{RuntimeManager, DeviceBackend, KernelArg};
-use tracea::core::config::{PipelineConfig, SpecializedInstruction, SwizzleMode, QuantizationMode};
-use tracea::emitter::fa2::FlashAttentionEmitter;
+use tracea::core::config::{PipelineConfig, SpecializedInstruction, SwizzleMode, QuantizationMode, IntrinsicShape, AttentionVariant};
+use tracea::kernels::attention::cuda_emitter::FlashAttentionEmitter;
 use std::sync::Arc;
 use std::fs::File;
 use std::io::Write;
@@ -20,19 +20,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     log("[Debug] Runtime Initialized");
 
     // 2. Generate FA2 Kernel Source
-    let config = PipelineConfig {
-        num_stages: 2,
-        m_tile: 64, n_tile: 64, k_tile: 32,
-        instruction: SpecializedInstruction::None,
-        swizzle_mode: SwizzleMode::None,
-        quantization: QuantizationMode::None,
-        epilogue: vec![],
-        force_num_warps: Some(4),
-        intrinsic_shape: IntrinsicShape::None,
-        vectorize_epilogue: true,
-        ttg_enabled: false,
-        attention_variant: Default::default(),
-    };
+    let config = PipelineConfig::new(2, 64, 64, 32)
+        .with_warps(4);
     let emitter = FlashAttentionEmitter::new(config);
     // H=1, D=64, Causal=false
     let source = emitter.generate_kernel(1, 64, false);

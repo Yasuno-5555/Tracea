@@ -1,5 +1,5 @@
 use tracea::core::tuning::{TunableKernel, SearchSpace};
-use tracea::optimizer::{ProblemDescriptor, AutoTuner, OptimizationGoal, GPUInfo};
+use tracea::optimizer::{ProblemDescriptor, AutoTuner, OptimizationGoal, HardwareProfile};
 use tracea::core::backend::Device;
 use tracea::runtime::manager::DeviceBackend;
 use tracea::MicroBenchmark;

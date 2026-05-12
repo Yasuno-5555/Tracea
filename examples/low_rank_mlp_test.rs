@@ -44,9 +44,10 @@ fn main() {
         precison: "f16".to_string(),
         tiling: config.clone(),
         conv_magic_strategy: None,
+        polyhedral_strategy: None,
     };
-    
-    let source = emitter.generate_from_ir(&ir);
+
+    let source = emitter.generate_from_ir(&ir).expect("Codegen failed");
     // println!("Generated Source:\n{}", source);
     
     let kernel_id = runtime.compile(&source, "low_rank_mlp_kernel", DeviceBackend::Cuda).expect("Compile failed");

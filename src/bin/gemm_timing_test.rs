@@ -35,7 +35,7 @@ fn main() {
     };
     
     let emitter = tracea::emitter::metal::MetalEmitter::detect();
-    let source = emitter.generate_from_ir(&ir);
+    let source = emitter.generate_from_ir(&ir).unwrap();
     let kernel_id = runtime.compile(&source, "unified_gemm_kernel", backend).unwrap();
     
     // TTG for dispatch (L1/L2 tile map)

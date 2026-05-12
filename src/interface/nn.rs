@@ -1,3 +1,4 @@
+#![allow(unsafe_op_in_unsafe_fn)]
 use pyo3::prelude::*;
 use crate::interface::python::{PyGraph, PyEpilogueOp, PyEpilogueType};
 use crate::core::op::EpilogueOp;

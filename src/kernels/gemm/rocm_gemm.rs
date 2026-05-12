@@ -93,7 +93,7 @@ impl TunableKernel for RocmGemmAdapter {
         };
 
         let emitter = UniversalEmitter::new(DeviceBackend::Rocm);
-        let source = emitter.generate(ir);
+        let source = emitter.generate(ir).unwrap();
         let kernel_name = "gemm_rocm_kernel";
 
         let kernel_id = match self.runtime.compile(&source, kernel_name, DeviceBackend::Rocm) {

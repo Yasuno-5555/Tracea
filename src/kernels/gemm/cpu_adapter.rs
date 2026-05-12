@@ -116,12 +116,21 @@ impl TunableKernel for GemmAdapter {
         struct UnsafeSlice(*mut f32);
         unsafe impl Send for UnsafeSlice {}
         unsafe impl Sync for UnsafeSlice {}
+
+        impl UnsafeSlice {
+            unsafe fn add_at(&self, offset: usize, val: f32) {
+                // Safety: Caller guarantees that parallel writes access disjoint indices
+                unsafe {
+                    *self.0.add(offset) += val;
+                }
+            }
+        }
         let c_ptr = UnsafeSlice(c.as_mut_ptr());
 
         let handles: Vec<_> = (0..num_threads).map(|tid| {
             let a = a.clone();
             let b = b.clone();
-            let c_ptr = UnsafeSlice(c_ptr.0);
+            let c_ptr_struct = UnsafeSlice(c_ptr.0);
             let m_block = cfg.m_block;
             let n_block = cfg.n_block;
             let k_block = cfg.k_block;
@@ -133,7 +142,6 @@ impl TunableKernel for GemmAdapter {
                 if m_start >= m_end { return; }
 
                 unsafe {
-                    let c_raw = c_ptr.0;
                     // Tiled Loop
                     for i_blk in (m_start..m_end).step_by(m_block) {
                         let i_end = std::cmp::min(i_blk + m_block, m_end);
@@ -149,7 +157,7 @@ impl TunableKernel for GemmAdapter {
                                         for l in l_blk..l_end {
                                             sum += a[i * k + l] * b[l * n + j];
                                         }
-                                        *c_raw.add(i * n + j) += sum;
+                                        c_ptr_struct.add_at(i * n + j, sum);
                                     }
                                 }
                             }

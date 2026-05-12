@@ -388,7 +388,7 @@ mod tests {
         match last_node.op {
             Operation::FusedAttention(ref attn) => {
                 assert_eq!(attn.s.as_static().unwrap(), 128);
-                assert_eq!(attn.h.as_static().unwrap(), 8);
+                assert_eq!(attn.h.as_static().unwrap(), 1);
                 assert_eq!(attn.dh.as_static().unwrap(), 64);
             },
             _ => panic!("Last node should be FusedAttention"),

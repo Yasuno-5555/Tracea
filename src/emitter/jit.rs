@@ -238,7 +238,8 @@ impl JITCompiler {
             polyhedral_strategy: None,
         };
         
-        let source = self.emitter.generate_from_ir(&ir);
+        let source = self.emitter.generate_from_ir(&ir)
+            .map_err(|e| format!("Emission Error: {:?}", e))?;
         let key = format!("fused_attn_dh{}_c{}_s{}", op.dh.as_static().unwrap_or(64), op.causal, op.scale_inv_sqrt_d);
         
         let mut cache = self.kernel_cache.lock().map_err(|_| "Cache Lock Poisoned".to_string())?;

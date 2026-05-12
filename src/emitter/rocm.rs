@@ -1,4 +1,4 @@
-use crate::emitter::traits::{Emitter, UnifiedOpIR, UnifiedOpType};
+use crate::emitter::traits::{Emitter, UnifiedOpIR, UnifiedOpType, EmissionError};
 use crate::semantic::transition::SyncRequirement;
 use crate::emitter::rocm_driver::*;
 
@@ -178,35 +178,53 @@ impl Emitter for ROCMEmitter {
         }
     }
 
-    fn generate_from_ir(&self, ir: &UnifiedOpIR) -> String {
+    fn generate_from_ir(&self, ir: &UnifiedOpIR) -> Result<String, EmissionError> {
         match &ir.op_type {
-            UnifiedOpType::Gemm { .. } => self.generate_gemm(ir.tiling.clone()),
+            UnifiedOpType::Gemm { .. } => Ok(self.generate_gemm(ir.tiling.clone())),
             UnifiedOpType::FusedAttention { .. } => {
-                "// ROCm FA2 not yet implemented in Unified Emitter\n".to_string()
+                Err(EmissionError::UnsupportedOpType {
+                    reason: "ROCm FA2 not yet implemented in Unified Emitter".to_string(),
+                })
             }
             UnifiedOpType::Elementwise { .. } => {
-                panic!("Elementwise Ops should be handled by UniversalEmitter.");
+                Err(EmissionError::UnsupportedOpType {
+                    reason: "Elementwise Ops should be handled by UniversalEmitter.".to_string(),
+                })
             }
             UnifiedOpType::Conv2d { .. } => {
-                panic!("Conv2d Ops should be handled by UniversalEmitter.");
+                Err(EmissionError::UnsupportedOpType {
+                    reason: "Conv2d Ops should be handled by UniversalEmitter.".to_string(),
+                })
             }
             UnifiedOpType::ConvTranspose2d { .. } => {
-                "// ROCm ConvTranspose2d not yet implemented - fallback to CPU\n".to_string()
+                Err(EmissionError::UnsupportedOpType {
+                    reason: "ROCm ConvTranspose2d not yet implemented".to_string(),
+                })
             }
             UnifiedOpType::MatrixCore { .. } => {
-                panic!("MatrixCore Ops not supported on ROCm yet.");
+                Err(EmissionError::UnsupportedOpType {
+                    reason: "MatrixCore Ops not supported on ROCm yet.".to_string(),
+                })
             }
             UnifiedOpType::LowRankMlp { .. } => {
-                panic!("LowRankMlp not supported on ROCm yet.");
+                Err(EmissionError::UnsupportedOpType {
+                    reason: "LowRankMlp not supported on ROCm yet.".to_string(),
+                })
             }
             UnifiedOpType::Softmax { .. } => {
-                "// ROCm Softmax not yet implemented in Unified Emitter\n".to_string()
+                Err(EmissionError::UnsupportedOpType {
+                    reason: "ROCm Softmax not yet implemented in Unified Emitter".to_string(),
+                })
             }
             UnifiedOpType::BatchNorm { .. } => {
-                "// ROCm BatchNorm not yet implemented in Unified Emitter\n".to_string()
+                Err(EmissionError::UnsupportedOpType {
+                    reason: "ROCm BatchNorm not yet implemented in Unified Emitter".to_string(),
+                })
             }
             UnifiedOpType::GlobalAveragePool { .. } | UnifiedOpType::Linear { .. } => {
-                "// ROCm GlobalAveragePool/Linear not yet implemented\n".to_string()
+                Err(EmissionError::UnsupportedOpType {
+                    reason: "ROCm GlobalAveragePool/Linear not yet implemented".to_string(),
+                })
             }
         }
     }

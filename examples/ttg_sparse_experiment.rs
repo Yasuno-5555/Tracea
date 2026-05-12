@@ -43,12 +43,13 @@ fn main() {
     // 3. Generate Kernel
     let emitter = CUDAEmitter::new();
     let ir = UnifiedOpIR {
-        op_type: UnifiedOpType::Gemm { m, n, k },
+        op_type: UnifiedOpType::Gemm { m, n, k, batch: 1, epilogue: vec![] },
         precison: "f16".to_string(),
         tiling: config.clone(),
         conv_magic_strategy: None,
+        polyhedral_strategy: None,
     };
-    let source = emitter.generate_from_ir(&ir);
+    let source = emitter.generate_from_ir(&ir).expect("Codegen failed");
     // Kernel name must match what's in the generated source (hardcoded 'gemm_mma_kernel' in cuda.rs)
     let kernel_id = runtime.compile(&source, "gemm_mma_kernel", DeviceBackend::Cuda).expect("Compile failed");
     

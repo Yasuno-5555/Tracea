@@ -1,4 +1,5 @@
 #![allow(unused)]
+#![allow(unsafe_op_in_unsafe_fn)]
 use pyo3::prelude::*;
 use std::sync::Arc;
 use crate::runtime::manager::{RuntimeManager, DeviceBackend, KernelArg};

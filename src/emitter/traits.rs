@@ -10,7 +10,14 @@ pub trait Emitter {
     fn emit_fragment_op(&self, _op: FragmentOp, _frags: &[Fragment]) -> String {
         "".to_string()
     }
-    fn generate_from_ir(&self, ir: &UnifiedOpIR) -> String;
+    fn generate_from_ir(&self, ir: &UnifiedOpIR) -> Result<String, EmissionError>;
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum EmissionError {
+    InvalidTileConfiguration { reason: String },
+    UnsupportedOpType { reason: String },
+    SystemError { reason: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

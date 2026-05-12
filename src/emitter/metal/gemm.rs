@@ -48,12 +48,12 @@ kernel void unified_gemm_kernel(
     threadgroup half sA[{mt} * {kt}];
     threadgroup half sB[{kt} * {nt}];
 
-    uint sg_base_row = (simd_id / ({n_subtiles}/2)) * 16;
-    uint sg_base_col = (simd_id % ({n_subtiles}/2)) * 16;
+    uint sg_base_row = (simd_id / {n_subtiles}) * 8;
+    uint sg_base_col = (simd_id % {n_subtiles}) * 8;
 
-    simdgroup_float8x8 acc[{m_subtiles}/2][{n_subtiles}/2];
-    for (uint mi = 0; mi < {m_subtiles}/2; ++mi) {{
-        for (uint ni = 0; ni < {n_subtiles}/2; ++ni) {{
+    simdgroup_float8x8 acc[{m_subtiles}][{n_subtiles}];
+    for (uint mi = 0; mi < {m_subtiles}; ++mi) {{
+        for (uint ni = 0; ni < {n_subtiles}; ++ni) {{
             acc[mi][ni] = simdgroup_float8x8(0.0f);
         }}
     }}
@@ -77,10 +77,10 @@ kernel void unified_gemm_kernel(
         simdgroup_half8x8 ma;
         simdgroup_half8x8 mb;
         
-        for (uint mi = 0; mi < {m_subtiles}/2; ++mi) {{
-            for (uint ni = 0; ni < {n_subtiles}/2; ++ni) {{
-                uint local_row = sg_base_row + mi * 16;
-                uint local_col = sg_base_col + ni * 16;
+        for (uint mi = 0; mi < {m_subtiles}; ++mi) {{
+            for (uint ni = 0; ni < {n_subtiles}; ++ni) {{
+                uint local_row = sg_base_row + mi * 8;
+                uint local_col = sg_base_col + ni * 8;
                 
                 for (uint ki = 0; ki < {kt}; ki += 8) {{
                     simdgroup_load(ma, &sA[local_row * {kt} + ki], {kt});
@@ -95,9 +95,9 @@ kernel void unified_gemm_kernel(
 
     // Store with Epilogue
     threadgroup float sStore[{mt} * {nt}];
-    for (uint mi = 0; mi < {m_subtiles}/2; ++mi) {{
-        for (uint ni = 0; ni < {n_subtiles}/2; ++ni) {{
-            simdgroup_store(acc[mi][ni], &sStore[(sg_base_row + mi * 16) * {nt} + (sg_base_col + ni * 16)], {nt});
+    for (uint mi = 0; mi < {m_subtiles}; ++mi) {{
+        for (uint ni = 0; ni < {n_subtiles}; ++ni) {{
+            simdgroup_store(acc[mi][ni], &sStore[(sg_base_row + mi * 8) * {nt} + (sg_base_col + ni * 8)], {nt});
         }}
     }}
     threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -120,8 +120,9 @@ fn generate_gemm_double_buffer(ir: &UnifiedOpIR) -> String {
     let mt = ir.tiling.m_tile;
     let nt = ir.tiling.n_tile;
     let kt = ir.tiling.k_tile;
+    let fc = ir.tiling.fusion_count.max(1);
     let primitives = crate::backend::metal::MetalBackend::get_primitive_defs();
-    
+
     let m_subtiles = mt / 8;
     let n_subtiles = nt / 8;
 
@@ -130,11 +131,39 @@ fn generate_gemm_double_buffer(ir: &UnifiedOpIR) -> String {
         _ => &vec![],
     };
     let (epi_args, epi_code) = generate_epilogue_code(epilogue, "val", "channel_idx", "global_out_idx");
-    
+
+    // When fusion_count > 1: bid.x indexes fused tile groups.
+    // Each group processes `fc` consecutive N-tiles, sharing A data.
+    let fusion_loop = if fc > 1 {
+        format!(r#"
+    // FUSION: processing {{fc}} N-tiles, fused N-span per threadgroup = {{fc}} * {nt}
+    #define FUSION_FC {fc}
+    for (uint f = 0; f < FUSION_FC; ++f) {{
+        uint fc_bid_x = bid.x * FUSION_FC + f;
+        if (fc_bid_x * {nt} >= N) break;
+"#)
+    } else { String::new() };
+
+    let fusion_store_loop = if fc > 1 {
+        r#"
+        // End fusion iteration
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }}"#.to_string()
+    } else { String::new() };
+
+    let fusion_close = if fc > 1 {
+        String::from("\n}")
+    } else { String::new() };
+
+    // Inner compute uses `fc_bid_x` for the N-coordinate instead of `bid.x`.
+    // When fusion_count = 1: `fc_bid_x` is always equal to `bid.x`.
+    let n_coord = if fc > 1 { "fc_bid_x" } else { "bid.x" };
+
     format!(r#"
 {primitives}
 
-// Double Buffer GEMM - Ping-Pong pattern for memory latency hiding
+// Double Buffer GEMM - Ping-Pong pattern with memory latency hiding
+// Fusion_count = {fc} (TTG topology-optimized)
 kernel void unified_gemm_kernel(
     device const half* A [[buffer(0)]],
     device const half* B [[buffer(1)]],
@@ -150,17 +179,18 @@ kernel void unified_gemm_kernel(
     threadgroup half sA[2][{mt} * {kt}];
     threadgroup half sB[2][{kt} * {nt}];
 
-    uint sg_base_row = (simd_id / ({n_subtiles}/2)) * 16;
-    uint sg_base_col = (simd_id % ({n_subtiles}/2)) * 16;
+    uint sg_base_row = (simd_id / {n_subtiles}) * 8;
+    uint sg_base_col = (simd_id % {n_subtiles}) * 8;{fusion_loop}
 
-    simdgroup_float8x8 acc[{m_subtiles}/2][{n_subtiles}/2];
-    for (uint mi = 0; mi < {m_subtiles}/2; ++mi) {{
-        for (uint ni = 0; ni < {n_subtiles}/2; ++ni) {{
+    uint num_k_tiles = (K + {kt} - 1) / {kt};
+    uint fc_bid_x = {n_coord};
+
+    simdgroup_float8x8 acc[{m_subtiles}][{n_subtiles}];
+    for (uint mi = 0; mi < {m_subtiles}; ++mi) {{
+        for (uint ni = 0; ni < {n_subtiles}; ++ni) {{
             acc[mi][ni] = simdgroup_float8x8(0.0f);
         }}
     }}
-
-    uint num_k_tiles = (K + {kt} - 1) / {kt};
 
     // PROLOGUE: Load first tile into buffer 0
     for (uint i = tid; i < {mt} * {kt}; i += 128) {{
@@ -170,7 +200,7 @@ kernel void unified_gemm_kernel(
     }}
     for (uint i = tid; i < {kt} * {nt}; i += 128) {{
         uint r = i / {nt}; uint c = i % {nt};
-        uint gc = bid.x * {nt} + c;
+        uint gc = fc_bid_x * {nt} + c;
         sB[0][i] = (r < K && gc < N) ? B[r * N + gc] : half(0);
     }}
     threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -181,7 +211,6 @@ kernel void unified_gemm_kernel(
         uint next_buf = 1 - curr_buf;
         uint k_off_next = (k_tile + 1) * {kt};
 
-        // Load next tile (if not last iteration)
         if (k_tile + 1 < num_k_tiles) {{
             for (uint i = tid; i < {mt} * {kt}; i += 128) {{
                 uint r = i / {kt}; uint c = i % {kt};
@@ -192,20 +221,19 @@ kernel void unified_gemm_kernel(
             for (uint i = tid; i < {kt} * {nt}; i += 128) {{
                 uint r = i / {nt}; uint c = i % {nt};
                 uint gr = k_off_next + r;
-                uint gc = bid.x * {nt} + c;
+                uint gc = fc_bid_x * {nt} + c;
                 sB[next_buf][i] = (gr < K && gc < N) ? B[gr * N + gc] : half(0);
             }}
         }}
 
-        // Compute current tile
         simdgroup_half8x8 ma;
         simdgroup_half8x8 mb;
-        
-        for (uint mi = 0; mi < {m_subtiles}/2; ++mi) {{
-            for (uint ni = 0; ni < {n_subtiles}/2; ++ni) {{
-                uint local_row = sg_base_row + mi * 16;
-                uint local_col = sg_base_col + ni * 16;
-                
+
+        for (uint mi = 0; mi < {m_subtiles}; ++mi) {{
+            for (uint ni = 0; ni < {n_subtiles}; ++ni) {{
+                uint local_row = sg_base_row + mi * 8;
+                uint local_col = sg_base_col + ni * 8;
+
                 for (uint ki = 0; ki < {kt}; ki += 8) {{
                     simdgroup_load(ma, &sA[curr_buf][local_row * {kt} + ki], {kt});
                     simdgroup_load(mb, &sB[curr_buf][ki * {nt} + local_col], {nt});
@@ -220,15 +248,15 @@ kernel void unified_gemm_kernel(
 
     // STORE RESULTS with Epilogue
     threadgroup float sStore[{mt} * {nt}];
-    for (uint mi = 0; mi < {m_subtiles}/2; ++mi) {{
-        for (uint ni = 0; ni < {n_subtiles}/2; ++ni) {{
-            simdgroup_store(acc[mi][ni], &sStore[(sg_base_row + mi * 16) * {nt} + (sg_base_col + ni * 16)], {nt});
+    for (uint mi = 0; mi < {m_subtiles}; ++mi) {{
+        for (uint ni = 0; ni < {n_subtiles}; ++ni) {{
+            simdgroup_store(acc[mi][ni], &sStore[(sg_base_row + mi * 8) * {nt} + (sg_base_col + ni * 8)], {nt});
         }}
     }}
     threadgroup_barrier(mem_flags::mem_threadgroup);
     for (uint i = tid; i < {mt} * {nt}; i += 128) {{
         uint out_row = bid.y * {mt} + i / {nt};
-        uint out_col = bid.x * {nt} + i % {nt};
+        uint out_col = fc_bid_x * {nt} + i % {nt};
         if (out_row < M && out_col < N) {{
             float val = sStore[i];
             uint channel_idx = out_col;
@@ -236,9 +264,11 @@ kernel void unified_gemm_kernel(
 {epi_code}
             C[global_out_idx] = val;
         }}
-    }}
-}}
-"#, mt=mt, nt=nt, kt=kt, primitives=primitives, m_subtiles=m_subtiles, n_subtiles=n_subtiles, epi_args=epi_args, epi_code=epi_code)
+    }}{fusion_store_loop}{fusion_close}
+}}"#, mt=mt, nt=nt, kt=kt, fc=fc, primitives=primitives,
+    m_subtiles=m_subtiles, n_subtiles=n_subtiles, epi_args=epi_args, epi_code=epi_code,
+    fusion_loop=fusion_loop, fusion_store_loop=fusion_store_loop, fusion_close=fusion_close,
+    n_coord=n_coord)
 }
 
 fn generate_gemm_tiled(ir: &UnifiedOpIR) -> String {

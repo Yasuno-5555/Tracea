@@ -26,10 +26,11 @@ fn main() {
         op_type: UnifiedOpType::Elementwise { op_type: ElementwiseType::Add, n },
         precison: "f32".to_string(),
         tiling: dummy_config(),
+        conv_magic_strategy: None,
+        polyhedral_strategy: None,
     };
-    
-    let source = UniversalEmitter::new(DeviceBackend::Cuda).generate(ir_add);
-    // println!("{}", source); // Debug
+
+    let source = UniversalEmitter::new(DeviceBackend::Cuda).generate(ir_add).expect("Codegen failed");
     let kid_add = runtime.compile(&source, "elementwise_add", DeviceBackend::Cuda).unwrap();
 
     let grid = ((n as u32 + 255) / 256, 1, 1);
@@ -67,8 +68,10 @@ fn main() {
         op_type: UnifiedOpType::Elementwise { op_type: ElementwiseType::Gelu, n },
         precison: "f32".to_string(),
         tiling: dummy_config(),
+        conv_magic_strategy: None,
+        polyhedral_strategy: None,
     };
-    let source = UniversalEmitter::new(DeviceBackend::Cuda).generate(ir_gelu);
+    let source = UniversalEmitter::new(DeviceBackend::Cuda).generate(ir_gelu).expect("Codegen failed");
     let kid_gelu = runtime.compile(&source, "elementwise_gelu", DeviceBackend::Cuda).unwrap();
     println!("Launching GELU...");
     let args_gelu = vec![
@@ -90,14 +93,5 @@ fn main() {
 }
 
 fn dummy_config() -> PipelineConfig {
-    PipelineConfig {
-        num_stages: 2, m_tile: 16, n_tile: 16, k_tile: 16,
-        instruction: SpecializedInstruction::None,
-        swizzle_mode: SwizzleMode::None,
-        intrinsic_shape: IntrinsicShape::None,
-        vectorize_epilogue: true,
-        ttg_enabled: false,
-        attention_variant: Default::default(),
-        force_num_warps: None,
-    }
+    PipelineConfig::new(2, 16, 16, 16)
 }

@@ -5,7 +5,7 @@
 
 use tracea::runtime::manager::{RuntimeManager, DeviceBackend};
 use tracea::optimizer::benchmark::{Conv2dProblem, ConvConfig, Conv2dBenchmark, NVRTCConvBenchmark};
-use tracea::optimizer::{AutoTuner, OptimizationGoal, GPUInfo};
+use tracea::optimizer::{AutoTuner, OptimizationGoal, HardwareProfile};
 use std::sync::Arc;
 use std::fs::File;
 use std::io::Write;
@@ -30,19 +30,19 @@ fn main() {
             name: "ResNet50-Conv3x3-64-B32-Warmup".to_string(),
             batch: 32,
             h_in: 56, w_in: 56, c_in: 64, c_out: 64,
-            kernel_h: 3, kernel_w: 3, stride: 1, pad: 1, 
+            kernel_h: 3, kernel_w: 3, stride: 1, pad: 1, dilation: 1,
         },
         Conv2dProblem {
             name: "ResNet50-Conv3x3-64-B32".to_string(),
             batch: 32,
             h_in: 56, w_in: 56, c_in: 64, c_out: 64,
-            kernel_h: 3, kernel_w: 3, stride: 1, pad: 1, 
+            kernel_h: 3, kernel_w: 3, stride: 1, pad: 1, dilation: 1,
         },
         Conv2dProblem {
             name: "ResNet50-Conv3x3-64-B64".to_string(),
             batch: 64,
             h_in: 56, w_in: 56, c_in: 64, c_out: 64,
-            kernel_h: 3, kernel_w: 3, stride: 1, pad: 1, 
+            kernel_h: 3, kernel_w: 3, stride: 1, pad: 1, dilation: 1,
         }
     ];
     
@@ -66,7 +66,7 @@ fn main() {
         let benchmark = NVRTCConvBenchmark::new(runtime.clone(), problem.clone());
         
         // Use AutoTuner to find optimal config
-        let mut tuner = AutoTuner::new(GPUInfo::rtx3070()).with_runtime(runtime.clone());
+        let mut tuner = AutoTuner::new(HardwareProfile::rtx3070()).with_runtime(runtime.clone());
         let config = tuner.optimize_conv(&benchmark, 20, OptimizationGoal::MaximizeTFLOPS);
         
         // Measure final performance

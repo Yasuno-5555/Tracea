@@ -1,4 +1,4 @@
-use tracea::optimizer::{ProblemDescriptor, AutoTuner, OptimizationGoal, GPUInfo, LayerType, AsmParams, GpuAsmParams, Shape};
+use tracea::optimizer::{ProblemDescriptor, AutoTuner, OptimizationGoal, HardwareProfile, LayerType, AsmParams, GpuAsmParams, Shape};
 use tracea::core::backend::Device;
 use tracea::runtime::manager::DeviceBackend;
 use tracea::MicroBenchmark;
@@ -12,7 +12,7 @@ fn main() {
     let runtime = tracea::runtime::manager::RuntimeManager::init(Some(DeviceBackend::Cuda)).expect("Runtime init failed");
     
     // 1. Detect Hardware Identity (v3.1)
-    let gpu = GPUInfo::rtx3070(); // Ampere sm_86
+    let gpu = HardwareProfile::rtx3070(); // Ampere sm_86
     let tuner = AutoTuner::new(gpu.clone());
     let hardware_id = tuner.hardware_id.clone();
     println!("[Step 1] Hardware ID: {} (Backend: {:?})", hardware_id, gpu.backend);
@@ -36,7 +36,7 @@ fn main() {
     // 3. Tuning with Structure-aware Search Space
     println!("\n[Step 2] Tuning over v3.1 search space (including BarrierMode)...");
     let mut autotuner = AutoTuner::new(gpu.clone());
-    autotuner.runtime = Some(runtime.clone());
+    autotuner.runtime = Some(std::sync::Arc::downgrade(&runtime));
     
     // Perform optimization
     let best_cfg = autotuner.optimize_v2(&adapter, &problem_desc, 5, OptimizationGoal::MaximizeTFLOPS);

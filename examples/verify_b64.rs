@@ -11,7 +11,7 @@ fn main() {
         name: "ResNet50-Conv3x3-64-B32".to_string(),
         batch: 32,
         h_in: 56, w_in: 56, c_in: 64, c_out: 64,
-        kernel_h: 3, kernel_w: 3, stride: 1, pad: 1, 
+        kernel_h: 3, kernel_w: 3, stride: 1, pad: 1, dilation: 1,
     };
     
     println!("Testing Problem: {}", problem.name);

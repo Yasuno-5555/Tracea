@@ -42,11 +42,12 @@ fn main() {
         precison: "fp16".to_string(),
         tiling: config.clone(),
         conv_magic_strategy: None,
+        polyhedral_strategy: None,
     };
-    
+
     let emitter = CUDAEmitter::new();
-    let kernel_code = emitter.generate_from_ir(&ir);
-    
+    let kernel_code = emitter.generate_from_ir(&ir).expect("Codegen failed");
+
     println!("Generated kernel length: {} bytes", kernel_code.len());
     println!("Contains 'scale': {}", kernel_code.contains("scale"));
     println!("Contains 'm_prev': {}", kernel_code.contains("m_prev"));
@@ -68,9 +69,10 @@ fn main() {
         precison: "fp16".to_string(),
         tiling: config.clone(),
         conv_magic_strategy: None,
+        polyhedral_strategy: None,
     };
-    
-    let causal_kernel = emitter.generate_from_ir(&ir_causal);
+
+    let causal_kernel = emitter.generate_from_ir(&ir_causal).expect("Codegen failed");
     println!("Causal kernel length: {} bytes", causal_kernel.len());
     println!("Contains causal mask logic: {}", causal_kernel.contains("col_glob > q_row"));
     println!();

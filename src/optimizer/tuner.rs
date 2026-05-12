@@ -19,32 +19,40 @@ impl MetaTuner {
     pub fn new(runtime: std::sync::Weak<RuntimeManager>) -> Self {
         let mut tuners = HashMap::new();
         
-        // We can't check devices cleanly with Weak ref during construction (upgrade returns None)
-        // So we just assume common backends or we require a later init step.
-        // Or we just add all potential backends and they will fail fast if device not present during tune.
-        
-        // Cuda
+        // Dynamic detection of CUDA backend
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
         {
-             let profile = HardwareProfile::rtx3070(); 
-             let mut t = AutoTuner::new(profile);
-             t.runtime = Some(runtime.clone());
-             tuners.insert(DeviceBackend::Cuda, Mutex::new(t));
+            if cudarc::driver::CudaDevice::new(0).is_ok() {
+                 let profile = HardwareProfile::rtx3070(); 
+                 let mut t = AutoTuner::new(profile);
+                 t.runtime = Some(runtime.clone());
+                 tuners.insert(DeviceBackend::Cuda, Mutex::new(t));
+                 println!("[MetaTuner] Dynamic Detection: CUDA Device Registered.");
+            }
         }
 
-        // Metal
+        // Dynamic detection of Metal backend
+        #[cfg(target_os = "macos")]
         {
-             let profile = HardwareProfile::apple_m1(); 
-             let mut t = AutoTuner::new(profile);
-             t.runtime = Some(runtime.clone());
-             tuners.insert(DeviceBackend::Metal, Mutex::new(t));
+            if metal::Device::system_default().is_some() {
+                 let profile = HardwareProfile::apple_m1(); 
+                 let mut t = AutoTuner::new(profile);
+                 t.runtime = Some(runtime.clone());
+                 tuners.insert(DeviceBackend::Metal, Mutex::new(t));
+                 println!("[MetaTuner] Dynamic Detection: Metal Device Registered.");
+            }
         }
         
-        // Rocm
-         {
-             let profile = HardwareProfile::mi250(); 
-             let mut t = AutoTuner::new(profile);
-             t.runtime = Some(runtime.clone());
-             tuners.insert(DeviceBackend::Rocm, Mutex::new(t));
+        // Dynamic detection of ROCm backend
+        #[cfg(not(target_os = "macos"))]
+        {
+            if crate::emitter::rocm_driver::RocmDriverApi::get().is_some() {
+                 let profile = HardwareProfile::mi250(); 
+                 let mut t = AutoTuner::new(profile);
+                 t.runtime = Some(runtime.clone());
+                 tuners.insert(DeviceBackend::Rocm, Mutex::new(t));
+                 println!("[MetaTuner] Dynamic Detection: ROCm Device Registered.");
+            }
         }
 
         Self {
@@ -177,3 +185,36 @@ impl MetaTuner {
         Some(best_strategy)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_metatuner_dynamic_detection() {
+        // Since we pass Weak::new() which isn't upgraded, we just test if the new method can be called without panic
+        let weak_rm = std::sync::Weak::<RuntimeManager>::new();
+        let metatuner = MetaTuner::new(weak_rm);
+        
+        // Assert that the created tuners align with current platform
+        #[cfg(target_os = "macos")]
+        {
+            // On mac, Metal backend should be registered if metal system default device is present
+            if metal::Device::system_default().is_some() {
+                assert!(metatuner.tuners.contains_key(&DeviceBackend::Metal));
+            }
+            // Rocm and Cuda should NOT be registered on macOS in standard dynamic check
+            assert!(!metatuner.tuners.contains_key(&DeviceBackend::Cuda));
+            assert!(!metatuner.tuners.contains_key(&DeviceBackend::Rocm));
+        }
+
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        {
+            // Non-macos might have Cuda or ROCm
+            if cudarc::driver::CudaDevice::new(0).is_ok() {
+                assert!(metatuner.tuners.contains_key(&DeviceBackend::Cuda));
+            }
+        }
+    }
+}
+

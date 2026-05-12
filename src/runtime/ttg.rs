@@ -30,8 +30,9 @@ impl DeviceTTG {
         l1_offset: usize,
         l2_offset: usize,
     ) -> Result<Self, String> {
-        // L1 Map: Vec<u32> -> Bytes
-        let l1_bytes: Vec<u8> = layout.l1_map.iter()
+        // L1 Map: topology-optimized order for cache reuse
+        let ordered_map = layout.l1_map_ordered();
+        let l1_bytes: Vec<u8> = ordered_map.iter()
             .flat_map(|x| x.to_ne_bytes().to_vec())
             .collect();
 
@@ -59,14 +60,13 @@ impl DeviceTTG {
         })
     }
 
-    /// Legacy constructor (for backward compatibility, allocates individually)
+    /// Constructor using topology-optimized L1 map order.
     pub fn new(runtime: &RuntimeManager, layout: &TTGLayout, backend: DeviceBackend) -> Result<Self, String> {
-        // L1 Map: Vec<u32> -> Bytes
-        let l1_bytes: Vec<u8> = layout.l1_map.iter()
+        let ordered_map = layout.l1_map_ordered();
+        let l1_bytes: Vec<u8> = ordered_map.iter()
             .flat_map(|x| x.to_ne_bytes().to_vec())
             .collect();
 
-        // L2 Table: Vec<TileMetadata> -> Bytes
         let l2_bytes: Vec<u8> = layout.l2_table.iter().flat_map(|meta| {
              let mut b = Vec::with_capacity(20);
              b.extend_from_slice(&meta.region_m.to_ne_bytes());

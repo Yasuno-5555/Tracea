@@ -1,5 +1,5 @@
-#![allow(unused_unsafe)]
-#![allow(unsafe_op_in_unsafe_fn)]
+// Unsafe attributes removed per P0.1 roadmap
+#![deny(unsafe_op_in_unsafe_fn)]
 
 //! # Tracea: Universal GPU Kernel Optimization Framework 🏛️
 //!

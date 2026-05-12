@@ -1,4 +1,5 @@
 use tracea::doctor::*;
+use tracea::doctor::capabilities::{BackendCapabilities, TraceaCapabilities};
 use std::sync::Arc;
 
 /// A simple naive FlashAttention-2 reference implementation (CPU)
@@ -77,6 +78,8 @@ fn main() {
                 driver_or_runtime_version: 12000,
                 simd_width_bits: 0,
                 core_count: 0,
+                current_occupancy: None,
+                register_pressure: None,
             }
         ]),
         ("Mid-Range CUDA (RTX 4070)", vec![
@@ -89,6 +92,8 @@ fn main() {
                 driver_or_runtime_version: 12000,
                 simd_width_bits: 0,
                 core_count: 0,
+                current_occupancy: None,
+                register_pressure: None,
             }
         ]),
         ("ROCm (CDNA2)", vec![
@@ -101,6 +106,8 @@ fn main() {
                 driver_or_runtime_version: 50700,
                 simd_width_bits: 0,
                 core_count: 0,
+                current_occupancy: None,
+                register_pressure: None,
             }
         ]),
         ("Metal (M2 Ultra)", vec![
@@ -113,6 +120,8 @@ fn main() {
                 driver_or_runtime_version: 300,
                 simd_width_bits: 0,
                 core_count: 0,
+                current_occupancy: None,
+                register_pressure: None,
             }
         ]),
         ("CPU (AVX-512)", vec![
@@ -125,6 +134,8 @@ fn main() {
                 driver_or_runtime_version: 0,
                 simd_width_bits: 512,
                 core_count: 16,
+                current_occupancy: None,
+                register_pressure: None,
             }
         ]),
     ];

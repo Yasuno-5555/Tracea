@@ -73,7 +73,17 @@ fn test_conv_bn_relu_fusion() {
         n: 1 * 64 * 224 * 224,
     });
 
+    // Mock inputs for BN parameters to satisfy the 5-producer fusion requirement
+    operators.push(OperatorTopology::Input { op_id: 10, name: "gamma".into() });
+    operators.push(OperatorTopology::Input { op_id: 11, name: "beta".into() });
+    operators.push(OperatorTopology::Input { op_id: 12, name: "mean".into() });
+    operators.push(OperatorTopology::Input { op_id: 13, name: "var".into() });
+
     dependencies.push((1, 2));
+    dependencies.push((10, 2));
+    dependencies.push((11, 2));
+    dependencies.push((12, 2));
+    dependencies.push((13, 2));
     dependencies.push((2, 3));
 
     let mut graph = GraphTopology { operators, dependencies };
@@ -82,10 +92,11 @@ fn test_conv_bn_relu_fusion() {
     GraphOptimizer::optimize(&mut graph);
 
     // Verify
-    // Should have 1 operator now
-    assert_eq!(graph.operators.len(), 1, "Should have fused Conv, BN, and ReLU");
+    // Should have 1 main operator + 4 parameter inputs now
+    assert_eq!(graph.operators.len(), 5, "Should have fused Conv, BN, and ReLU, retaining 4 parameter inputs");
     
-    match &graph.operators[0] {
+    let fused_conv = graph.operators.iter().find(|o| o.op_id() == 1).expect("Fused Conv should exist");
+    match fused_conv {
         OperatorTopology::Conv2d { epilogue, .. } => {
             assert_eq!(epilogue.len(), 2, "Fused Conv should have 2 epilogue ops");
             assert!(matches!(epilogue[0], EpilogueOp::BatchNorm { .. }), "First epilogue should be BN");

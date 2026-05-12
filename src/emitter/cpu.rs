@@ -46,11 +46,16 @@ impl Emitter for CPUEmitter {
         String::new() // CPU barrier is usually handled via thread join
     }
 
-    fn generate_from_ir(&self, ir: &UnifiedOpIR) -> String {
+    fn generate_from_ir(&self, ir: &UnifiedOpIR) -> Result<String, crate::emitter::traits::EmissionError> {
+        use crate::emitter::traits::EmissionError;
         match ir.op_type {
-            UnifiedOpType::Gemm { .. } => self.generate_gemm(ir.tiling.clone()),
-            UnifiedOpType::Conv2d { .. } => panic!("Conv2d should be handled by UniversalEmitter"),
-            _ => "// CPU FA2 not yet implemented\n".to_string(),
+            UnifiedOpType::Gemm { .. } => Ok(self.generate_gemm(ir.tiling.clone())),
+            UnifiedOpType::Conv2d { .. } => Err(EmissionError::UnsupportedOpType {
+                reason: "Conv2d should be handled by UniversalEmitter".to_string(),
+            }),
+            _ => Err(EmissionError::UnsupportedOpType {
+                reason: "CPU operator not yet implemented".to_string(),
+            }),
         }
     }
 }

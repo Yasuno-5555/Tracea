@@ -22,9 +22,9 @@ fn bench_attention_execute(c: &mut Criterion) {
 
         let graph = GraphTopology {
             operators: vec![
-                OperatorTopology::Elementwise { op_id: 100, name: "q_in".into(), kind: "Identity".into() },
-                OperatorTopology::Elementwise { op_id: 101, name: "k_in".into(), kind: "Identity".into() },
-                OperatorTopology::Elementwise { op_id: 102, name: "v_in".into(), kind: "Identity".into() },
+                OperatorTopology::Elementwise { op_id: 100, name: "q_in".into(), kind: "Identity".into(), n: 0 },
+                OperatorTopology::Elementwise { op_id: 101, name: "k_in".into(), kind: "Identity".into(), n: 0 },
+                OperatorTopology::Elementwise { op_id: 102, name: "v_in".into(), kind: "Identity".into(), n: 0 },
                 OperatorTopology::Attention {
                     op_id: 1, name: "attn".into(),
                     b: b as u32, s: s as u32, h: h as u32, d: d as u32,
@@ -60,16 +60,14 @@ fn bench_attention_execute(c: &mut Criterion) {
                 b: b as u32, s: s as u32, d: d as u32, h: h as u32, dh: d as u32, causal: false 
             },
             precison: "fp16".to_string(),
-            tiling: tracea::core::config::PipelineConfig {
-                 m_tile: 64, n_tile: 64, k_tile: 64,
-                 attention_variant: tracea::core::config::AttentionVariant::FlashV2,
-                 ..Default::default()
-            },
+            tiling: tracea::core::config::PipelineConfig::new(2, 64, 64, 64)
+                .with_warps(4),
             conv_magic_strategy: None,
+            polyhedral_strategy: None,
         };
         use tracea::emitter::traits::Emitter;
         let emitter = tracea::emitter::metal::MetalEmitter::detect();
-        let source = emitter.generate_from_ir(&ir);
+        let source = emitter.generate_from_ir(&ir).expect("Codegen failed");
         let kernel_id = runtime.compile(&source, "flash_attention_v2_kernel", DeviceBackend::Metal).unwrap();
 
         let mut group = c.benchmark_group("metal_attention_hot");

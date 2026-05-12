@@ -201,7 +201,7 @@ fn run_softmax(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let emitter = UniversalEmitter::new(backend);
-    let source = emitter.generate(ir);
+    let source = emitter.generate(ir).map_err(|e| format!("Emission error: {:?}", e))?;
     let kernel_id = runtime.compile(&source, "softmax_kernel", backend)?;
 
     let d_in = runtime.alloc_f32(size, backend)?;

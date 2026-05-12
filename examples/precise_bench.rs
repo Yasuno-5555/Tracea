@@ -1,6 +1,6 @@
 use tracea::runtime::manager::{RuntimeManager, DeviceBackend};
 use tracea::optimizer::benchmark::{NVRTCBenchmark, NVRTCConvBenchmark, FlashAttentionBenchmark, Conv2dProblem, FlashAttentionProblem, MicroBenchmark, Conv2dBenchmark};
-use tracea::optimizer::{AutoTuner, OptimizationGoal, GPUInfo, ProblemDescriptor, ConvBenchmarkAdapter};
+use tracea::optimizer::{AutoTuner, OptimizationGoal, HardwareProfile, ProblemDescriptor, ConvBenchmarkAdapter};
 use tracea::core::config::MagicNumberStrategy;
 use std::sync::Arc;
 
@@ -13,7 +13,7 @@ fn main() {
     let runtime = RuntimeManager::init(Some(DeviceBackend::Cuda))
         .expect("Failed to initialize CUDA runtime");
     
-    let mut tuner = AutoTuner::new(GPUInfo::rtx3070()).with_runtime(runtime.clone());
+    let mut tuner = AutoTuner::new(HardwareProfile::rtx3070()).with_runtime(runtime.clone());
 
     // --- 1. GEMM Large ---
     {
@@ -32,7 +32,7 @@ fn main() {
         println!("📝 [2/5] Conv2d B32 NHWC (ResNet-50 3x3)");
         let p = Conv2dProblem::resnet50_conv3x3_64_batch32();
         let bench = NVRTCConvBenchmark::new(runtime.clone(), p.clone());
-        let prob = ProblemDescriptor::new_conv2d(p.batch, p.h_in, p.w_in, p.c_in, p.c_out, tracea::optimizer::Layout::NHWC);
+        let prob = ProblemDescriptor::new_conv2d(p.batch, p.h_in, p.w_in, p.c_in, p.c_out, p.kernel_h, p.kernel_w, p.stride, p.pad, tracea::optimizer::Layout::NHWC);
         
         let adapter = ConvBenchmarkAdapter {
             inner: &bench,
@@ -50,7 +50,7 @@ fn main() {
         println!("📝 [3/5] Conv2d B64 NHWC (ResNet-50 3x3)");
         let p = Conv2dProblem::resnet50_conv3x3_64_batch64();
         let bench = NVRTCConvBenchmark::new(runtime.clone(), p.clone());
-        let prob = ProblemDescriptor::new_conv2d(p.batch, p.h_in, p.w_in, p.c_in, p.c_out, tracea::optimizer::Layout::NHWC);
+        let prob = ProblemDescriptor::new_conv2d(p.batch, p.h_in, p.w_in, p.c_in, p.c_out, p.kernel_h, p.kernel_w, p.stride, p.pad, tracea::optimizer::Layout::NHWC);
         
         let adapter = ConvBenchmarkAdapter {
             inner: &bench,

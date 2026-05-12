@@ -66,9 +66,10 @@ fn main() {
             precison: "f16".to_string(),
             tiling: cfg,
             conv_magic_strategy: None,
+            polyhedral_strategy: None,
         };
 
-        let source = UniversalEmitter::new(backend).generate(ir);
+        let source = UniversalEmitter::new(backend).generate(ir).expect("Codegen failed");
         let kid = runtime.compile(&source, "flash_attention_v2_kernel", backend).unwrap();
         
         println!("Launching (Warmup)...");

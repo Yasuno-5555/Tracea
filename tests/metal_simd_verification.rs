@@ -132,6 +132,7 @@ fn run_variant(
         precison: "f16".to_string(),
         tiling: config,
         conv_magic_strategy: None,
+        polyhedral_strategy: None,
     };
     
     // Generate Name based on variant to avoid cache collision if content is diff but name same?
@@ -139,7 +140,7 @@ fn run_variant(
     // RuntimeManager `compile` takes name.
     let name = format!("flash_attn_{:?}", variant);
     
-    let source = emitter.generate(ir);
+    let source = emitter.generate(ir).unwrap();
     let kernel = runtime.compile(&source, "flash_attention_v2_kernel", backend).unwrap();
     
     // Params struct

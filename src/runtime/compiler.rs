@@ -48,7 +48,7 @@ impl GraphCompiler {
             let shared_mem_bytes = match operator {
                 OperatorTopology::Conv2d { .. } => {
                     let ir = self.build_ir(operator, tile_policy, None).unwrap();
-                    crate::emitter::conv::calculate_smem_usage(&ir)
+                    crate::emitter::cuda::conv::calculate_smem_usage(&ir)
                 },
                 _ => 0,
             };
@@ -202,7 +202,8 @@ impl GraphCompiler {
         let (source, kernel_name) = match backend {
             DeviceBackend::Metal => {
                 let emitter = crate::emitter::metal::MetalEmitter::detect();
-                let src = emitter.generate_from_ir(&ir);
+                let src = emitter.generate_from_ir(&ir)
+                    .map_err(|e| format!("Emission Error on Metal: {:?}", e))?;
                 let name = match operator {
                     OperatorTopology::Gemm { .. } => {
                          if let Some(crate::policy::types::TilePolicy::Gemm { variant: crate::core::config::GemmVariant::Tiled, .. }) = tile_policy {
@@ -225,7 +226,8 @@ impl GraphCompiler {
             },
             DeviceBackend::Cuda => {
                  let emitter = crate::emitter::cuda::CUDAEmitter::new();
-                 let src = emitter.generate_from_ir(&ir);
+                 let src = emitter.generate_from_ir(&ir)
+                     .map_err(|e| format!("Emission Error on CUDA: {:?}", e))?;
                  (src, "kernel_main")
             },
             _ => return Err("Unsupported backend".into()),
@@ -468,10 +470,10 @@ impl GraphCompiler {
                   let h_out = (h + 2 * padding - 1 * (r - 1) - 1) / stride + 1;
                   let w_out = (w + 2 * padding - 1 * (s - 1) - 1) / stride + 1;
                   
-                  let (hw_m, hw_s) = crate::emitter::conv::magic_u32(h_out * w_out);
-                  let (w_m, w_s) = crate::emitter::conv::magic_u32(w_out);
-                  let (sic_m, sic_s) = crate::emitter::conv::magic_u32(*s * *c);
-                  let (c_m, c_s) = crate::emitter::conv::magic_u32(*c);
+                  let (hw_m, hw_s) = crate::emitter::cuda::conv::magic_u32(h_out * w_out);
+                  let (w_m, w_s) = crate::emitter::cuda::conv::magic_u32(w_out);
+                  let (sic_m, sic_s) = crate::emitter::cuda::conv::magic_u32(*s * *c);
+                  let (c_m, c_s) = crate::emitter::cuda::conv::magic_u32(*c);
 
                   let params = crate::runtime::manager::MetalConvParams {
                          batch: *n, h_in: *h, w_in: *w, c_in: *c, k_out: *k,

@@ -158,7 +158,7 @@ impl TunableKernel for CudaGemmAdapter {
         };
 
         let emitter = UniversalEmitter::new(DeviceBackend::Cuda);
-        let source = emitter.generate(ir);
+        let source = emitter.generate(ir).unwrap();
         let kernel_name = "gemm_mma_kernel";
 
         let kernel_id = match self.runtime.compile(&source, kernel_name, DeviceBackend::Cuda) {

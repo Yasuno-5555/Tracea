@@ -57,7 +57,7 @@ fn run_bench(runtime: &RuntimeManager, n: usize, h: usize, w: usize, c: usize, k
     };
 
     let emitter = UniversalEmitter::new(DeviceBackend::Cuda);
-    let source = emitter.generate(ir.clone());
+    let source = emitter.generate(ir.clone()).expect("Codegen failed");
 
     // Compile
     let kid = runtime.compile(&source, "conv2d_implicit_gemm", DeviceBackend::Cuda).expect("Compilation Failed");

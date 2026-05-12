@@ -27,20 +27,34 @@ fn test_metal_elementwise_relu() {
         precison: "f32".to_string(),
         tiling: tracea::PipelineConfig::new(1, 1, 1, 1), // Tiles not used for elementwise currently
         conv_magic_strategy: None,
+        polyhedral_strategy: None,
     };
 
     let emitter = UniversalEmitter::new(DeviceBackend::Metal);
-    let source = emitter.generate(ir);
+    let source = emitter.generate(ir).unwrap();
     
     let kernel_id = runtime.compile(&source, "elementwise_relu", DeviceBackend::Metal).unwrap();
     
+    // Allocate l1_map and l2_table (TileMetadata) buffers required by the Metal elementwise kernel
+    let l1_data = vec![0u32];
+    let l1_bytes: Vec<u8> = l1_data.iter().flat_map(|x| x.to_ne_bytes().to_vec()).collect();
+    let buf_l1 = runtime.alloc(l1_bytes.len(), DeviceBackend::Metal).unwrap();
+    runtime.copy_to_device(buf_l1, &l1_bytes).unwrap();
+
+    // TileMetadata: 5 * u32 = 20 bytes (region_m = 0)
+    let l2_bytes = vec![0u8; 20];
+    let buf_l2 = runtime.alloc(l2_bytes.len(), DeviceBackend::Metal).unwrap();
+    runtime.copy_to_device(buf_l2, &l2_bytes).unwrap();
+
     let threads_per_grid = (n as u32, 1, 1);
-    let threads_per_group = (256, 1, 1);
+    let threads_per_group = (1024, 1, 1); // 1 threadgroup of 1024 threads matches 1024 elements
     
     let args = vec![
         KernelArg::Buffer(buf_in),
         KernelArg::Buffer(buf_out),
         KernelArg::Int(n as i32),
+        KernelArg::Buffer(buf_l1),
+        KernelArg::Buffer(buf_l2),
     ];
 
     runtime.launch(kernel_id, threads_per_grid, threads_per_group, 0, args).unwrap();
@@ -80,10 +94,11 @@ fn test_metal_softmax() {
         precison: "f32".to_string(),
         tiling: tracea::PipelineConfig::new(1, 1, 1, 1),
         conv_magic_strategy: None,
+        polyhedral_strategy: None,
     };
 
     let emitter = UniversalEmitter::new(DeviceBackend::Metal);
-    let source = emitter.generate(ir);
+    let source = emitter.generate(ir).unwrap();
     
     let kernel_id = runtime.compile(&source, "softmax_kernel", DeviceBackend::Metal).unwrap();
     

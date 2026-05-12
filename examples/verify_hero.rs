@@ -18,11 +18,11 @@ fn main() {
             name: format!("ResNet50-Conv3x3-64-B{}", b),
             batch: b,
             h_in: 56, w_in: 56, c_in: 64, c_out: 64,
-            kernel_h: 3, kernel_w: 3, stride: 1, pad: 1, 
+            kernel_h: 3, kernel_w: 3, stride: 1, pad: 1, dilation: 1,
         };
-        
+
         let benchmark = NVRTCConvBenchmark::new(runtime.clone(), problem.clone());
-        
+
         // Define Candidates
         let mut candidates = Vec::new();
 

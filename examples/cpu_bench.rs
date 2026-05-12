@@ -1,7 +1,8 @@
-use tracea::optimizer::{ProblemDescriptor, AutoTuner, OptimizationGoal, GPUInfo};
+use tracea::optimizer::{ProblemDescriptor, AutoTuner, OptimizationGoal, HardwareProfile};
 use tracea::core::backend::{Device, CpuArch};
 use tracea::runtime::manager::DeviceBackend;
-use tracea::MicroBenchmark;
+use tracea::optimizer::benchmark::MicroBenchmark;
+use tracea::optimizer::benchmark::BenchmarkResult;
 use std::time::Instant;
 
 fn main() {
@@ -15,8 +16,8 @@ fn main() {
         .with_device(Device::Cpu(CpuArch::Avx2));
 
     // 2. Setup Tuner for CPU
-    let mut cpu_info = GPUInfo::rtx3070(); // Placeholder
-    cpu_info.backend = DeviceBackend::Cpu; 
+    let mut cpu_info = HardwareProfile::rtx3070(); // Placeholder
+    cpu_info.backend = DeviceBackend::Cpu;
     cpu_info.name = "Intel/AMD AVX2 Processor".to_string();
 
     let mut tuner = AutoTuner::new(cpu_info);
@@ -29,7 +30,7 @@ fn main() {
         c: Vec<f32>,
     }
     
-    impl tracea::optimizer::benchmark::MicroBenchmark for CpuBenchmark {
+    impl MicroBenchmark for CpuBenchmark {
         fn measure(&self, config: &tracea::PipelineConfig) -> tracea::optimizer::benchmark::BenchmarkResult {
             let mut c = vec![0.0f32; self.m * self.n];
             
@@ -62,17 +63,19 @@ fn main() {
                 config.micro_m, config.micro_n,
                 latency_ms, tflops);
 
-            tracea::optimizer::benchmark::BenchmarkResult {
+            BenchmarkResult {
                 latency_ms,
                 tflops,
                 mean_tflops: tflops,
                 std_dev: 0.0,
+                observation: None,
             }
         }
         fn validate_config(&self, _config: &tracea::PipelineConfig) -> bool { true }
         fn m(&self) -> u32 { self.m as u32 }
         fn n(&self) -> u32 { self.n as u32 }
         fn k(&self) -> u32 { self.k as u32 }
+        fn observe_hardware(&self, _config: &tracea::PipelineConfig) -> Option<tracea::optimizer::model::HardwareObservation> { None }
         fn device_info(&self) -> tracea::optimizer::benchmark::EnvironmentInfo {
             tracea::optimizer::benchmark::EnvironmentInfo {
                 backend: tracea::runtime::manager::DeviceBackend::Cpu,

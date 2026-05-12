@@ -1,4 +1,4 @@
-use tracea::optimizer::{ProblemDescriptor, AutoTuner, OptimizationGoal, GPUInfo, LayerType, AsmParams};
+use tracea::optimizer::{ProblemDescriptor, AutoTuner, OptimizationGoal, HardwareProfile, LayerType, AsmParams};
 use tracea::core::backend::Device;
 use tracea::runtime::manager::DeviceBackend;
 use tracea::MicroBenchmark;
@@ -12,7 +12,7 @@ fn main() {
     let runtime = tracea::runtime::manager::RuntimeManager::init(Some(DeviceBackend::Cuda)).expect("Runtime init failed");
     
     // 1. Detect Hardware ID (simulating AutoTuner logic)
-    let gpu = GPUInfo::rtx3070(); // This has cc_capability (8, 6)
+    let gpu = HardwareProfile::rtx3070(); // This has cc_capability (8, 6)
     let tuner = AutoTuner::new(gpu.clone());
     let hardware_id = tuner.hardware_id.clone();
     println!("[Step 1] Detected Hardware ID: {}", hardware_id);
@@ -22,14 +22,8 @@ fn main() {
     let m = 1024;
     let n = 1024;
     let k = 1024;
-    let problem_desc = ProblemDescriptor {
-        name: "GEMM_Verify_V3".to_string(),
-        m, n, k,
-        batch: 1,
-        layer_type: LayerType::Gemm,
-        device: Device::Cuda(tracea::core::backend::CudaArch::Ampere),
-        asm_params: AsmParams::default(),
-    };
+    let problem_desc = ProblemDescriptor::new_gemm(m as usize, n as usize, k as usize)
+        .with_device(Device::Cuda(tracea::core::backend::CudaArch::Ampere));
 
     let problem = CudaGemmProblem { m, n, k };
     let adapter = CudaGemmAdapter::new(runtime.clone(), problem);
@@ -37,7 +31,7 @@ fn main() {
     // 3. First Run: Exploration (Tuning)
     println!("\n[Step 2] Cold Start Tuning (Simulating MetaTuner v3)...");
     let mut autotuner = AutoTuner::new(gpu.clone());
-    autotuner.runtime = Some(runtime.clone());
+    autotuner.runtime = Some(std::sync::Arc::downgrade(&runtime));
     
     // We expect it to find the 41 TFLOPS config because it's in the search space
     // and correctly prioritized if suggested.

@@ -99,10 +99,23 @@ impl NVRTCBenchmark {
         let size_a = (m * k) as usize;
         let size_b = (k * n) as usize;
         let size_c = (m * n) as usize;
-        
-        let a = runtime.alloc_f32(size_a, backend).expect("Alloc A Failed");
-        let b = runtime.alloc_f32(size_b, backend).expect("Alloc B Failed");
-        let c = runtime.alloc_f32(size_c, backend).expect("Alloc C Failed");
+
+        let (a, b, c) = match backend {
+            crate::runtime::DeviceBackend::Metal => {
+                // Metal kernel uses half* (2 bytes/element)
+                let a = runtime.alloc_u16(size_a, backend).expect("Alloc A Failed");
+                let b = runtime.alloc_u16(size_b, backend).expect("Alloc B Failed");
+                let c = runtime.alloc_f32(size_c, backend).expect("Alloc C Failed");
+                (a, b, c)
+            }
+            _ => {
+                // CUDA/ROCm use f32
+                let a = runtime.alloc_f32(size_a, backend).expect("Alloc A Failed");
+                let b = runtime.alloc_f32(size_b, backend).expect("Alloc B Failed");
+                let c = runtime.alloc_f32(size_c, backend).expect("Alloc C Failed");
+                (a, b, c)
+            }
+        };
         
         Self {
             runtime,
@@ -115,7 +128,11 @@ impl NVRTCBenchmark {
 
     fn get_launch_params(&self, config: &PipelineConfig) -> ((u32, u32, u32), (u32, u32, u32), u32) {
         let (mt, nt, kt) = (config.m_tile, config.n_tile, config.k_tile);
-        let grid_dim = ((self.n + nt - 1) / nt, (self.m + mt - 1) / mt, 1);
+        let fc = config.fusion_count.max(1);
+        // With fusion, grid N is divided by fusion_count
+        let grid_rows = (self.m + mt - 1) / mt;
+        let grid_cols = ((self.n + nt - 1) / nt + fc - 1) / fc;
+        let grid_dim = (grid_cols, grid_rows, 1);
         
         let (block_dim, smem_size) = match self.backend {
             crate::runtime::DeviceBackend::Cuda => {
@@ -136,10 +153,11 @@ impl NVRTCBenchmark {
                 (block, smem)
             }
             crate::runtime::DeviceBackend::Metal => {
-                let block = (128, 1, 1); 
-                // Buffer multiplier: 1 for single, 2 for double buffer
+                let nw = config.force_num_warps.unwrap_or(4);
+                let block = (nw * 32, 1, 1);
+                // Metal threadgroup memory: sA + sB (+ double buf) + sStore
                 let buf_mult = if config.double_buffer { 2 } else { 1 };
-                let smem = buf_mult * (mt * kt + kt * nt) * 2;
+                let smem = buf_mult * (mt * kt + kt * nt) * 2 + mt * nt * 4;
                 (block, smem)
             }
             crate::runtime::DeviceBackend::Cpu => {
@@ -161,7 +179,7 @@ impl MicroBenchmark for NVRTCBenchmark {
              conv_magic_strategy: None,
              polyhedral_strategy: None,
          };
-         let source = emitter.generate(ir.clone());
+         let source = emitter.generate(ir.clone()).unwrap();
          
           let kernel_name = if let crate::emitter::traits::UnifiedOpType::Gemm { .. } = ir.op_type { "unified_gemm_kernel" } else { "gemm_mma_kernel" };
           
@@ -243,7 +261,7 @@ impl MicroBenchmark for NVRTCBenchmark {
             conv_magic_strategy: None,
             polyhedral_strategy: None,
         };
-        let source = emitter.generate(ir.clone());
+        let source = emitter.generate(ir.clone()).unwrap();
 
         let kernel_name = if let crate::emitter::traits::UnifiedOpType::Gemm { .. } = ir.op_type { "unified_gemm_kernel" } else { "gemm_mma_kernel" };
 
@@ -716,7 +734,7 @@ impl Conv2dBenchmark for NVRTCConvBenchmark {
             polyhedral_strategy: None,
         };
         
-        let source = emitter.generate(ir);
+        let source = emitter.generate(ir).unwrap();
         
         match self.runtime.compile(&source, "conv2d_implicit_gemm", backend) {
             Ok(_) => true,
@@ -757,7 +775,7 @@ impl Conv2dBenchmark for NVRTCConvBenchmark {
             polyhedral_strategy: None,
         };
         
-        let source = emitter.generate(ir);
+        let source = emitter.generate(ir).unwrap();
         
         let kernel_id = match self.runtime.compile(&source, "conv2d_implicit_gemm", backend) {
             Ok(k) => k,
@@ -997,7 +1015,7 @@ impl MicroBenchmark for FlashAttentionBenchmark {
             tiling: config.clone(),
             conv_magic_strategy: None,
             polyhedral_strategy: None,
-        });
+        }).unwrap();
         
         match self.runtime.compile(&source, "unified_attention_kernel", backend) {
             Ok(_) => true,
@@ -1025,7 +1043,7 @@ impl MicroBenchmark for FlashAttentionBenchmark {
             tiling: config.clone(),
             conv_magic_strategy: None,
             polyhedral_strategy: None,
-        });
+        }).unwrap();
 
         let kernel_id = match self.runtime.compile(&source, "unified_attention_kernel", backend) {
             Ok(k) => k,

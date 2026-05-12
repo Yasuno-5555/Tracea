@@ -128,9 +128,10 @@ fn main() {
         precison: "f32".to_string(),
         tiling: config.clone(),
         conv_magic_strategy: None,
+        polyhedral_strategy: None,
     };
 
-    let source = emitter.generate(ir);
+    let source = emitter.generate(ir).expect("Codegen failed");
     let kernel_id = runtime.compile(&source, "conv_transpose2d_implicit_gemm", backend)
         .expect("Compilation failed");
 

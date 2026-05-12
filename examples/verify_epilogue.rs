@@ -46,14 +46,15 @@ fn main() {
     ];
 
     let ir = UnifiedOpIR {
-        op_type: UnifiedOpType::Gemm { m: m as u32, n: n as u32, k: k as u32 },
+        op_type: UnifiedOpType::Gemm { m: m as u32, n: n as u32, k: k as u32, batch: 1, epilogue: vec![] },
         tiling: config.clone(),
         precison: "f16".to_string(),
         conv_magic_strategy: None,
+        polyhedral_strategy: None,
     };
 
     let mut emitter = CUDAEmitter::new();
-    let source = emitter.generate_from_ir(&ir);
+    let source = emitter.generate_from_ir(&ir).expect("Codegen failed");
     let kernel_name = "gemm_mma_kernel"; 
     // Note: generate_gemm hardcodes "gemm_mma_kernel". 
     // If we run multiple tests we might need unique names, but for this example it's fine.

@@ -240,11 +240,12 @@ fn main() {
         precison: "fp16".to_string(),
         tiling: config,
         conv_magic_strategy: None,
+        polyhedral_strategy: None,
     };
-    
+
     let emitter = CUDAEmitter::new();
-    let kernel = emitter.generate_from_ir(&ir);
-    
+    let kernel = emitter.generate_from_ir(&ir).expect("Codegen failed");
+
     // Key patterns that must exist
     let required_patterns = [
         ("scale multiplication", "* scale"),
@@ -299,16 +300,18 @@ fn main() {
         precison: "fp16".to_string(),
         tiling: cfg_p1,
         conv_magic_strategy: None,
+        polyhedral_strategy: None,
     };
     let ir_p2 = UnifiedOpIR {
         op_type: UnifiedOpType::FusedAttention { b: 1, s: 1024, d: 64, h: 8, dh: 8, causal: false },
         precison: "fp16".to_string(),
         tiling: cfg_p2,
         conv_magic_strategy: None,
+        polyhedral_strategy: None,
     };
 
-    let k1 = emitter.generate_from_ir(&ir_p1);
-    let k2 = emitter.generate_from_ir(&ir_p2);
+    let k1 = emitter.generate_from_ir(&ir_p1).expect("Codegen failed");
+    let k2 = emitter.generate_from_ir(&ir_p2).expect("Codegen failed");
 
     println!("  PerTile Macro: {}", if k1.contains("#define SOFTMAX_MODE 0") { "✅ FOUND" } else { "❌ MISSING" });
     println!("  PerTwoTiles Macro: {}", if k2.contains("#define SOFTMAX_MODE 1") { "✅ FOUND" } else { "❌ MISSING" });

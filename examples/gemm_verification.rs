@@ -1,4 +1,5 @@
 use tracea::doctor::*;
+use tracea::doctor::capabilities::{BackendCapabilities, TraceaCapabilities};
 use rand::prelude::*;
 
 /// Naive Matrix Multiplication (CPU Reference)
@@ -44,6 +45,8 @@ fn main() {
                 driver_or_runtime_version: 12000,
                 simd_width_bits: 0,
                 core_count: 0,
+                current_occupancy: None,
+                register_pressure: None,
             }
         ]),
         ("Older CUDA (Pascal/GTX 1080)", vec![
@@ -56,6 +59,8 @@ fn main() {
                 driver_or_runtime_version: 11000,
                 simd_width_bits: 0,
                 core_count: 0,
+                current_occupancy: None,
+                register_pressure: None,
             }
         ]),
         ("ROCm (Instinct MI200)", vec![
@@ -68,6 +73,8 @@ fn main() {
                 driver_or_runtime_version: 50000,
                 simd_width_bits: 0,
                 core_count: 0,
+                current_occupancy: None,
+                register_pressure: None,
             }
         ]),
         ("Metal (Apple Silicon)", vec![
@@ -80,6 +87,8 @@ fn main() {
                 driver_or_runtime_version: 300,
                 simd_width_bits: 0,
                 core_count: 0,
+                current_occupancy: None,
+                register_pressure: None,
             }
         ]),
     ];

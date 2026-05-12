@@ -349,11 +349,12 @@ struct FAParams {{
 }
 
 fn generate_flash_attention_v2(ir: &UnifiedOpIR) -> String {
-    if let UnifiedOpType::FusedAttention { b: _, h: _, s: _, d: _, dh, causal: _ } = ir.op_type {
+    if let UnifiedOpType::FusedAttention { b: _, h: _, s: _, d: _, dh, causal } = ir.op_type {
         let block_m = 64; // Queries per block
         let block_n = 64; // KV per block
         let dk = dh;
-        
+        let causal_def = if causal { "#define CAUSAL 1\n" } else { "// CAUSAL disabled\n" };
+
         let primitives = crate::backend::metal::MetalBackend::get_primitive_defs();
 
         format!(r#"
@@ -363,7 +364,7 @@ fn generate_flash_attention_v2(ir: &UnifiedOpIR) -> String {
 #define BLOCK_N {block_n}
 #define D_HEAD  {dk}
 #define THREADS_PER_BLOCK 256  // 8 simdgroups
-
+{causal_def}
 struct FAParams {{
     uint b, h, s, d;
     float scale;
@@ -457,12 +458,19 @@ kernel void flash_attention_v2_kernel(
                     score += q_reg[d] * (float)sK[read_idx][kv_local * D_HEAD + d];
                 }}
                 score *= p.scale;
-                
+
+                // Causal mask: future positions get -infinity
+                #ifdef CAUSAL
+                if (kv_global > q_global_idx) {{
+                    score = -INFINITY;
+                }}
+                #endif
+
                 float m_new = max(m_i, score);
                 float exp_old = exp(m_i - m_new);
                 float exp_new = exp(score - m_new);
                 float l_new = l_i * exp_old + exp_new;
-                
+
                 for(int d = 0; d < D_HEAD; ++d) {{
                     acc_o[d] = acc_o[d] * exp_old + (float)sV[read_idx][kv_local * D_HEAD + d] * exp_new;
                 }}
@@ -479,7 +487,7 @@ kernel void flash_attention_v2_kernel(
         }}
     }}
 }}
-"#, block_m=block_m, block_n=block_n, dk=dk)
+"#, block_m=block_m, block_n=block_n, dk=dk, causal_def=causal_def)
     } else {
         panic!("Generate attention called with wrong op type");
     }

@@ -1,5 +1,6 @@
 use tracea::core::config::{PipelineConfig, LayoutPolicy};
-use tracea::emitter::traits::{UnifiedOpIR, UnifiedOpType};
+use tracea::emitter::cuda::CUDAEmitter;
+use tracea::emitter::traits::{Emitter, UnifiedOpIR, UnifiedOpType, EmissionError};
 use tracea::runtime::manager::{RuntimeManager, KernelArg, DeviceBackend};
 use tracea::doctor::{Doctor, DoctorConfig};
 use rand::Rng;
@@ -87,13 +88,15 @@ fn main() {
         op_type: UnifiedOpType::Conv2d {
             n, h, w, c, k: kk, r, s, stride, pad, dilation,
             layout: LayoutPolicy::NHWC,
+            epilogue: vec![],
         },
         precison: "f16".to_string(), // Typo in codebase
         tiling: config.clone(),
         conv_magic_strategy: None,
+        polyhedral_strategy: None,
     };
 
-    let source = tracea::emitter::conv::generate_conv(&ir);
+    let source = CUDAEmitter::new().generate_from_ir(&ir).expect("Codegen failed");
 
     let m_gemm = n * h_out * w_out;
     let n_gemm = kk;

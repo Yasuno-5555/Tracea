@@ -1,10 +1,105 @@
-use crate::core::ttg::{TTGLayout, TileMetadata};
+use crate::core::ttg::{TTGLayout, TileMetadata, TileTopology};
+use crate::core::device::DeviceProfile;
+use crate::core::config::PipelineConfig;
 
 pub struct TTGBuilder;
 
 impl TTGBuilder {
     pub fn new() -> Self {
         Self
+    }
+
+    /// Hardware-aware tile configuration optimizer.
+    /// Given a device profile and problem size, returns optimal tile configs
+    /// ranked by estimated occupancy/utilization.
+    ///
+    /// Metal M1 example: 32KB threadgroup memory → 64×32 tiles enable 8 simdgroups
+    /// vs 32×32's 4 simdgroups, doubling thread-level parallelism.
+    pub fn optimize_tile_configs(device: &DeviceProfile, m: u32, n: u32, k: u32) -> Vec<PipelineConfig> {
+        let max_threads = device.max_threads_per_block;
+        let max_smem = device.local_memory_size;
+        let simd_width = device.simd_width;
+        let is_metal = device.backend == crate::core::device::BackendType::Metal;
+
+        // tile candidates to evaluate: (mt, nt, kt)
+        let tiles: Vec<(u32, u32, u32)> = match (max_smem, is_metal) {
+            // Metal: 32KB threadgroup memory
+            _ if max_smem <= 48 * 1024 => vec![
+                (16, 16, 16), (16, 32, 16), (32, 16, 16),
+                (32, 32, 16), (32, 32, 32),
+                (64, 32, 16), (32, 64, 16), (64, 64, 16),
+                (64, 32, 32), (32, 64, 32),
+            ],
+            // CUDA: 48KB+ shared memory → larger tiles
+            _ => vec![
+                (64, 64, 16), (64, 64, 32), (128, 64, 16), (64, 128, 16),
+                (128, 128, 16), (128, 64, 32), (64, 128, 32),
+            ],
+        };
+
+        let mut scored: Vec<(PipelineConfig, f32)> = Vec::new();
+
+        for &(mt, nt, kt) in &tiles {
+            if mt > m || nt > n { continue; }
+            let sub_tiles = (mt / 8) * (nt / 8);  // total 8x8 sub-tiles in tile
+            if sub_tiles == 0 { continue; }
+
+            for &db in &[false, true] {
+                // smem = sA[+db] + sB[+db] + sStore  (all in bytes)
+                let buf_mult = if db { 2usize } else { 1 };
+                let s_a = buf_mult * (mt as usize * kt as usize) * 2;
+                let s_b = buf_mult * (kt as usize * nt as usize) * 2;
+                let s_store = mt as usize * nt as usize * 4;
+                let smem_needed = s_a + s_b + s_store;
+                if smem_needed > max_smem { continue; }
+
+                // Max useful simdgroups = n_subtiles (template's column positions).
+                // Each simdgroup covers 8 rows in N; more than n_subtiles causes
+                // redundant work or OOB access in threadgroup memory.
+                let n_subtiles_val = nt / 8;
+                let usable_sg = n_subtiles_val.min((max_threads / simd_width) as u32).max(1);
+
+                // Occupancy: fraction of n_subtiles we fill
+                let sg_occupancy = usable_sg as f32 / n_subtiles_val as f32;
+
+                // Memory efficiency: what fraction of smem we use
+                // Higher is better — better utilization of fast memory
+                let mem_efficiency = smem_needed as f32 / max_smem as f32;
+
+                // K-tile utilization: bigger kt = more compute per memory load
+                let k_efficiency = (kt as f32 / 64.0).min(1.0);
+
+                // Combined score: prefer high occupancy + good mem utilization
+                // For small-memory devices (Metal 32KB), weight occupancy higher
+                let score = if is_metal {
+                    sg_occupancy * 0.5 + mem_efficiency * 0.2 + k_efficiency * 0.3
+                } else {
+                    sg_occupancy * 0.3 + mem_efficiency * 0.3 + k_efficiency * 0.4
+                };
+
+                let mut cfg = PipelineConfig::new(2, mt, nt, kt);
+                cfg.double_buffer = db;
+                if is_metal {
+                    cfg.instruction = crate::core::config::SpecializedInstruction::MetalSimdGroup;
+                }
+                cfg.force_num_warps = Some(usable_sg);
+                scored.push((cfg, score));
+
+                // Fusion_count=2 variant (TTG row-adjacent)
+                if is_metal && nt <= 32 && nt * 2 <= n {
+                    let mut cfg2 = PipelineConfig::new(2, mt, nt, kt);
+                    cfg2.double_buffer = db;
+                    cfg2.fusion_count = 2;
+                    cfg2.instruction = crate::core::config::SpecializedInstruction::MetalSimdGroup;
+                    cfg2.force_num_warps = Some(usable_sg);
+                    scored.push((cfg2, score * 1.1));
+                }
+            }
+        }
+
+        // Sort by score descending
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.into_iter().map(|(cfg, _)| cfg).collect()
     }
 
     /// Creates a dense TTG layout for testing purposes.
@@ -18,40 +113,81 @@ impl TTGBuilder {
         let mut l2_table = Vec::with_capacity(num_tiles as usize);
 
         for tile_idx in 0..num_tiles {
-            // Standard row-major layout for dense
-            // Global Tile ID: tile_idx
-            // For dense, physical_id == logical_id.
-            
-            // Map logical ID back to coordinates
-            // Assuming row-major grid: idx = m_grid * GRID_N + n_grid
             let tile_m = tile_idx / grid_n;
             let tile_n = tile_idx % grid_n;
-            
-            // L1: Simply identity mapping for dense
             l1_map.push(tile_idx);
-
-            // L2: Metadata
-            let is_boundary = if (tile_m + 1) * mt > m || (tile_n + 1) * nt > n {
-               1 
-            } else {
-               0
-            };
-
+            let is_boundary = if (tile_m + 1) * mt > m || (tile_n + 1) * nt > n { 1 } else { 0 };
             l2_table.push(TileMetadata {
-                region_m: tile_m,
-                region_n: tile_n,
-                k_start: 0,
-                k_end: k,
-                role: is_boundary,
+                region_m: tile_m, region_n: tile_n,
+                k_start: 0, k_end: k, role: is_boundary,
             });
         }
 
-        TTGLayout {
-            l1_map,
-            l2_table,
-            num_active_tiles: num_tiles,
-            variant: None,
+        // Build topology with K-split support (default: no split)
+        let topology = TileTopology::from_grid(grid_m, grid_n, mt, nt, m, n, k);
+
+        TTGLayout { l1_map, l2_table, num_active_tiles: num_tiles, variant: None, topology: Some(topology) }
+    }
+
+    /// Creates a dense layout with K-split topology.
+    /// Each tile is split into `k_splits` KPipeline stages.
+    pub fn from_dense_k_split(m: u32, n: u32, k: u32, mt: u32, nt: u32, kt: u32, k_splits: u32) -> TTGLayout {
+        let grid_m = (m + mt - 1) / mt;
+        let grid_n = (n + nt - 1) / nt;
+        let kt_per_stage = k / k_splits.max(1);
+        let total_nodes = (grid_m * grid_n * k_splits) as usize;
+
+        let mut l1_map = Vec::with_capacity(total_nodes);
+        let mut l2_table = Vec::with_capacity(total_nodes);
+        let mut node_idx = 0u32;
+
+        for tm in 0..grid_m {
+            for tn in 0..grid_n {
+                for ks in 0..k_splits {
+                    l1_map.push(node_idx);
+                    let k_start = ks * kt_per_stage;
+                    let k_end = if ks + 1 == k_splits { k } else { (ks + 1) * kt_per_stage };
+                    let is_boundary = if (tm + 1) * mt > m || (tn + 1) * nt > n { 1 } else { 0 };
+                    l2_table.push(TileMetadata {
+                        region_m: tm, region_n: tn, k_start, k_end, role: is_boundary,
+                    });
+                    node_idx += 1;
+                }
+            }
         }
+
+        let topology = TileTopology::from_grid_k_split(grid_m, grid_n, mt, nt, m, n, k, k_splits);
+
+        TTGLayout { l1_map, l2_table, num_active_tiles: total_nodes as u32, variant: None, topology: Some(topology) }
+    }
+
+    /// Creates a layout from an inclusion mask (non-rectangular/sparse).
+    pub fn from_mask<F>(m: u32, n: u32, k: u32, mt: u32, nt: u32, kt: u32, include_fn: F) -> TTGLayout
+    where F: Fn(u32, u32) -> bool {
+        let grid_m = (m + mt - 1) / mt;
+        let grid_n = (n + nt - 1) / nt;
+        let mut node_idx = 0u32;
+        let mut l1_map = Vec::new();
+        let mut l2_table = Vec::new();
+        let mut l2_idx_map = vec![u32::MAX; (grid_m * grid_n) as usize];
+
+        for tm in 0..grid_m {
+            for tn in 0..grid_n {
+                if !include_fn(tm, tn) { continue; }
+                let idx = (tm * grid_n + tn) as usize;
+                l2_idx_map[idx] = node_idx;
+                l1_map.push(node_idx);
+                let is_boundary = if (tm + 1) * mt > m || (tn + 1) * nt > n { 1 } else { 0 };
+                l2_table.push(TileMetadata {
+                    region_m: tm, region_n: tn, k_start: 0, k_end: k, role: 0,
+                });
+                node_idx += 1;
+            }
+        }
+
+        let topology = TileTopology::from_mask(grid_m, grid_n, mt, nt, m, n, k, include_fn);
+
+        TTGLayout { l1_map, l2_table, num_active_tiles: node_idx, variant: None, topology: Some(topology) }
     }
 
     /// Creates a sparse TTG layout with only diagonal tiles.
@@ -84,6 +220,7 @@ impl TTGBuilder {
             l2_table: l2_table.clone(), // Clone to satisfy struct (or we could structure differently)
             num_active_tiles: l2_table.len() as u32,
             variant: None,
+            topology: None,
         }
     }
 
@@ -119,6 +256,7 @@ impl TTGBuilder {
             l2_table: l2_table.clone(),
             num_active_tiles: l2_table.len() as u32,
             variant: None,
+            topology: None,
         }
     }
 
@@ -196,7 +334,7 @@ impl TTGBuilder {
                     l1_map,
                     l2_table,
                     num_active_tiles: num_tiles,
-                    variant: None,
+                    variant: None, topology: None,
                 }
             },
             (OperatorTopology::Elementwise { .. } | OperatorTopology::Relu { .. } | OperatorTopology::BatchNorm { .. }, _) => {
@@ -218,7 +356,7 @@ impl TTGBuilder {
                     l2_table.push(TileMetadata { region_m: i, region_n: 0, k_start: 0, k_end: 0, role: 0 });
                 }
                 TTGLayout {
-                    l1_map, l2_table, num_active_tiles: grid_s, variant: None
+                    l1_map, l2_table, num_active_tiles: grid_s, variant: None, topology: None
                 }
             },
             (OperatorTopology::Softmax { .. }, _) => {
@@ -226,7 +364,7 @@ impl TTGBuilder {
                     l1_map: vec![0],
                     l2_table: vec![TileMetadata { region_m: 0, region_n: 0, k_start: 0, k_end: 0, role: 0 }],
                     num_active_tiles: 1,
-                    variant: None,
+                    variant: None, topology: None,
                 }
             },
             (OperatorTopology::GlobalAveragePool { n: _, c, h: _, w: _, .. }, _) => {
@@ -238,7 +376,7 @@ impl TTGBuilder {
                     l2_table.push(TileMetadata { region_m: i as u32, region_n: 0, k_start: 0, k_end: 0, role: 0 });
                 }
                 TTGLayout {
-                    l1_map, l2_table, num_active_tiles: *c as u32, variant: None
+                    l1_map, l2_table, num_active_tiles: *c as u32, variant: None, topology: None
                 }
             },
             (OperatorTopology::Linear { batch, m, n, k, .. }, _) => {
@@ -264,7 +402,7 @@ impl TTGBuilder {
                     }
                 }
                 TTGLayout {
-                    l1_map, l2_table, num_active_tiles: num_tiles as u32, variant: None
+                    l1_map, l2_table, num_active_tiles: num_tiles as u32, variant: None, topology: None
                 }
             },
             (OperatorTopology::Conv2d { n, k, h, w, r, s, stride, padding, .. }, _) => {
@@ -357,5 +495,79 @@ mod tests {
         assert_eq!(last_meta.region_m, 1); // s_idx
         assert_eq!(last_meta.region_n, 3); // h_idx
         assert_eq!(last_meta.k_start, 1);  // b_idx
+    }
+
+    #[test]
+    fn test_ttg_dense_and_diagonal_from_policy() {
+        use crate::policy::types::{OperatorTopology, TilePolicy, ActivityPattern, TilingKind, TopologyKind};
+        
+        let op = OperatorTopology::Gemm {
+            op_id: 2,
+            name: "GEMM".to_string(),
+            m: 128,
+            n: 128,
+            k: 64,
+            batch: 1,
+            kind: TopologyKind::Dense,
+            epilogue: vec![],
+        };
+        
+        // 1. AllActive (Dense)
+        let policy_dense = TilePolicy::Gemm {
+            operator_id: 2,
+            tile_shape: [64, 64, 32],
+            activity_pattern: ActivityPattern::AllActive,
+            tiling_kind: TilingKind::Dense,
+            variant: crate::core::config::GemmVariant::Tiled,
+        };
+        
+        let layout_dense = TTGBuilder::from_policy(&op, &policy_dense);
+        // (128/64) * (128/64) = 2 * 2 = 4 tiles
+        assert_eq!(layout_dense.num_active_tiles, 4);
+        assert_eq!(layout_dense.l1_map.len(), 4);
+        assert_eq!(layout_dense.l2_table.len(), 4);
+        
+        // 2. DiagonalOnly
+        let policy_diag = TilePolicy::Gemm {
+            operator_id: 2,
+            tile_shape: [64, 64, 32],
+            activity_pattern: ActivityPattern::DiagonalOnly,
+            tiling_kind: TilingKind::Dense,
+            variant: crate::core::config::GemmVariant::Tiled,
+        };
+        
+        let layout_diag = TTGBuilder::from_policy(&op, &policy_diag);
+        // Diagonal of 2x2 grid is 2 tiles
+        assert_eq!(layout_diag.num_active_tiles, 2);
+        assert_eq!(layout_diag.l1_map.len(), 2);
+        assert_eq!(layout_diag.l2_table.len(), 2);
+        assert_eq!(layout_diag.l2_table[0].region_m, layout_diag.l2_table[0].region_n);
+        assert_eq!(layout_diag.l2_table[1].region_m, layout_diag.l2_table[1].region_n);
+    }
+
+    #[test]
+    #[should_panic(expected = "Mismatching Policy and Operator Topology Types!")]
+    fn test_ttg_mismatched_policy_should_panic() {
+        use crate::policy::types::{OperatorTopology, TilePolicy, ActivityPattern, TilingKind};
+        
+        let op = OperatorTopology::Attention {
+            op_id: 3,
+            name: "Attention".to_string(),
+            b: 2,
+            s: 128,
+            h: 4,
+            d: 64,
+        };
+        
+        // Mismatched policy: Gemm policy for Attention op
+        let policy = TilePolicy::Gemm {
+            operator_id: 3,
+            tile_shape: [64, 64, 32],
+            activity_pattern: ActivityPattern::AllActive,
+            tiling_kind: TilingKind::Dense,
+            variant: crate::core::config::GemmVariant::Tiled,
+        };
+        
+        let _ = TTGBuilder::from_policy(&op, &policy);
     }
 }

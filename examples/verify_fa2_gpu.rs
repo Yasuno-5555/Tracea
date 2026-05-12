@@ -99,7 +99,7 @@ fn main() {
 
     let grid = ((s as u32 + 127) / 128, h as u32, b as u32);
     let block = (9 * 32, 1, 1);
-    let (smem_bytes, _, _, _, _) = FlashAttentionEmitter::calculate_smem_layout(&config, d);
+    let (smem_bytes, _, _, _, _, _) = FlashAttentionEmitter::calculate_smem_layout(&config, d);
 
     let q_gpu = manager.alloc_u16(b * h * s * d, DeviceBackend::Cuda).expect("Alloc Q");
     let k_gpu = manager.alloc_u16(b * h * s * d, DeviceBackend::Cuda).expect("Alloc K");
