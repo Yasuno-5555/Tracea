@@ -1,10 +1,8 @@
 use tracea::runtime::manager::{RuntimeManager, DeviceBackend, KernelArg};
-use tracea::doctor::visualizer::Visualizer;
 use tracea::emitter::universal::UniversalEmitter;
 use tracea::emitter::traits::{UnifiedOpIR, UnifiedOpType};
 use tracea::PipelineConfig;
 use half::f16;
-use std::sync::Arc;
 
 #[cfg(feature = "vulkan")]
 #[test]

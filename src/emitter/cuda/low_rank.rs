@@ -1,9 +1,8 @@
 use crate::emitter::traits::{UnifiedOpIR, EmissionError};
-use crate::core::config::PipelineConfig;
 use crate::backend::cuda::CudaBackend;
 
 pub fn generate_low_rank_mlp(ir: &UnifiedOpIR) -> Result<String, EmissionError> {
-    let (m, n, k, r_dim) = if let crate::emitter::traits::UnifiedOpType::LowRankMlp { m, n, k, r } = &ir.op_type {
+    let (_m, _n, _k, r_dim) = if let crate::emitter::traits::UnifiedOpType::LowRankMlp { m, n, k, r } = &ir.op_type {
         (*m, *n, *k, *r)
     } else {
         return Err(EmissionError::UnsupportedOpType {
@@ -30,7 +29,7 @@ pub fn generate_low_rank_mlp(ir: &UnifiedOpIR) -> Result<String, EmissionError> 
     let smem_x_bytes = mt * a_stride * 2;
     let smem_a_bytes = kt * r_stride * 2;
     let smem_t_bytes = mt * r_stride * 2;
-    let smem_b_bytes = rt * b_stride * 2;
+    let _smem_b_bytes = rt * b_stride * 2;
 
     let x_offset = 128;
     let a_offset = (x_offset + smem_x_bytes * stages as u32 + 255) & !255;

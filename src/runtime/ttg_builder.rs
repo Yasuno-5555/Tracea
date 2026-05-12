@@ -13,24 +13,34 @@ impl TTGBuilder {
     /// Given a device profile and problem size, returns optimal tile configs
     /// ranked by estimated occupancy/utilization.
     ///
-    /// Metal M1 example: 32KB threadgroup memory → 64×32 tiles enable 8 simdgroups
-    /// vs 32×32's 4 simdgroups, doubling thread-level parallelism.
-    pub fn optimize_tile_configs(device: &DeviceProfile, m: u32, n: u32, k: u32) -> Vec<PipelineConfig> {
+    /// Metal M1 example: 32KB threadgroup memory → 64×64×32 tiles with 8 simdgroups
+    /// for high arithmetic intensity vs 32×32's 4 simdgroups.
+    pub fn optimize_tile_configs(device: &DeviceProfile, m: u32, n: u32, _k: u32) -> Vec<PipelineConfig> {
         let max_threads = device.max_threads_per_block;
         let max_smem = device.local_memory_size;
         let simd_width = device.simd_width;
         let is_metal = device.backend == crate::core::device::BackendType::Metal;
 
         // tile candidates to evaluate: (mt, nt, kt)
+        // For Metal (32KB), sStore dominates single-buffer smem cost,
+        // so double-buffer variants with direct store enable larger tiles.
         let tiles: Vec<(u32, u32, u32)> = match (max_smem, is_metal) {
             // Metal: 32KB threadgroup memory
             _ if max_smem <= 48 * 1024 => vec![
-                (16, 16, 16), (16, 32, 16), (32, 16, 16),
+                // Small tiles (always fit, even with sStore)
+                (16, 16, 16), (32, 16, 16), (16, 32, 16),
                 (32, 32, 16), (32, 32, 32),
+                // Medium tiles (fit single buffer)
                 (64, 32, 16), (32, 64, 16), (64, 64, 16),
                 (64, 32, 32), (32, 64, 32),
+                // Large tiles (fit with double buffer + direct store)
+                (64, 64, 32),
+                // Larger tiles require double buffer + direct store (no sStore)
+                (128, 64, 16), (64, 128, 16),
+                // Max tile for 32KB (double buffer + direct store only)
+                (128, 128, 16),
             ],
-            // CUDA: 48KB+ shared memory → larger tiles
+            // CUDA: 48KB+ shared memory
             _ => vec![
                 (64, 64, 16), (64, 64, 32), (128, 64, 16), (64, 128, 16),
                 (128, 128, 16), (128, 64, 32), (64, 128, 32),
@@ -45,36 +55,59 @@ impl TTGBuilder {
             if sub_tiles == 0 { continue; }
 
             for &db in &[false, true] {
-                // smem = sA[+db] + sB[+db] + sStore  (all in bytes)
+                // smem = sA + sB (+ sStore for single buffer or epilogue path)
                 let buf_mult = if db { 2usize } else { 1 };
                 let s_a = buf_mult * (mt as usize * kt as usize) * 2;
                 let s_b = buf_mult * (kt as usize * nt as usize) * 2;
-                let s_store = mt as usize * nt as usize * 4;
+                // Double buffer with direct device store: no sStore needed
+                // Single buffer: always uses sStore
+                // Conservative: assume sStore for single buffer, no sStore for double buffer
+                let s_store = if db { 0 } else { mt as usize * nt as usize * 4 };
                 let smem_needed = s_a + s_b + s_store;
                 if smem_needed > max_smem { continue; }
 
-                // Max useful simdgroups = n_subtiles (template's column positions).
-                // Each simdgroup covers 8 rows in N; more than n_subtiles causes
-                // redundant work or OOB access in threadgroup memory.
+                // Max safe simdgroups = n_subtiles (8x8 column positions).
+                // The current template's sg_base_row/col formula requires
+                // exactly n_subtiles SIMD groups for correct coverage.
                 let n_subtiles_val = nt / 8;
-                let usable_sg = n_subtiles_val.min((max_threads / simd_width) as u32).max(1);
+                let max_sg = (max_threads / simd_width) as u32;
+                let usable_sg = n_subtiles_val.min(max_sg).max(1);
 
-                // Occupancy: fraction of n_subtiles we fill
-                let sg_occupancy = usable_sg as f32 / n_subtiles_val as f32;
+                // Work per thread: output elements ÷ total threads
+                let total_threads = usable_sg * 32;
+                let output_elements = mt * nt;
+                let work_per_thread = output_elements as f32 / total_threads as f32;
 
-                // Memory efficiency: what fraction of smem we use
-                // Higher is better — better utilization of fast memory
-                let mem_efficiency = smem_needed as f32 / max_smem as f32;
-
-                // K-tile utilization: bigger kt = more compute per memory load
-                let k_efficiency = (kt as f32 / 64.0).min(1.0);
-
-                // Combined score: prefer high occupancy + good mem utilization
-                // For small-memory devices (Metal 32KB), weight occupancy higher
-                let score = if is_metal {
-                    sg_occupancy * 0.5 + mem_efficiency * 0.2 + k_efficiency * 0.3
+                // Arithmetic intensity: compute ops ÷ memory bytes
+                // ops = 2 * M * N * K (multiply + accumulate per element)
+                // bytes = load(M*K + K*N) + store(M*N), each FP16=2B, FP32=4B
+                let compute_ops = 2.0f64 * mt as f64 * nt as f64 * kt as f64;
+                let load_bytes = (mt as f64 * kt as f64 + kt as f64 * nt as f64) * 2.0
+                    * (if db { 2 } else { 1 }) as f64;
+                let store_bytes = if db { 0.0 } else { mt as f64 * nt as f64 * 4.0 };
+                let total_bytes = load_bytes + store_bytes;
+                let arith_intensity = if total_bytes > 0.0 {
+                    compute_ops / total_bytes
                 } else {
-                    sg_occupancy * 0.3 + mem_efficiency * 0.3 + k_efficiency * 0.4
+                    compute_ops / load_bytes
+                };
+
+                // Normalized metrics [0..1]
+                let mem_efficiency = smem_needed as f32 / max_smem as f32;
+                let intensity_score = (arith_intensity as f32 / 64.0).min(1.0); // higher kt → better
+                let work_efficiency = (work_per_thread / 64.0).min(1.0);         // target ~64 elements/thread
+
+                // Penalize very small work-per-thread (occupancy starvation)
+                let work_penalty = if work_per_thread < 8.0 { 0.6 }
+                                  else if work_per_thread < 16.0 { 0.85 }
+                                  else { 1.0 };
+
+                // Combined score: prioritize arithmetic intensity and good thread utilization
+                let score = if is_metal {
+                    // Metal: memory bandwidth is the bottleneck, so intensity matters most
+                    intensity_score * 0.45 + mem_efficiency * 0.25 + work_efficiency * 0.15 + (work_penalty - 0.85) * 0.15
+                } else {
+                    intensity_score * 0.4 + mem_efficiency * 0.25 + work_efficiency * 0.2 + (work_penalty - 0.85) * 0.15
                 };
 
                 let mut cfg = PipelineConfig::new(2, mt, nt, kt);
@@ -131,7 +164,7 @@ impl TTGBuilder {
 
     /// Creates a dense layout with K-split topology.
     /// Each tile is split into `k_splits` KPipeline stages.
-    pub fn from_dense_k_split(m: u32, n: u32, k: u32, mt: u32, nt: u32, kt: u32, k_splits: u32) -> TTGLayout {
+    pub fn from_dense_k_split(m: u32, n: u32, k: u32, mt: u32, nt: u32, _kt: u32, k_splits: u32) -> TTGLayout {
         let grid_m = (m + mt - 1) / mt;
         let grid_n = (n + nt - 1) / nt;
         let kt_per_stage = k / k_splits.max(1);
@@ -162,7 +195,7 @@ impl TTGBuilder {
     }
 
     /// Creates a layout from an inclusion mask (non-rectangular/sparse).
-    pub fn from_mask<F>(m: u32, n: u32, k: u32, mt: u32, nt: u32, kt: u32, include_fn: F) -> TTGLayout
+    pub fn from_mask<F>(m: u32, n: u32, k: u32, mt: u32, nt: u32, _kt: u32, include_fn: F) -> TTGLayout
     where F: Fn(u32, u32) -> bool {
         let grid_m = (m + mt - 1) / mt;
         let grid_n = (n + nt - 1) / nt;
@@ -177,7 +210,7 @@ impl TTGBuilder {
                 let idx = (tm * grid_n + tn) as usize;
                 l2_idx_map[idx] = node_idx;
                 l1_map.push(node_idx);
-                let is_boundary = if (tm + 1) * mt > m || (tn + 1) * nt > n { 1 } else { 0 };
+                let _is_boundary = if (tm + 1) * mt > m || (tn + 1) * nt > n { 1 } else { 0 };
                 l2_table.push(TileMetadata {
                     region_m: tm, region_n: tn, k_start: 0, k_end: k, role: 0,
                 });
@@ -379,7 +412,7 @@ impl TTGBuilder {
                     l1_map, l2_table, num_active_tiles: *c as u32, variant: None, topology: None
                 }
             },
-            (OperatorTopology::Linear { batch, m, n, k, .. }, _) => {
+            (OperatorTopology::Linear { batch, m, n, k: _, .. }, _) => {
                 // Same as Gemm
                 let mt = 32; let nt = 32;
                 let m_grid = (*m + mt - 1) / mt;

@@ -262,8 +262,9 @@ impl UniversalEmitter {
             DeviceBackend::Cpu => {
                 Ok("/* CPU implementation is static */".to_string())
             }
-            _ => Err(EmissionError::UnsupportedOpType {
-                reason: format!("Backend {:?} not supported", self.backend),
+            #[cfg(feature = "vulkan")]
+            DeviceBackend::Vulkan => Err(EmissionError::UnsupportedOpType {
+                reason: format!("Backend Vulkan not supported"),
             })
         }
     }

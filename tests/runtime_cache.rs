@@ -10,7 +10,7 @@ fn test_runtime_kernel_compilation_cache() {
         }
     };
 
-    let mut backend = if cfg!(target_os = "macos") {
+    let backend = if cfg!(target_os = "macos") {
         DeviceBackend::Metal
     } else if tracea::emitter::rocm_driver::RocmDriverApi::get().is_some() {
         DeviceBackend::Rocm

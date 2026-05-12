@@ -1,8 +1,8 @@
 #[cfg(target_os = "macos")]
 #[test]
 fn test_metal_basic_add() {
-    use tracea::runtime::manager::{RuntimeManager, DeviceBackend, KernelArg, DeviceBuffer};
-    use std::sync::Arc;
+    use tracea::runtime::manager::{RuntimeManager, DeviceBackend, KernelArg};
+    
 
     let runtime = RuntimeManager::init(Some(DeviceBackend::Metal)).expect("Failed to init Metal runtime");
 

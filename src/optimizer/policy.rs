@@ -1,4 +1,4 @@
-﻿use crate::PipelineConfig;
+use crate::PipelineConfig;
 use crate::optimizer::HardwareProfile;
 use crate::optimizer::problem::{ProblemDescriptor, LayerType, HeroConfig, ArchHint, Fa2Variant};
 use crate::core::backend::Device;
@@ -185,7 +185,6 @@ impl TuningPolicy for Conv2dPolicy {
                     scope: HeroScope::Layer,
                 });
             }
-            _ => {}
         }
 
         configs
@@ -217,7 +216,7 @@ impl TuningPolicy for Conv2dPolicy {
         true
     }
 
-    fn sampling_plan(&self, ctx: &TuningContext) -> SamplingPlan {
+    fn sampling_plan(&self, _ctx: &TuningContext) -> SamplingPlan {
          if self.problem.shape.batch <= 32 {
             SamplingPlan::Scout
         } else {
@@ -317,7 +316,7 @@ impl TuningPolicy for GemmPolicy {
         true
     }
 
-    fn sampling_plan(&self, ctx: &TuningContext) -> SamplingPlan {
+    fn sampling_plan(&self, _ctx: &TuningContext) -> SamplingPlan {
         let size = self._problem.shape.m * self._problem.shape.n * self._problem.shape.k;
         if size < 1_000_000 {
             SamplingPlan::Lightweight
@@ -444,7 +443,7 @@ impl TuningPolicy for Fa2Policy {
         true
     }
 
-    fn sampling_plan(&self, ctx: &TuningContext) -> SamplingPlan {
+    fn sampling_plan(&self, _ctx: &TuningContext) -> SamplingPlan {
          let size = self._problem.shape.m * self._problem.shape.n * self._problem.shape.k;
          if size < 2_000_000 {
             SamplingPlan::Lightweight
@@ -457,14 +456,14 @@ impl TuningPolicy for Fa2Policy {
 // --- CPU GEMM Policy ---
 use crate::core::backend::CpuArch;
 pub struct CpuGemmPolicy {
-    problem: ProblemDescriptor,
+    _problem: ProblemDescriptor,
     arch: CpuArch,
 }
 
 impl CpuGemmPolicy {
     pub fn new(problem: &ProblemDescriptor, arch: CpuArch) -> Self {
         Self {
-            problem: problem.clone(),
+            _problem: problem.clone(),
             arch,
         }
     }

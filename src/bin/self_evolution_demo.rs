@@ -3,7 +3,6 @@
 use tracea::runtime::manager::RuntimeManager;
 use tracea::core::manifold::ComputeAtom;
 use tracea::runtime::manager::DeviceBackend;
-use std::sync::Arc;
 
 fn main() {
     println!("--- Tracea Self-Evolution Demo ---");

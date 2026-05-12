@@ -70,7 +70,7 @@ impl GraphOptimizer {
                                         let consumers_of_consumer = adj.get(&consumer_id).cloned().unwrap_or_default();
                                         adj.insert(op_id, consumers_of_consumer.clone());
                                         for &c_of_c in &consumers_of_consumer {
-                                            if let Some(mut rev) = reverse_adj.get_mut(&c_of_c) {
+                                            if let Some(rev) = reverse_adj.get_mut(&c_of_c) {
                                                 rev.retain(|&x| x != consumer_id);
                                                 rev.push(op_id);
                                             }

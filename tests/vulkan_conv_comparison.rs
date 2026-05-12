@@ -1,6 +1,3 @@
-use tracea::runtime::manager::{RuntimeManager, DeviceBackend, KernelArg};
-use tracea::emitter::traits::{UnifiedOpIR, UnifiedOpType};
-use tracea::emitter::universal::UniversalEmitter;
 
 #[cfg(feature = "vulkan")]
 #[test]

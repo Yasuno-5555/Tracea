@@ -13,9 +13,8 @@ fn bench_gemm_execute(c: &mut Criterion) {
         let b_buf = runtime.alloc_u16(k * n, DeviceBackend::Metal).unwrap();
         let c_buf = runtime.alloc_f32(m * n, DeviceBackend::Metal).unwrap();
 
-        let mut config = PipelineConfig::new(2, 32, 32, 16);
-        config.double_buffer = true;
-        config.force_num_warps = Some(4);
+        let mut config = PipelineConfig::new(2, 32, 16, 16);
+        config.force_num_warps = Some(2);
         let ir = UnifiedOpIR {
             op_type: UnifiedOpType::Gemm {
                 m: m as u32, n: n as u32, k: k as u32,
@@ -36,8 +35,8 @@ fn bench_gemm_execute(c: &mut Criterion) {
             KernelArg::Int(m as i32), KernelArg::Int(n as i32), KernelArg::Int(k as i32),
         ];
 
-        let grid = ((n / 32) as u32, (m / 32) as u32, 1);
-        let block = (128, 1, 1);
+        let grid = ((n / 16) as u32, (m / 32) as u32, 1);
+        let block = (64, 1, 1);
 
         // Warmup with sync
         for _ in 0..3 {

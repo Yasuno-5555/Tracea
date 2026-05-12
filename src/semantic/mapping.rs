@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 
 #[derive(Debug, Clone, Copy)]
 pub enum MatrixLayout {
@@ -17,7 +16,7 @@ pub enum LaneMapping {
 
 impl LaneMapping {
     /// Map a global thread ID (lane_id) to (M, N) logical index within a fragment
-    pub fn get_addr(&self, row: u32, col: u32) -> String {
+    pub fn get_addr(&self, _row: u32, _col: u32) -> String {
         // Implementation logic...
         format!("(row * 16 + col)") // Simplified
     }

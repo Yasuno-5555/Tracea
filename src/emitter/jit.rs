@@ -1,7 +1,7 @@
 use cudarc::driver::safe::{CudaDevice, CudaFunction};
 // use cudarc::driver::LaunchAsync; (not found or unused)
 use cudarc::nvrtc::{compile_ptx_with_opts, CompileOptions};
-use crate::emitter::traits::{Emitter, UnifiedOpIR, UnifiedOpType};
+use crate::emitter::traits::Emitter;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::ffi::c_void;

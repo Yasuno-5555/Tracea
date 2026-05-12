@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::collections::HashMap;
 
 pub struct CrossBackendTuner {
-    runtime: Arc<RuntimeManager>,
+    _runtime: Arc<RuntimeManager>,
     tuners: HashMap<DeviceBackend, AutoTuner>,
     history: TuningHistory,
 }
@@ -31,7 +31,7 @@ impl CrossBackendTuner {
         }
         
         Self { 
-            runtime, 
+            _runtime: runtime, 
             tuners, 
             history: TuningHistory::load_or_create("tuning_history.json") 
         }

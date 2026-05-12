@@ -1,8 +1,6 @@
-use tracea::core::config::PipelineConfig;
 use tracea::policy::types::{GraphTopology, OperatorTopology};
 use tracea::runtime::manager::{RuntimeManager, DeviceBackend};
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::Instant;
 
 fn main() {
@@ -60,8 +58,7 @@ fn main() {
     println!("Capturing graph...");
     let captured = manager.executor.capture(&plan, &inputs, &manager).expect("Capture failed");
     
-    #[cfg(target_os = "macos")]
-    println!("Graph captured. ICB present: {:?}", captured.icb.is_some());
+    println!("Graph captured ({} steps, {}B arena)", captured.steps.len(), captured.arena_size);
 
     // 5. Exec Loop
     println!("Warming up...");

@@ -224,7 +224,7 @@ impl PyContext {
             polyhedral_strategy: None,
         };
         let final_config = ir.tiling.clone(); // Clone before move
-        let source = emitter.generate(ir);
+        let source = emitter.generate(ir).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Generation failed: {:?}", e)))?;
         
         let kernel_id = match ctx.runtime.compile(&source, "flash_attention_v2_kernel", backend) {
             Ok(id) => id,
@@ -318,7 +318,7 @@ impl PyContext {
             polyhedral_strategy: None,
         };
         
-        let source = emitter.generate(ir);
+        let source = emitter.generate(ir).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Generation failed: {:?}", e)))?;
         
         let kernel_id = match ctx.runtime.compile(&source, kernel_name, backend) {
             Ok(id) => id,
@@ -414,17 +414,17 @@ impl PyContext {
             polyhedral_strategy: None,
         };
         
-        let source = emitter.generate(ir);
+        let source = emitter.generate(ir).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Generation failed: {:?}", e)))?;
         let kernel_id = match ctx.runtime.compile(&source, "conv2d_implicit_gemm", backend) {
             Ok(id) => id,
             Err(e) => return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Conv2d Compile Error: {}", e))),
         };
 
         // Pack ConvParams (struct align=4, size=68)
-        let (hw_m, hw_s) = crate::emitter::conv::magic_u32(h_out * w_out);
-        let (w_m, w_s) = crate::emitter::conv::magic_u32(w_out);
-        let (sic_m, sic_s) = crate::emitter::conv::magic_u32(s * c);
-        let (c_m, c_s) = crate::emitter::conv::magic_u32(c);
+        let (hw_m, hw_s) = crate::emitter::cuda::conv::magic_u32(h_out * w_out);
+        let (w_m, w_s) = crate::emitter::cuda::conv::magic_u32(w_out);
+        let (sic_m, sic_s) = crate::emitter::cuda::conv::magic_u32(s * c);
+        let (c_m, c_s) = crate::emitter::cuda::conv::magic_u32(c);
 
         let mut params = Vec::with_capacity(72);
         for &val in &[n, h, w_in, c, k, h_out, w_out, r, s, stride, pad, dilation] {
@@ -503,7 +503,7 @@ impl PyContext {
             polyhedral_strategy: None,
         };
         
-        let source = emitter.generate(ir);
+        let source = emitter.generate(ir).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Generation failed: {:?}", e)))?;
         
         let kernel_id = match ctx.runtime.compile(&source, "conv_transpose2d_implicit_gemm", backend) {
             Ok(id) => id,
@@ -929,6 +929,9 @@ impl PyTuner {
             max_threadgroup_memory: 0,
             preferred_tile_shape: [128, 128, 32],
             simd_width: 32,
+            peak_tflops_standard: 20.3,
+            peak_tflops_tensor: 40.6,
+            mem_bw_gbps: 448.0,
         };
         let tuner = AutoTuner::new(gpu);
         Self { inner: Arc::new(Mutex::new(tuner)) }

@@ -14,6 +14,7 @@ pub type HiprtcGetCode = unsafe extern "system" fn(*mut c_void, *mut i8) -> i32;
 #[allow(non_snake_case)]
 pub type HiprtcDestroyProgram = unsafe extern "system" fn(*mut *mut c_void) -> i32;
 
+#[allow(non_snake_case)]
 pub struct RocmJitApi {
     pub lib: &'static Library,
     pub hiprtcCreateProgram: Symbol<'static, HiprtcCreateProgram>,

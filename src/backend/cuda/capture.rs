@@ -1,5 +1,4 @@
 use cudarc::driver::sys as cuda;
-use std::ptr;
 
 /// Architectural placeholder for CUDA Graph Capture (equivalent to Metal ICB).
 /// Currently stubbed out due to missing FFI bindings in the current environment's `cudarc`.

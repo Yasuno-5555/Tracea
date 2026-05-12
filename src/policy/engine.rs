@@ -1,4 +1,4 @@
-use crate::policy::types::{PolicyContext, PolicyDecision, PolicyContext as _PC}; // Alias if needed
+use crate::policy::types::{PolicyContext, PolicyDecision}; // Alias if needed
 
 pub struct PolicyFeedback {
     pub operator_id: u64,

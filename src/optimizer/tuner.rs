@@ -1,11 +1,10 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::collections::HashMap;
 use crate::runtime::manager::{RuntimeManager, DeviceBackend};
 use crate::optimizer::{AutoTuner, HardwareProfile, ProblemDescriptor, OptimizationGoal, TuningStats};
 use crate::optimizer::history::{TuningHistory, HistoryEntry};
 use crate::core::config::PipelineConfig;
-use crate::policy::types::{GraphTopology, OperatorTopology};
-use crate::optimizer::benchmark::MicroBenchmark;
+use crate::policy::types::OperatorTopology;
 
 #[derive(Debug)]
 pub struct MetaTuner {
@@ -159,7 +158,7 @@ impl MetaTuner {
     pub fn tune_atom(
         &self,
         atom: &crate::core::manifold::ComputeAtom,
-        backend: DeviceBackend,
+        _backend: DeviceBackend,
         generations: usize,
     ) -> Option<crate::core::mapper::MappingStrategy> {
         let runtime_arc = self.runtime.upgrade()?;

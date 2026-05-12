@@ -51,6 +51,7 @@ impl RuntimeManager {
             }
         }
 
+        #[allow(unreachable_patterns)]
         match &recorded.handle {
             KernelHandle::Cuda { func, .. } => {
                 unsafe {

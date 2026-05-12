@@ -209,7 +209,6 @@ fn run_resnet18_benchmark(runtime: &Arc<RuntimeManager>, backend: DeviceBackend)
     });
 
     dependencies.push((current_id, op_id_counter));
-    op_id_counter += 1;
 
     let graph = GraphTopology { operators, dependencies };
     println!("[Graph] Generated ResNet-18 with {} operators", graph.operators.len());

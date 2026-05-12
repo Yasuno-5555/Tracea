@@ -118,9 +118,9 @@ impl TunableKernel for CudaGemmAdapter {
         let b_stride = cfg.k_tile * (cfg.n_tile + 8) * 2;
         let smem_bytes = ((a_stride + b_stride) as usize * cfg.num_stages as usize + 512) as u32;
 
-        let a_ptr = self.runtime.get_device_ptr(self.a_buf).ok()?;
-        let b_ptr = self.runtime.get_device_ptr(self.b_buf).ok()?;
-        let c_ptr = self.runtime.get_device_ptr(self.c_buf).ok()?;
+        let _a_ptr = self.runtime.get_device_ptr(self.a_buf).ok()?;
+        let _b_ptr = self.runtime.get_device_ptr(self.b_buf).ok()?;
+        let _c_ptr = self.runtime.get_device_ptr(self.c_buf).ok()?;
 
         let start = std::time::Instant::now();
 

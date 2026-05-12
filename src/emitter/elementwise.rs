@@ -24,7 +24,7 @@ pub fn generate_elementwise(ir: &UnifiedOpIR, backend: DeviceBackend) -> String 
     }
 }
 
-fn generate_cuda_elementwise(kernel_name: &str, op_type: &ElementwiseType, n: usize) -> String {
+fn generate_cuda_elementwise(kernel_name: &str, op_type: &ElementwiseType, _n: usize) -> String {
     let params = match op_type {
         ElementwiseType::Add | ElementwiseType::Mul => 
             "const float* __restrict__ a, const float* __restrict__ b, float* __restrict__ c, int n",
@@ -53,7 +53,7 @@ extern "C" __global__ void {kernel_name}({params}) {{
 "#, kernel_name=kernel_name, params=params, core_logic=core_logic)
 }
 
-fn generate_metal_elementwise(kernel_name: &str, op_type: &ElementwiseType, n: usize) -> String {
+fn generate_metal_elementwise(kernel_name: &str, op_type: &ElementwiseType, _n: usize) -> String {
     let params = match op_type {
         ElementwiseType::Add | ElementwiseType::Mul => 
             "device const float* a [[buffer(0)]], device const float* b [[buffer(1)]], device float* c [[buffer(2)]], constant int& n_val [[buffer(3)]], device const uint* l1_map [[buffer(4)]], device const TileMetadata* l2_table [[buffer(5)]]",

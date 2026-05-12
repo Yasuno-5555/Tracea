@@ -1,7 +1,6 @@
 // src/core/evolution.rs
 
 use rand::prelude::*;
-use std::collections::HashMap;
 use crate::core::mapper::{MappingStrategy, HardwareLevel};
 
 pub trait Mutatable {

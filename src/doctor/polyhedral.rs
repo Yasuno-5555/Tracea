@@ -1,5 +1,5 @@
 // src/doctor/polyhedral.rs
-use crate::core::polyhedral::{PolyhedralInfo, Constraint, AffineFunction};
+use crate::core::polyhedral::{PolyhedralInfo, Constraint};
 use crate::policy::types::OperatorTopology;
 
 #[derive(Debug, Clone)]
@@ -28,7 +28,7 @@ impl PolyhedralAudit {
         }
     }
 
-    fn from_conv2d(n: u32, c: u32, h: u32, w: u32, k: u32, r: u32, s: u32, stride: u32, padding: u32) -> Self {
+    fn from_conv2d(n: u32, c: u32, h: u32, w: u32, k: u32, r: u32, s: u32, _stride: u32, _padding: u32) -> Self {
         // Dimensions: [n, oc, oh, ow, ic, kh, kw]
         let dim_names = vec![
             "n".to_string(), "oc".to_string(), "oh".to_string(), "ow".to_string(),

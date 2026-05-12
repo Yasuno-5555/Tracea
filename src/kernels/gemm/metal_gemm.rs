@@ -121,7 +121,7 @@ impl TunableKernel for MetalGemmAdapter {
         // "Simdgroup distribution: Assume 4 simdgroups (128 threads)"
         // So we must launch 128 threads per threadgroup.
         
-        let block_threads = 128;
+        let _block_threads = 128;
         // Metal uses (width, height, depth) for threads per threadgroup.
         // Let's use (32, 4, 1) -> 128 threads.
         let block = (32, 4, 1);

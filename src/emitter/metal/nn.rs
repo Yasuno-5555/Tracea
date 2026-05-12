@@ -1,4 +1,4 @@
-pub fn generate_batchnorm(n: usize, c: usize, h: usize, w: usize, epsilon: f32) -> String {
+pub fn generate_batchnorm(n: usize, c: usize, h: usize, w: usize, _epsilon: f32) -> String {
     format!(r#"
 #include <metal_stdlib>
 using namespace metal;
@@ -43,7 +43,7 @@ kernel void batchnorm_forward(
 "#, n=n, c=c, h=h, w=w)
 }
 
-pub fn generate_global_avg_pool(_n: usize, c: usize, h: usize, w: usize) -> String {
+pub fn generate_global_avg_pool(_n: usize, _c: usize, h: usize, w: usize) -> String {
     format!(r#"
 #include <metal_stdlib>
 using namespace metal;
@@ -73,7 +73,7 @@ kernel void global_avg_pool_kernel(
 "#, h=h, w=w)
 }
 
-pub fn generate_linear(batch: usize, m: usize, n: usize, k: usize) -> String {
+pub fn generate_linear(_batch: usize, _m: usize, _n: usize, _k: usize) -> String {
     format!(r#"
 #include <metal_stdlib>
 using namespace metal;

@@ -28,6 +28,7 @@ pub type HipDeviceSynchronize = unsafe extern "system" fn() -> i32;
 #[allow(non_snake_case)]
 pub type HipModuleUnload = unsafe extern "system" fn(*mut c_void) -> i32;
 
+#[allow(non_snake_case)]
 pub struct RocmDriverApi {
     pub lib: &'static Library,
     pub hipGetDeviceCount: Symbol<'static, HipGetDeviceCount>,

@@ -63,7 +63,7 @@ impl Visualizer {
         })
     }
 
-    fn analyze_causes(&self, mae: f32, mse: f32) -> String {
+    fn analyze_causes(&self, mae: f32, _mse: f32) -> String {
         if mae < 1e-6 {
             "No significant error detected. Bit-wise or epsilon-level parity confirmed.".to_string()
         } else if mae < 1e-3 {

@@ -1,7 +1,7 @@
 // src/core/mapper.rs
 
 use std::collections::HashMap;
-use crate::core::manifold::{Dimension, ComputeAtom};
+use crate::core::manifold::ComputeAtom;
 use crate::core::lattice::HardwareLattice;
 use serde::{Serialize, Deserialize};
 

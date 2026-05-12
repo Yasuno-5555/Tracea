@@ -1,7 +1,6 @@
 use crate::core::tuning::{TunableKernel, SearchSpace};
-use crate::core::config::{PipelineConfig, SwizzleMode, SpecializedInstruction};
-use crate::emitter::metal::MetalEmitter;
-use crate::runtime::manager::{RuntimeManager, DeviceBackend, KernelArg};
+use crate::core::config::PipelineConfig;
+use crate::runtime::manager::{RuntimeManager, DeviceBackend};
 use std::sync::Arc;
 use serde::{Serialize, Deserialize};
 
@@ -14,6 +13,7 @@ pub struct MetalFa2Problem {
     pub is_causal: bool,
 }
 
+#[allow(dead_code)]
 pub struct MetalFa2Adapter {
     pub runtime: Arc<RuntimeManager>,
     pub problem: MetalFa2Problem,
@@ -26,7 +26,7 @@ pub struct MetalFa2Adapter {
 
 impl MetalFa2Adapter {
     pub fn new(runtime: Arc<RuntimeManager>, problem: MetalFa2Problem) -> Self {
-        let bytes = problem.b * problem.h * problem.s * problem.d * 2;
+        let _bytes = problem.b * problem.h * problem.s * problem.d * 2;
         let dummy = runtime.alloc(1, DeviceBackend::Metal).unwrap(); // Stub
         Self { 
             runtime, 

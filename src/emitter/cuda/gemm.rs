@@ -24,7 +24,7 @@ pub fn generate_gemm(_m: u32, _n: u32, _k: u32, config: &PipelineConfig) -> Resu
     let b_stride = nt + padding;
     let multiplier = if config.double_buffer { 2 } else { 1 };
     let smem_a_bytes = mt * a_stride * multiplier;
-    let smem_b_bytes = kt * b_stride * multiplier;
+    let _smem_b_bytes = kt * b_stride * multiplier;
     
     let a_smem_offset = 128; // Header
     let b_smem_offset = (a_smem_offset + smem_a_bytes * stages as u32 + 1023) & !1023;

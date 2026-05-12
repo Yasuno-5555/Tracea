@@ -29,14 +29,15 @@ impl StandardPolicyEngine {
     /// Generate candidate GEMM configurations for autotuning grid search.
     /// Returns a list of PipelineConfig candidates sorted by priority.
     /// Delegates to TTGBuilder for hardware-aware tile optimization.
-    pub fn propose_gemm_configs(&self, device: &DeviceProfile) -> Vec<crate::PipelineConfig> {
+    /// `m`, `n`, `k` are the problem dimensions used for tile feasibility filtering.
+    pub fn propose_gemm_configs(&self, device: &DeviceProfile, m: u32, n: u32, k: u32) -> Vec<crate::PipelineConfig> {
         use crate::runtime::ttg_builder::TTGBuilder;
         use crate::core::config::{SpecializedInstruction, PipelineConfig};
 
         let is_metal = device.backend == crate::core::device::BackendType::Metal;
 
         // TTG optimizer generates hardware-aware tile configs
-        let ttg_configs = TTGBuilder::optimize_tile_configs(device, 2048, 2048, 2048);
+        let ttg_configs = TTGBuilder::optimize_tile_configs(device, m, n, k);
 
         // For Metal, use TTG-optimized configs directly
         if is_metal {
@@ -241,7 +242,7 @@ impl PolicyEngine for StandardPolicyEngine {
                          variant,
                      }
                 },
-                OperatorTopology::Attention { op_id, b: _, s: _, h: _, d, name: _ } => {
+                OperatorTopology::Attention { op_id, b: _, s: _, h: _, d: _, name: _ } => {
                      // Attention Logic
                      // Select variant based on Policy
                      let variant = self.select_attention_variant(op, ctx.device);
@@ -357,7 +358,7 @@ impl PolicyEngine for StandardPolicyEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::policy::types::*;
+    
     use crate::core::device::BackendType;
 
     #[test]

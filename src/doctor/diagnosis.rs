@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::fs;
 use serde::{Serialize, Deserialize};
@@ -6,7 +6,7 @@ use serde::{Serialize, Deserialize};
 // --- Core Enums ---
 
 use super::registry::BackendKind;
-use crate::doctor::strategies::{get_strategy, DiagnosticStrategy};
+use crate::doctor::strategies::get_strategy;
 use crate::core::lattice::{HardwareLattice, ComputeNode, MemoryHierarchy};
 use std::io::Write;
 

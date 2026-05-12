@@ -1,6 +1,5 @@
 use crate::runtime::plan::{ExecutionPlan, ExecutionStep, KernelArgSpec};
 use crate::policy::types::{GraphTopology, OperatorTopology, PolicyDecision};
-use crate::core::op::EpilogueOp;
 use crate::runtime::manager::{DeviceBackend, RuntimeManager};
 use std::collections::{HashMap, HashSet};
 
@@ -54,7 +53,7 @@ impl GraphCompiler {
             };
 
             // Prototype: Create Manifold & Lattice (Not used yet in execution, but verifying path)
-            let lattice = manager.doctor.synthesize_hardware_lattice();
+            let _lattice = manager.doctor.synthesize_hardware_lattice();
             let _atom = match operator {
                 OperatorTopology::Conv2d { n, c, h, w, k, r, s, stride, padding, .. } => {
                     Some(crate::core::manifold::ComputeAtom::from_conv2d(*n, *c, *h, *w, *k, *r, *s, *stride, *padding, 1))
@@ -264,7 +263,7 @@ impl GraphCompiler {
             OperatorTopology::Conv2d { n, h, w, padding, r, s, stride, .. } => {
                 let h_out = (h + 2 * padding - 1 * (r - 1) - 1) / stride + 1;
                 let w_out = (w + 2 * padding - 1 * (s - 1) - 1) / stride + 1;
-                 if let Some(crate::policy::types::TilePolicy::Conv { tile_m, tile_n, .. }) = tile_policy {
+                 if let Some(crate::policy::types::TilePolicy::Conv { tile_m, tile_n: _, .. }) = tile_policy {
                      let _m_tile = tile_m as u32; 
                      let grid = (
                          (*n * h_out * w_out + 31) as u32 / 32, 

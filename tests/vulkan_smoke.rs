@@ -1,4 +1,3 @@
-use tracea::runtime::manager::{RuntimeManager, DeviceBackend};
 
 #[cfg(feature = "vulkan")]
 #[test]

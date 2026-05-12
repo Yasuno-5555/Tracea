@@ -60,7 +60,7 @@ impl TunableKernel for GemmAdapter {
             let is_aligned = (self.problem.m % bs == 0) && (self.problem.n % bs == 0) && (self.problem.k % bs == 0);
             
             for &t in &threads {
-                let mut cfg = CpuGemmConfig {
+                let cfg = CpuGemmConfig {
                     m_block: bs,
                     n_block: bs,
                     k_block: bs,

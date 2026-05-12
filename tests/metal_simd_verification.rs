@@ -138,7 +138,7 @@ fn run_variant(
     // Generate Name based on variant to avoid cache collision if content is diff but name same?
     // Compiler hashes source?
     // RuntimeManager `compile` takes name.
-    let name = format!("flash_attn_{:?}", variant);
+    let _name = format!("flash_attn_{:?}", variant);
     
     let source = emitter.generate(ir).unwrap();
     let kernel = runtime.compile(&source, "flash_attention_v2_kernel", backend).unwrap();

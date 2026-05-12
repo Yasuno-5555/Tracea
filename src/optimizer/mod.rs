@@ -1,12 +1,11 @@
 use crate::PipelineConfig;
 use std::sync::Arc;
-use cudarc::driver::CudaDevice;
 use serde::{Serialize, Deserialize};
 
 use crate::runtime::manager::DeviceBackend;
-use crate::core::backend::{Device, CudaArch, CpuArch};
+use crate::core::backend::Device;
 pub use problem::{ProblemDescriptor, LayerType, HeroConfig, ArchHint, HeroScope, Layout, Fa2Variant, AsmParams, GpuAsmParams, Shape};
-use crate::optimizer::policy::{TuningPolicy, PolicyFactory, SamplingPlan, TuningContext, SearchSpace};
+use crate::optimizer::policy::{TuningPolicy, PolicyFactory, SearchSpace};
 
 pub mod heroscope;
 pub mod model;
@@ -290,8 +289,7 @@ pub mod history;
 pub mod tuner;
 pub mod evolution;
 
-use benchmark::{MicroBenchmark, Observation, BenchmarkResult, Conv2dBenchmark, ConvConfig, Conv2dProblem};
-use cache::{TuningCache, CacheKey};
+use benchmark::{MicroBenchmark, Observation, BenchmarkResult, Conv2dBenchmark, ConvConfig};
 use crate::core::config::MagicNumberStrategy;
 use rand::prelude::*;
 use rand_distr::{Normal, Distribution};
@@ -364,6 +362,7 @@ impl GaussianProcess {
         shape.into_iter().chain(config_feats).collect()
     }
 
+    #[allow(non_snake_case)]
     fn marginal_log_likelihood(&self, gpu: &HardwareProfile) -> f32 {
         use nalgebra::{DMatrix, DVector};
         if self.observations.is_empty() { return 0.0; }
@@ -404,6 +403,7 @@ impl GaussianProcess {
         }
     }
     
+    #[allow(dead_code, non_snake_case)]
     fn predict_excluding(&self, m: u32, n: u32, k: u32, config: &PipelineConfig, exclude_idx: usize, gpu: &HardwareProfile) -> (f32, f32) {
         use nalgebra::{DMatrix, DVector};
         let prior_mean = self.roofline_prior(m, n, k, config, gpu);
@@ -502,6 +502,7 @@ impl GaussianProcess {
         ]
     }
 
+    #[allow(non_snake_case)]
     pub fn predict(&self, m: u32, n: u32, k: u32, config: &PipelineConfig, gpu: &HardwareProfile) -> (f32, f32) {
         use nalgebra::{DMatrix, DVector};
         let prior_mean = self.roofline_prior(m, n, k, config, gpu);
@@ -700,7 +701,7 @@ impl<'a, B: Conv2dBenchmark> MicroBenchmark for ConvBenchmarkAdapter<'a, B> {
 
 impl AutoTuner {
     
-    pub fn optimize_v2<B: MicroBenchmark>(&mut self, benchmark: &B, problem: &ProblemDescriptor, iterations: usize, goal: OptimizationGoal) -> PipelineConfig {
+    pub fn optimize_v2<B: MicroBenchmark>(&mut self, benchmark: &B, problem: &ProblemDescriptor, _iterations: usize, _goal: OptimizationGoal) -> PipelineConfig {
         use crate::policy::standard::StandardPolicyEngine;
         use crate::core::tuning::get_tuning_cache;
         use crate::policy::types::OperatorTopology;
@@ -731,9 +732,10 @@ impl AutoTuner {
 
         // 1. Generate Candidates
         let device_profile = self.gpu.to_device_profile();
+        let (gemm_m, gemm_n, gemm_k) = (problem.shape.m as u32, problem.shape.n as u32, problem.shape.k as u32);
         let candidates = match problem.layer_type {
             LayerType::Conv2d { .. } => engine.propose_conv_configs(&device_profile),
-            _ => engine.propose_gemm_configs(&device_profile),
+            _ => engine.propose_gemm_configs(&device_profile, gemm_m, gemm_n, gemm_k),
         };
         
         if candidates.is_empty() {
@@ -757,6 +759,7 @@ impl AutoTuner {
         best_config
     }
     
+    #[allow(dead_code)]
     fn calculate_score(&self, res: &BenchmarkResult, goal: OptimizationGoal) -> f32 {
          let tflops = res.mean_tflops; // Simplified from previous noise penalty
          match goal {
@@ -769,6 +772,7 @@ impl AutoTuner {
         }
     }
     
+    #[allow(dead_code)]
     fn propose_candidate(&self, problem: &ProblemDescriptor, space: &SearchSpace, acq: AcquisitionFunction, policy: &Box<dyn TuningPolicy>, current_best: f32) -> PipelineConfig {
         let mut best_acq = -1e9;
         let mut best_cfg = PipelineConfig::new(2, 64, 64, 32);

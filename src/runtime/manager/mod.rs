@@ -4,7 +4,7 @@ use serde::{Serialize, Deserialize};
 
 use crate::doctor::Doctor;
 use crate::runtime::compiler::GraphCompiler;
-use crate::runtime::executor::GraphExecutor;
+use crate::runtime::executor::Executor as GraphExecutor;
 use crate::optimizer::tuner::MetaTuner;
 
 // Re-export submodules
@@ -17,7 +17,6 @@ pub mod cache;
 pub use memory::*;
 pub use kernel::*;
 pub use launcher::*;
-pub use graph::*;
 pub use cache::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

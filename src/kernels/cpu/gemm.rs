@@ -1,9 +1,6 @@
 use rayon::prelude::*;
-use wide::*;
-use std::convert::TryInto;
 use crate::optimizer::ProblemDescriptor;
 use crate::core::config::PipelineConfig;
-use core::arch::asm;
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
 

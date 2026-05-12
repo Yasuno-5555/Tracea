@@ -1,6 +1,5 @@
 // src/core/manifold.rs
 
-use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
 
 /// Tensor identifier in the manifold space

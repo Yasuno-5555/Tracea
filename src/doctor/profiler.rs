@@ -1,5 +1,6 @@
 use super::capabilities::{TraceaCapabilities, BackendCapabilities};
 use super::registry::BackendKind;
+#[cfg(not(target_os = "macos"))]
 use cudarc::driver::{CudaDevice, sys};
 use serde::{Serialize, Deserialize};
 use std::sync::{Mutex, OnceLock};
@@ -87,6 +88,7 @@ fn detect_cpu() -> BackendCapabilities {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn detect_cuda() -> Option<BackendCapabilities> {
     // Try via cudarc
     match CudaDevice::new(0) {

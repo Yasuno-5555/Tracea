@@ -1,4 +1,3 @@
-use std::sync::Mutex;
 use cudarc::driver::{CudaSlice, DevicePtr, DeviceSlice};
 use super::{BufferId, RuntimeManager, DeviceBackend};
 #[cfg(feature = "vulkan")]
@@ -353,7 +352,7 @@ impl RuntimeManager {
                 Ok(())
             },
             #[cfg(target_os = "macos")]
-            (DeviceBuffer::Metal(s), DeviceBuffer::Metal(d)) => {
+            (DeviceBuffer::Metal(_s), DeviceBuffer::Metal(_d)) => {
                 // For Metal, we might need an encoder, but for now we use simple BLIT if available
                 // Or just return error if not implemented for basic D2D outside ICB
                 Err("Metal D2D copy outside ICB not implemented".into())

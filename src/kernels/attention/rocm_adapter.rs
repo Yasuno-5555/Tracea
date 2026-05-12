@@ -1,7 +1,6 @@
 use crate::core::tuning::{TunableKernel, SearchSpace};
-use crate::core::config::{PipelineConfig, SwizzleMode, SpecializedInstruction};
-use crate::emitter::rocm::ROCMEmitter;
-use crate::runtime::manager::{RuntimeManager, DeviceBackend, KernelArg};
+use crate::core::config::{PipelineConfig, SwizzleMode};
+use crate::runtime::manager::{RuntimeManager, DeviceBackend};
 use std::sync::Arc;
 use serde::{Serialize, Deserialize};
 
@@ -14,6 +13,7 @@ pub struct RocmFa2Problem {
     pub is_causal: bool,
 }
 
+#[allow(dead_code)]
 pub struct RocmFa2Adapter {
     pub runtime: Arc<RuntimeManager>,
     pub problem: RocmFa2Problem,
@@ -69,7 +69,7 @@ impl TunableKernel for RocmFa2Adapter {
         lds_usage <= 65536
     }
 
-    fn benchmark(&self, cfg: &Self::Config) -> Option<f32> {
+    fn benchmark(&self, _cfg: &Self::Config) -> Option<f32> {
         // ROCm JIT / benchmark call stub
         // Implementation will call hiprtc / rocm runtime
         Some(1.0) 

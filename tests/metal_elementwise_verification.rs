@@ -1,7 +1,6 @@
 use tracea::runtime::manager::{RuntimeManager, DeviceBackend, KernelArg};
 use tracea::emitter::universal::UniversalEmitter;
 use tracea::emitter::traits::{UnifiedOpIR, UnifiedOpType};
-use std::sync::Arc;
 
 #[test]
 #[cfg(target_os = "macos")]

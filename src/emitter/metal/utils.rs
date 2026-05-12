@@ -1,6 +1,5 @@
-use crate::emitter::traits::UnifiedOpType;
 
-pub fn generate_metal_softmax(dim_size: usize, stride: usize, total_elements: usize) -> String {
+pub fn generate_metal_softmax(dim_size: usize, _stride: usize, total_elements: usize) -> String {
     let primitives = crate::backend::metal::MetalBackend::get_primitive_defs();
     format!(r#"
 {primitives}

@@ -1,5 +1,4 @@
-use crate::core::graph::{Graph, Node, Operation};
-use crate::core::op::{FusedGemmOp, EpilogueOp};
+use crate::core::graph::{Graph, Operation};
 
 pub struct SemanticOptimizer;
 
@@ -9,7 +8,7 @@ impl SemanticOptimizer {
         self.specialize_shapes(graph);
     }
 
-    fn fuse_nodes(&self, graph: &mut Graph) {
+    fn fuse_nodes(&self, _graph: &mut Graph) {
         // Simple fusion: if a node has exactly one dependency and that's an elementwise op, fuse them.
         // For demonstration, let's implement a placeholder for Gemm + Epilogue fusion.
         // In a real impl, we'd walk the graph and replace Gemm nodes with FusedGemm.
@@ -21,7 +20,7 @@ impl SemanticOptimizer {
         for node in &mut graph.nodes {
             match &node.op {
                 Operation::Gemm(gemm) => {
-                    if let (Some(m), Some(n), Some(k)) = (gemm.m.as_static(), gemm.n.as_static(), gemm.k.as_static()) {
+                    if let (Some(m), Some(_n), Some(_k)) = (gemm.m.as_static(), gemm.n.as_static(), gemm.k.as_static()) {
                         if m == 1 {
                             println!("[SemanticOptimizer] Specialized Gemv detected (M=1)");
                         }

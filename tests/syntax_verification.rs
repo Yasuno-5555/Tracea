@@ -1,6 +1,6 @@
 use tracea::emitter::traits::{Emitter, UnifiedOpIR, UnifiedOpType};
 use tracea::emitter::cuda::CUDAEmitter;
-use tracea::core::config::{PipelineConfig, SpecializedInstruction, SwizzleMode, GemmVariant};
+use tracea::core::config::{PipelineConfig, SpecializedInstruction, GemmVariant};
 
 #[test]
 fn test_cuda_generated_code_syntax_verification() {

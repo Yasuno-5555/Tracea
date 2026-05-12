@@ -1,5 +1,5 @@
-use crate::core::tuning::{TunableKernel, SearchSpace, ParameterRange};
-use crate::core::config::{PipelineConfig, SwizzleMode, SpecializedInstruction, QuantizationMode};
+use crate::core::tuning::{TunableKernel, SearchSpace};
+use crate::core::config::{PipelineConfig, SwizzleMode, SpecializedInstruction};
 use super::cuda_emitter::FlashAttentionEmitter;
 use crate::runtime::manager::{RuntimeManager, DeviceBackend, KernelArg};
 use std::sync::Arc;

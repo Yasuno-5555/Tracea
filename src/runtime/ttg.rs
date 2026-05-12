@@ -1,6 +1,5 @@
-use crate::runtime::manager::{BufferId, RuntimeManager, DeviceBackend, ArenaSlice};
+use crate::runtime::manager::{BufferId, RuntimeManager, DeviceBackend};
 use crate::core::ttg::TTGLayout;
-use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct DeviceTTG {

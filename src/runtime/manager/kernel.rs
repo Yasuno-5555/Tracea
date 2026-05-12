@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::hash::{Hash, Hasher};
 use std::ffi::{c_void, CString};
 use std::io::Write;
@@ -163,7 +163,7 @@ impl RuntimeManager {
                 let compile_options = metal::CompileOptions::new();
                 let library = backend.device.new_library_with_source(source, &compile_options).map_err(|e| format!("Metal Compile Error: {}", e))?;
                 
-                let func = library.get_function(kernel_name, None).map_err(|e| format!("Function '{}' not found", kernel_name))?;
+                let func = library.get_function(kernel_name, None).map_err(|_e| format!("Function '{}' not found", kernel_name))?;
                 
                 let pipeline = backend.device.new_compute_pipeline_state_with_function(&func).map_err(|e| format!("Pipeline Error: {}", e))?;
 
@@ -182,7 +182,7 @@ impl RuntimeManager {
             DeviceBackend::Cuda => {
                 let devices = self.devices.lock().map_err(|_| "Lock")?;
                 let cuda_handle = devices.get(&DeviceBackend::Cuda).ok_or("No CUDA device")?;
-                let target_arch = cuda_handle.arch.clone();
+                let _target_arch = cuda_handle.arch.clone();
 
                 let mut arch_static: &'static str = "sm_80";
                 if let Some(handle) = devices.get(&DeviceBackend::Cuda) {

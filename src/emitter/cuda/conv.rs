@@ -40,16 +40,16 @@ pub fn generate_conv(ir: &UnifiedOpIR) -> Result<String, EmissionError> {
         let h_out = (h_in + 2 * pad - dilation * (r - 1) - 1) / stride + 1;
         let w_out = (w_in + 2 * pad - dilation * (s - 1) - 1) / stride + 1;
         
-        let m_gemm = batch * h_out * w_out;
-        let n_gemm = k_out;
-        let k_gemm = c_in * r * s;
+        let _m_gemm = batch * h_out * w_out;
+        let _n_gemm = k_out;
+        let _k_gemm = c_in * r * s;
 
         let mt = ir.tiling.m_tile;
         let nt = ir.tiling.n_tile;
         let kt = ir.tiling.k_tile;
         let num_warps = ir.tiling.force_num_warps.unwrap_or(8);
         let stages = ir.tiling.num_stages.max(2);
-        let m_frags = (mt / 16).max(1);
+        let _m_frags = (mt / 16).max(1);
         let n_frags = (nt / 16).max(1);
 
         let (_c_in_padded, k_gemm_padded) = if let Some(ref strategy) = ir.polyhedral_strategy {
@@ -77,16 +77,16 @@ pub fn generate_conv(ir: &UnifiedOpIR) -> Result<String, EmissionError> {
         
         let can_hoist = (total_smem_tiles + hoisting_bytes + 1024) < 96000;
 
-        let (hw_magic, hw_shift) = magic_u32((h_out * w_out) as u32);
-        let (w_magic, w_shift) = magic_u32(w_out as u32);
-        let (sic_magic, sic_shift) = magic_u32((s * c_in) as u32);
-        let (c_magic, c_shift) = magic_u32(c_in as u32);
+        let (_hw_magic, _hw_shift) = magic_u32((h_out * w_out) as u32);
+        let (_w_magic, _w_shift) = magic_u32(w_out as u32);
+        let (_sic_magic, _sic_shift) = magic_u32((s * c_in) as u32);
+        let (_c_magic, _c_shift) = magic_u32(c_in as u32);
         
         let mut epilogue_args = String::new();
         let mut epilogue_apply = String::new();
         
         // Use Ampere path if possible
-        let use_ampere = (c_in % 8 == 0) && (k_out % 8 == 0);
+        let _use_ampere = (c_in % 8 == 0) && (k_out % 8 == 0);
 
         for (i, op) in ir.tiling.epilogue.iter().enumerate() {
             match op {

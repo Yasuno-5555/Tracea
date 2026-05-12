@@ -328,7 +328,7 @@ mod tests {
     fn test_linear_lowering() {
         let mut graph = Graph::new();
         let id_in = graph.add_gemm(128, 128, 128, vec![]);
-        let id_lin = graph.add_linear(128, 128, 64, true, vec![EpilogueOp::ReLU], vec![id_in]);
+        let _id_lin = graph.add_linear(128, 128, 64, true, vec![EpilogueOp::ReLU], vec![id_in]);
         
         let lowered = graph.lower();
         assert_eq!(lowered.nodes.len(), 2);

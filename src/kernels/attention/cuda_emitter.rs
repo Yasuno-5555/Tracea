@@ -1,5 +1,4 @@
 use crate::core::config::PipelineConfig;
-use crate::backend::cuda::CudaBackend;
 
 pub struct FlashAttentionEmitter {
     pub config: PipelineConfig,
@@ -19,20 +18,20 @@ impl FlashAttentionEmitter {
         // Offset mapping:
         // 1. Q (half) [MT x D]
         let q_offset = 128; // alignment
-        let sQ_bytes = (mt as usize) * d * 2;
+        let sq_bytes = (mt as usize) * d * 2;
         
         // 2. K (half) [STAGES x NT x STRIDE]
-        let k_offset = (q_offset + sQ_bytes + 127) / 128 * 128;
-        let sK_bytes = (stages as usize) * (nt as usize) * stride * 2;
+        let k_offset = (q_offset + sq_bytes + 127) / 128 * 128;
+        let sk_bytes = (stages as usize) * (nt as usize) * stride * 2;
         
         // 3. V (half) [STAGES x NT x STRIDE]
-        let v_offset = (k_offset + sK_bytes + 127) / 128 * 128;
-        let sV_bytes = (v_offset + (stages as usize) * (nt as usize) * stride * 2 + 127) / 128 * 128;
+        let v_offset = (k_offset + sk_bytes + 127) / 128 * 128;
+        let sv_bytes = (v_offset + (stages as usize) * (nt as usize) * stride * 2 + 127) / 128 * 128;
         
         // Note: We reuse smem_K_base for the epilogue (float accumulation staging)
         // MT x D * 4 bytes
-        let sO_float_bytes = (mt as usize) * d * 4;
-        let total = std::cmp::max(sV_bytes, k_offset + sO_float_bytes);
+        let so_float_bytes = (mt as usize) * d * 4;
+        let total = std::cmp::max(sv_bytes, k_offset + so_float_bytes);
         
         (total, 0, 0, q_offset, k_offset, v_offset) 
     }
@@ -42,7 +41,7 @@ impl FlashAttentionEmitter {
         let nt = self.config.n_tile; 
         let stages = self.config.num_stages;
         let num_warps = self.config.force_num_warps.unwrap_or(mt / 16); 
-        let d_over_16 = d / 16;
+        let _d_over_16 = d / 16;
 
         let (total_bytes, _, _, q_offset, k_offset, v_offset) = Self::calculate_smem_layout(&self.config, d);
 

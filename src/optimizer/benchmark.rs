@@ -389,7 +389,8 @@ impl MicroBenchmark for NVRTCBenchmark {
                     arch: "x86_64".to_string(),
                 }
             }
-            _ => panic!("Unknown backend"),
+            #[cfg(feature = "vulkan")]
+            crate::runtime::DeviceBackend::Vulkan => panic!("Vulkan not supported for benchmark"),
         }
     }
 
@@ -1052,7 +1053,7 @@ impl MicroBenchmark for FlashAttentionBenchmark {
         
         // Launch Params
         let mt = config.m_tile as usize;
-        let nt = config.n_tile as usize; 
+        let _nt = config.n_tile as usize; 
         
         let ticks = (self.problem.s + mt - 1) / mt;
         let grid = (ticks as u32, self.problem.h as u32, self.problem.b as u32);

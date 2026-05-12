@@ -9,7 +9,7 @@ fn main() {
         
         let desc = IndirectCommandBufferDescriptor::new();
         desc.set_command_types(MTLIndirectCommandType::ConcurrentDispatch);
-        let icb = device.new_indirect_command_buffer_with_descriptor(&desc, 10, MTLResourceOptions::StorageModeShared);
+        let _icb = device.new_indirect_command_buffer_with_descriptor(&desc, 10, MTLResourceOptions::StorageModeShared);
         
         // enc.execute_commands_in_buffer(&icb, NSRange::new(0, 1));
         
