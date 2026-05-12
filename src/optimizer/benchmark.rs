@@ -116,7 +116,7 @@ impl NVRTCBenchmark {
                 (a, b, c)
             }
         };
-        
+
         Self {
             runtime,
             backend,
@@ -271,7 +271,7 @@ impl MicroBenchmark for NVRTCBenchmark {
         };
 
         let (mut grid_dim, block_dim, smem_size) = self.get_launch_params(config);
-        
+
         let mut args = vec![
             KernelArg::Buffer(self.buffers_in.0),
             KernelArg::Buffer(self.buffers_in.1),

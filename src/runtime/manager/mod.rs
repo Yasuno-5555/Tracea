@@ -79,9 +79,9 @@ pub struct RuntimeManager {
     pub arena: Mutex<Option<MemoryArena>>,
     /// Graph Execution Plan Cache
     pub graph_cache: RwLock<GraphCache>,
-    
+
     // Components
-    pub compiler: Mutex<GraphCompiler>, 
+    pub compiler: Mutex<GraphCompiler>,
     pub executor: GraphExecutor,
     pub tuner: Arc<MetaTuner>,
 }

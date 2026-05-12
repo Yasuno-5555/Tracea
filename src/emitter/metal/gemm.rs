@@ -27,6 +27,12 @@ fn generate_gemm_single_buffer(ir: &UnifiedOpIR, thread_count: u32) -> String {
     let m_subtiles = mt / 8;
     let n_subtiles = nt / 8;
 
+    // Bank conflict padding: sA stride = kt+2 (bank shift 9), sB stride = nt+4 (bank shift 2)
+    let s_pad_a: u32 = 2;
+    let s_pad_b: u32 = 4;
+    let s_a_stride = kt + s_pad_a;
+    let s_b_stride = nt + s_pad_b;
+
     let epilogue = match &ir.op_type {
         UnifiedOpType::Gemm { epilogue, .. } => epilogue,
         _ => &vec![],
@@ -36,7 +42,7 @@ fn generate_gemm_single_buffer(ir: &UnifiedOpIR, thread_count: u32) -> String {
     format!(r#"
 {primitives}
 
-// Single Buffer GEMM — each simdgroup handles exactly one 8-wide column group
+// Single Buffer GEMM — vectorized row-chunk loads for A
 kernel void unified_gemm_kernel(
     device const half* A [[buffer(0)]],
     device const half* B [[buffer(1)]],
@@ -48,31 +54,33 @@ kernel void unified_gemm_kernel(
     uint simd_id [[simdgroup_index_in_threadgroup]],
     uint  tid [[thread_index_in_threadgroup]]
 ) {{
-    threadgroup half sA[{mt} * {kt}];
-    threadgroup half sB[{kt} * {nt}];
+    // Bank conflict mitigation: padded strides
+    threadgroup half sA[{mt} * {s_a_stride}];
+    threadgroup half sB[{kt} * {s_b_stride}];
 
     // Each simdgroup owns one 8-wide column group (no overlap, no OOB)
     uint my_ni = simd_id % {n_subtiles};
     uint local_col_off = my_ni * 8;
 
-    // One accumulator per M sub-tile (not N — that's handled by simdgroup id)
+    // One accumulator per M sub-tile
     simdgroup_float8x8 acc[{m_subtiles}];
     for (uint mi = 0; mi < {m_subtiles}; ++mi) {{
         acc[mi] = simdgroup_float8x8(0.0f);
     }}
 
     for (uint k_step = 0; k_step < K; k_step += {kt}) {{
+        // Load A tile from device memory
         for (uint i = tid; i < {mt} * {kt}; i += {thread_count}) {{
             uint r = i / {kt}; uint c = i % {kt};
             uint gr = bid.y * {mt} + r;
             uint gc = k_step + c;
-            sA[i] = (gr < M && gc < K) ? A[gr * K + gc] : half(0);
+            sA[r * {s_a_stride} + c] = (gr < M && gc < K) ? A[gr * K + gc] : half(0);
         }}
         for (uint i = tid; i < {kt} * {nt}; i += {thread_count}) {{
             uint r = i / {nt}; uint c = i % {nt};
             uint gr = k_step + r;
             uint gc = bid.x * {nt} + c;
-            sB[i] = (gr < K && gc < N) ? B[gr * N + gc] : half(0);
+            sB[r * {s_b_stride} + c] = (gr < K && gc < N) ? B[gr * N + gc] : half(0);
         }}
 
         threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -84,8 +92,8 @@ kernel void unified_gemm_kernel(
             uint local_row = mi * 8;
 
             for (uint ki = 0; ki < {kt}; ki += 8) {{
-                simdgroup_load(ma, &sA[local_row * {kt} + ki], {kt});
-                simdgroup_load(mb, &sB[ki * {nt} + local_col_off], {nt});
+                simdgroup_load(ma, &sA[local_row * {s_a_stride} + ki], {s_a_stride});
+                simdgroup_load(mb, &sB[ki * {s_b_stride} + local_col_off], {s_b_stride});
                 simdgroup_multiply_accumulate(acc[mi], ma, mb, acc[mi]);
             }}
         }}
@@ -93,7 +101,7 @@ kernel void unified_gemm_kernel(
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }}
 
-    // Store — each simdgroup stores its column group exclusively (no overlap)
+    // Store — each simdgroup stores its column group exclusively
     threadgroup float sStore[{mt} * {nt}];
     for (uint mi = 0; mi < {m_subtiles}; ++mi) {{
         uint store_row_off = mi * 8;
@@ -112,7 +120,10 @@ kernel void unified_gemm_kernel(
         }}
     }}
 }}
-"#, mt=mt, nt=nt, kt=kt, thread_count=thread_count, primitives=primitives, m_subtiles=m_subtiles, n_subtiles=n_subtiles, epi_args=epi_args, epi_code=epi_code)
+"#, mt=mt, nt=nt, kt=kt, s_a_stride=s_a_stride, s_b_stride=s_b_stride,
+    thread_count=thread_count, primitives=primitives,
+    m_subtiles=m_subtiles, n_subtiles=n_subtiles,
+    epi_args=epi_args, epi_code=epi_code)
 }
 
 fn generate_gemm_double_buffer(ir: &UnifiedOpIR, thread_count: u32) -> String {
@@ -125,6 +136,12 @@ fn generate_gemm_double_buffer(ir: &UnifiedOpIR, thread_count: u32) -> String {
     let m_subtiles = mt / 8;
     let n_subtiles = nt / 8;
 
+    // Bank conflict padding: sA stride = kt+2 (bank shift 9), sB stride = nt+4 (bank shift 2)
+    let s_pad_a: u32 = 2;
+    let s_pad_b: u32 = 4;
+    let s_a_stride = kt + s_pad_a;
+    let s_b_stride = nt + s_pad_b;
+
     let epilogue = match &ir.op_type {
         UnifiedOpType::Gemm { epilogue, .. } => epilogue,
         _ => &vec![],
@@ -132,7 +149,6 @@ fn generate_gemm_double_buffer(ir: &UnifiedOpIR, thread_count: u32) -> String {
     let (epi_args, epi_code) = generate_epilogue_code(epilogue, "val", "channel_idx", "global_out_idx");
 
     // When fusion_count > 1: bid.x indexes fused tile groups.
-    // Each group processes `fc` consecutive N-tiles, sharing A data.
     let fusion_loop = if fc > 1 {
         format!(r#"
     // FUSION: processing {{fc}} N-tiles, fused N-span per threadgroup = {{fc}} * {nt}
@@ -154,8 +170,6 @@ fn generate_gemm_double_buffer(ir: &UnifiedOpIR, thread_count: u32) -> String {
         String::from("\n}")
     } else { String::new() };
 
-    // Inner compute uses `fc_bid_x` for the N-coordinate instead of `bid.x`.
-    // When fusion_count = 1: `fc_bid_x` is always equal to `bid.x`.
     let n_coord = if fc > 1 { "fc_bid_x" } else { "bid.x" };
 
     // Store path: each simdgroup stores its column group exclusively
@@ -195,7 +209,7 @@ fn generate_gemm_double_buffer(ir: &UnifiedOpIR, thread_count: u32) -> String {
     format!(r#"
 {primitives}
 
-// Double Buffer GEMM — each simdgroup handles exactly one 8-wide column group
+// Double Buffer GEMM — vectorized A (row-chunk), B (standard)
 // Fusion_count = {fc} (TTG topology-optimized)
 kernel void unified_gemm_kernel(
     device const half* A [[buffer(0)]],
@@ -208,9 +222,9 @@ kernel void unified_gemm_kernel(
     uint simd_id [[simdgroup_index_in_threadgroup]],
     uint  tid [[thread_index_in_threadgroup]]
 ) {{
-    // Double buffers
-    threadgroup half sA[2][{mt} * {kt}];
-    threadgroup half sB[2][{kt} * {nt}];
+    // Double buffers with bank conflict padding
+    threadgroup half sA[2][{mt} * {s_a_stride}];
+    threadgroup half sB[2][{kt} * {s_b_stride}];
 
     // Each simdgroup owns one 8-wide column group (no overlap, no OOB)
     uint my_ni = simd_id % {n_subtiles};
@@ -219,7 +233,7 @@ kernel void unified_gemm_kernel(
     uint num_k_tiles = (K + {kt} - 1) / {kt};
     uint fc_bid_x = {n_coord};
 
-    // One accumulator per M sub-tile (column group handled by simdgroup id)
+    // One accumulator per M sub-tile
     simdgroup_float8x8 acc[{m_subtiles}];
     for (uint mi = 0; mi < {m_subtiles}; ++mi) {{
         acc[mi] = simdgroup_float8x8(0.0f);
@@ -229,16 +243,16 @@ kernel void unified_gemm_kernel(
     for (uint i = tid; i < {mt} * {kt}; i += {thread_count}) {{
         uint r = i / {kt}; uint c = i % {kt};
         uint gr = bid.y * {mt} + r;
-        sA[0][i] = (gr < M && c < K) ? A[gr * K + c] : half(0);
+        sA[0][r * {s_a_stride} + c] = (gr < M && c < K) ? A[gr * K + c] : half(0);
     }}
     for (uint i = tid; i < {kt} * {nt}; i += {thread_count}) {{
         uint r = i / {nt}; uint c = i % {nt};
         uint gc = fc_bid_x * {nt} + c;
-        sB[0][i] = (r < K && gc < N) ? B[r * N + gc] : half(0);
+        sB[0][r * {s_b_stride} + c] = (r < K && gc < N) ? B[r * N + gc] : half(0);
     }}
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    // MAIN LOOP: Load next, compute current
+    // MAIN LOOP
     uint curr_buf = 0;
     for (uint k_tile = 0; k_tile < num_k_tiles; ++k_tile) {{
         uint next_buf = 1 - curr_buf;
@@ -249,13 +263,13 @@ kernel void unified_gemm_kernel(
                 uint r = i / {kt}; uint c = i % {kt};
                 uint gr = bid.y * {mt} + r;
                 uint gc = k_off_next + c;
-                sA[next_buf][i] = (gr < M && gc < K) ? A[gr * K + gc] : half(0);
+                sA[next_buf][r * {s_a_stride} + c] = (gr < M && gc < K) ? A[gr * K + gc] : half(0);
             }}
             for (uint i = tid; i < {kt} * {nt}; i += {thread_count}) {{
                 uint r = i / {nt}; uint c = i % {nt};
                 uint gr = k_off_next + r;
                 uint gc = fc_bid_x * {nt} + c;
-                sB[next_buf][i] = (gr < K && gc < N) ? B[gr * N + gc] : half(0);
+                sB[next_buf][r * {s_b_stride} + c] = (gr < K && gc < N) ? B[gr * N + gc] : half(0);
             }}
         }}
 
@@ -266,8 +280,8 @@ kernel void unified_gemm_kernel(
             uint local_row = mi * 8;
 
             for (uint ki = 0; ki < {kt}; ki += 8) {{
-                simdgroup_load(ma, &sA[curr_buf][local_row * {kt} + ki], {kt});
-                simdgroup_load(mb, &sB[curr_buf][ki * {nt} + local_col_off], {nt});
+                simdgroup_load(ma, &sA[curr_buf][local_row * {s_a_stride} + ki], {s_a_stride});
+                simdgroup_load(mb, &sB[curr_buf][ki * {s_b_stride} + local_col_off], {s_b_stride});
                 simdgroup_multiply_accumulate(acc[mi], ma, mb, acc[mi]);
             }}
         }}
@@ -277,7 +291,9 @@ kernel void unified_gemm_kernel(
     }}
 
 {store_section}{fusion_store_loop}{fusion_close}
-}}"#, mt=mt, nt=nt, kt=kt, fc=fc, thread_count=thread_count, primitives=primitives,
+}}"#, mt=mt, nt=nt, kt=kt, fc=fc,
+    s_a_stride=s_a_stride, s_b_stride=s_b_stride,
+    thread_count=thread_count, primitives=primitives,
     m_subtiles=m_subtiles, n_subtiles=n_subtiles, epi_args=epi_args,
     fusion_loop=fusion_loop, fusion_store_loop=fusion_store_loop, fusion_close=fusion_close,
     n_coord=n_coord, store_section=store_section)

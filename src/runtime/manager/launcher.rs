@@ -196,7 +196,7 @@ impl RuntimeManager {
                         }
                     }
                 }
-                
+
                 let thread_group_count = metal::MTLSize { width: grid.0 as u64, height: grid.1 as u64, depth: grid.2 as u64 };
                 let thread_group_size = metal::MTLSize { width: block.0 as u64, height: block.1 as u64, depth: block.2 as u64 };
                 
